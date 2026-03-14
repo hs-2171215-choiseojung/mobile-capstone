@@ -60,12 +60,13 @@ app.add_middleware(
 # 각 기능별 라우터를 /api 경로 아래에 모읍니다.
 # 예: /api/health, /api/notebooks, /api/documents/upload ...
 #
-from app.api.routes import health, notebooks, documents, chat
+from app.api.routes import health, notebooks, documents, chat, generate
 
 app.include_router(health.router,    prefix="/api", tags=["Health"])
 app.include_router(notebooks.router, prefix="/api", tags=["Notebooks"])
 app.include_router(documents.router, prefix="/api", tags=["Documents"])
 app.include_router(chat.router,      prefix="/api", tags=["Chat"])
+app.include_router(generate.router,  prefix="/api", tags=["Generate"])
 
 
 # ─────────────────────────────────────────────

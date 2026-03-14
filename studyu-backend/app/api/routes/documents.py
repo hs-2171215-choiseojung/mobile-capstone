@@ -1,18 +1,23 @@
 """
 문서 관리 라우터.
 
-3주차에 본격 구현 예정. 현재는 엔드포인트 틀만 잡아둠.
-
 엔드포인트:
-    POST   /api/documents/upload     → 파일 업로드
-    GET    /api/documents/{id}       → 문서 상세
+    POST   /api/documents/upload     → 파일 업로드 & RAG 인덱싱
     DELETE /api/documents/{id}       → 문서 삭제
 """
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+import uuid
+import shutil
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from app.core.auth import get_current_user
+from app.services.rag import ingest_document
 
 router = APIRouter()
+
+UPLOAD_DIR = Path(__file__).resolve().parents[4] / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
 
 
 @router.post("/documents/upload")
@@ -21,29 +26,25 @@ async def upload_document(
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
 ):
-    """
-    학습 자료 업로드. (3주차에 구현 예정)
+    """PDF 업로드 및 RAG 인덱싱."""
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="PDF 파일만 업로드 가능합니다.")
 
-    흐름:
-    1. 파일을 Supabase Storage에 저장
-    2. documents 테이블에 메타데이터 저장 (status: 'processing')
-    3. 백그라운드에서: PDF 파싱 → 청크 분할 → 임베딩 → 저장
-    4. 완료 시 status를 'ready'로 변경
-    """
+    doc_id = str(uuid.uuid4())
+    save_path = UPLOAD_DIR / f"{doc_id}.pdf"
+
+    with open(save_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    chunk_count = ingest_document(str(save_path), doc_id, filename=file.filename)
+
     return {
-        "message": "문서 업로드 API - 3주차에 구현 예정",
+        "doc_id": doc_id,
         "filename": file.filename,
+        "chunk_count": chunk_count,
         "notebook_id": notebook_id,
+        "message": "업로드 및 인덱싱 완료",
     }
-
-
-@router.get("/documents/{document_id}")
-async def get_document(
-    document_id: str,
-    user: dict = Depends(get_current_user),
-):
-    """문서 상세 정보 조회. (3주차에 구현 예정)"""
-    return {"message": "문서 상세 API - 3주차에 구현 예정"}
 
 
 @router.delete("/documents/{document_id}")
@@ -51,5 +52,8 @@ async def delete_document(
     document_id: str,
     user: dict = Depends(get_current_user),
 ):
-    """문서 삭제. (3주차에 구현 예정)"""
-    return {"message": "문서 삭제 API - 3주차에 구현 예정"}
+    """업로드된 PDF 파일 삭제."""
+    pdf_path = UPLOAD_DIR / f"{document_id}.pdf"
+    if pdf_path.exists():
+        pdf_path.unlink()
+    return {"message": "삭제 완료"}

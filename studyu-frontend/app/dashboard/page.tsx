@@ -10,6 +10,8 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import LogoutButton from '@/components/auth/LogoutButton'
 import Image from 'next/image'
+import CreateNotebookButton from '@/components/dashboard/CreateNotebookButton'
+import NotebookList from '@/components/dashboard/NotebookList'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -120,28 +122,15 @@ export default async function DashboardPage() {
           </details>
         </div>
 
-        {/* 노트북 목록 (아직 비어있을 것) */}
+        {/* 노트북 목록 */}
         <div className="bg-white rounded-2xl border border-surface-200 p-6 shadow-sm">
-          <h2 className="font-semibold text-surface-900 mb-4">내 노트북</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-surface-900">내 노트북</h2>
+            <CreateNotebookButton />
+          </div>
 
           {notebooks && notebooks.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {notebooks.map((nb) => (
-                <div
-                  key={nb.id}
-                  className="p-4 border border-surface-200 rounded-xl hover:border-brand-300 
-                             hover:shadow-sm transition-all cursor-pointer"
-                >
-                  <h3 className="font-medium text-surface-900">{nb.title}</h3>
-                  {nb.description && (
-                    <p className="mt-1 text-xs text-surface-500">{nb.description}</p>
-                  )}
-                  <p className="mt-2 text-xs text-surface-400">
-                    {new Date(nb.created_at).toLocaleDateString('ko-KR')}
-                  </p>
-                </div>
-              ))}
-            </div>
+            <NotebookList notebooks={notebooks} />
           ) : (
             <div className="text-center py-12">
               <div className="w-16 h-16 bg-surface-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
@@ -151,12 +140,7 @@ export default async function DashboardPage() {
                 </svg>
               </div>
               <p className="text-sm text-surface-500 mb-1">아직 노트북이 없습니다</p>
-              <p className="text-xs text-surface-400">
-                노트북을 만들고 학습 자료를 업로드해보세요
-              </p>
-              <p className="text-xs text-surface-400 mt-4 bg-surface-50 inline-block px-3 py-1.5 rounded-lg">
-                🛠 노트북 생성 기능은 2주차에 구현 예정
-              </p>
+              <p className="text-xs text-surface-400">노트북을 만들고 학습 자료를 업로드해보세요</p>
             </div>
           )}
         </div>
