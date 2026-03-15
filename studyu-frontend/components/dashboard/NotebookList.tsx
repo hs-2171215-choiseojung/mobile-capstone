@@ -12,6 +12,7 @@ interface Notebook {
   title: string;
   description?: string;
   created_at: string;
+  documents?: { count: number }[];
 }
 
 interface Props {
@@ -52,47 +53,80 @@ export default function NotebookList({ notebooks: initial }: Props) {
     }
   }
 
+  const getDocCount = (nb: Notebook) => {
+    if (!nb.documents) return 0;
+    return Array.isArray(nb.documents) ? nb.documents[0]?.count || 0 : 0;
+  };
+
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffTime = now.getTime() - date.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) return "오늘";
+    if (diffDays === 1) return "어제";
+    if (diffDays < 7) return `${diffDays}일 전`;
+    return date.toLocaleDateString("ko-KR", { month: "short", day: "numeric" });
+  };
+
   if (notebooks.length === 0) return null;
 
   return (
     <>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {notebooks.map((nb) => (
-          <div key={nb.id} className="relative group">
-            <Link
-              href={`/workspace/${nb.id}`}
-              className="p-4 border border-surface-200 rounded-xl hover:border-brand-300 hover:shadow-sm transition-all cursor-pointer block"
-            >
-              <div className="flex items-start justify-between gap-2 pr-6">
-                <h3 className="font-medium text-surface-900 group-hover:text-brand-600 transition-colors">{nb.title}</h3>
-                <svg className="w-4 h-4 text-surface-400 shrink-0 mt-0.5 group-hover:text-brand-400 transition-colors" fill="none" viewBox="0 0 24 24">
-                  <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </div>
-              {nb.description && (
-                <p className="mt-1 text-xs text-surface-500">{nb.description}</p>
-              )}
-              <p className="mt-2 text-xs text-surface-400">
-                {new Date(nb.created_at).toLocaleDateString("ko-KR")}
-              </p>
-            </Link>
+        {notebooks.map((nb) => {
+          const docCount = getDocCount(nb);
+          return (
+            <div key={nb.id} className="relative group">
+              <Link
+                href={`/workspace/${nb.id}`}
+                className="p-4 border border-surface-200 rounded-xl hover:border-brand-300 hover:shadow-md hover:bg-brand-50/30 transition-all cursor-pointer block h-full flex flex-col"
+              >
+                {/* 헤더 */}
+                <div className="flex items-start justify-between gap-2 pb-3 border-b border-surface-100">
+                  <h3 className="font-semibold text-surface-900 group-hover:text-brand-600 transition-colors flex-1 leading-tight">
+                    {nb.title}
+                  </h3>
+                  <svg className="w-4 h-4 text-surface-400 shrink-0 group-hover:text-brand-400 transition-colors" fill="none" viewBox="0 0 24 24">
+                    <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </div>
 
-            {/* 삭제 버튼 */}
-            <button
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setConfirmId(nb.id);
-              }}
-              className="absolute top-3 right-3 w-6 h-6 flex items-center justify-center rounded-md opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50"
-              title="노트북 삭제"
-            >
-              <svg className="w-3.5 h-3.5 text-surface-400 hover:text-red-500 transition-colors" fill="none" viewBox="0 0 24 24">
-                <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-          </div>
-        ))}
+                {/* 설명 */}
+                {nb.description && (
+                  <p className="mt-2 text-xs text-surface-500 flex-1">{nb.description}</p>
+                )}
+
+                {/* 정보 */}
+                <div className="mt-3 pt-3 border-t border-surface-100 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-3">
+                    <span className="inline-flex items-center gap-1 text-surface-500">
+                      <span>📄</span>
+                      {docCount}개 자료
+                    </span>
+                  </div>
+                  <span className="text-surface-400">{formatDate(nb.created_at)}</span>
+                </div>
+              </Link>
+
+              {/* 삭제 버튼 */}
+              <button
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setConfirmId(nb.id);
+                }}
+                className="absolute top-3 right-3 w-6 h-6 flex items-center justify-center rounded-md opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50"
+                title="노트북 삭제"
+              >
+                <svg className="w-3.5 h-3.5 text-surface-400 hover:text-red-500 transition-colors" fill="none" viewBox="0 0 24 24">
+                  <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </div>
+          );
+        })}
       </div>
 
       {/* 삭제 확인 모달 */}

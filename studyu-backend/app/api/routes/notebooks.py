@@ -50,11 +50,34 @@ async def create_notebook(
     user: dict = Depends(get_current_user),
 ):
     """새 노트북을 생성합니다."""
+    # 중복된 이름이 있으면 번호를 붙임
+    base_title = body.title
+    title = base_title
+    counter = 1
+
+    while True:
+        # 같은 이름의 노트북이 있는지 확인
+        check = (
+            supabase_admin.table("notebooks")
+            .select("id")
+            .eq("user_id", user["id"])
+            .eq("title", title)
+            .execute()
+        )
+
+        if not check.data:
+            # 같은 이름이 없으면 이 이름 사용
+            break
+
+        # 있으면 번호 증가
+        title = f"{base_title} {counter}"
+        counter += 1
+
     result = (
         supabase_admin.table("notebooks")
         .insert({
             "user_id": user["id"],
-            "title": body.title,
+            "title": title,
             "description": body.description,
             "default_model": body.default_model,
             "difficulty": body.difficulty,
