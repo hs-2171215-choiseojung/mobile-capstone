@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = True
 
+    # ── Google Cloud STT ──
+    GOOGLE_APPLICATION_CREDENTIALS: str = "google-credentials.json"
+    GCP_PROJECT_ID: str = ""
+
     class Config:
         env_file = ".env"          # .env 파일에서 자동으로 읽음
         env_file_encoding = "utf-8"

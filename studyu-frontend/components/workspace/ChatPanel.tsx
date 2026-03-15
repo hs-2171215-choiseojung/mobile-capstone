@@ -44,6 +44,12 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const isStoppingRef = useRef(false);
+  const lastVoiceTimeRef = useRef(Date.now());
+  const [hint, setHint] = useState("");  // 안내 문구(입력창 hint)
+
   const hasDoc = activeDocIds.length > 0;
   const activeDocs = docs.filter((d) => activeDocIds.includes(d.id));
   const titleLabel =
@@ -58,9 +64,16 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
   }, [messages, loading]);
 
   async function sendMessage(text?: string) {
+    if (isRecording) {
+      isStoppingRef.current = true;
+      mediaRecorderRef.current?.stop();
+      setIsRecording(false);
+    }
+
     const question = (text ?? input).trim();
     if (!question || !hasDoc) return;
     setInput("");
+    setHint("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     setMessages((prev) => [...prev, { role: "user", content: question }]);
     setLoading(true);
@@ -96,7 +109,149 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
     }
   }
 
+  // 토글 함수
+  async function toggleRecording() {
+    if (isRecording) {
+      isStoppingRef.current = true;
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+
+    isStoppingRef.current = false;
+    lastVoiceTimeRef.current = Date.now();
+    setHint("");
+    startRecordingSequence();
+  }
+
+  // 녹음 시작 함수
+  async function startRecordingSequence() {
+    if (isStoppingRef.current) return;  // 정지 버튼 눌렸으면 종료
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      const chunks: Blob[] = [];
+
+      const audioContext = new AudioContext();
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+
+      const analyser = audioContext.createAnalyser();
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      
+      let silenceStart = Date.now();
+
+      const checkSilence = () => {
+        if (recorder.state !== "recording") return;
+
+        analyser.getByteFrequencyData(dataArray);
+        const volume = dataArray.reduce((a, b) => a + b) / dataArray.length;
+
+        const now = Date.now();
+
+        // 5초간 조용하면 전송
+        if (volume > 20) { 
+          silenceStart = now;
+          lastVoiceTimeRef.current = now;
+        } else {
+          const silenceElapsed = now - silenceStart;
+          const totalInactivity = now - lastVoiceTimeRef.current;
+
+          if (totalInactivity > 5000) {
+            isStoppingRef.current = true;
+            recorder.stop();
+            return;
+          }
+
+          if (silenceElapsed > 1000) {
+            recorder.stop(); 
+            return;
+          }
+        }
+        requestAnimationFrame(checkSilence);
+      };
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop());
+        audioContext.close();
+
+        // 오디오 처리
+        if (chunks.length > 0) {
+          const blob = new Blob(chunks, { type: 'audio/webm' });
+          processAudioAndAppendText(blob);
+        }
+
+        if (isStoppingRef.current) {
+          setIsRecording(false);  // 마이크 아이콘 불 끄기
+        } else {
+          setTimeout(() => startRecordingSequence(), 100);
+        }
+      };
+
+      recorder.start();
+      setIsRecording(true);
+      checkSilence();
+    } catch (err) {
+      console.error("녹음 에러:", err);
+      setIsRecording(false);
+    }
+  }
+
+  // 텍스트 추가 로직
+  async function processAudioAndAppendText(blob: Blob) {
+    const reader = new FileReader();
+    reader.readAsDataURL(blob);
+    reader.onloadend = async () => {
+      const base64Audio = (reader.result as string).split(',')[1];
+      try {
+        const response = await fetch(`${API}/api/stt/recognize`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ audio_content: base64Audio }),
+        });
+        const data = await response.json();
+        
+        if (data.text && data.text.trim()) {
+          setHint("");
+          lastVoiceTimeRef.current = Date.now();
+          setInput((prev) => {
+            const currentText = prev.trim();
+            if (!currentText) return data.text;
+
+            const cleanedPrev = (currentText === "인식할 수 없습니다. 다시 말씀해주세요.") ? "" : prev;
+            
+            if (!cleanedPrev.trim()) return data.text;
+            const separator = prev.endsWith(" ") ? "" : " ";
+            return prev + separator + data.text;
+          });
+        } else {
+          setInput((prev) => {
+            const currentText = prev.trim();
+            
+            if (currentText === "") {
+              setHint("인식할 수 없습니다. 다시 말씀해주세요.");
+            } else {
+              setHint(""); 
+            }
+            return prev;
+          });
+        }
+      } catch (e) {
+        console.error("STT Fetch Error:", e);
+      }
+    };
+  }
+
   function handleTextareaChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    setHint("");
     setInput(e.target.value);
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
@@ -232,6 +387,30 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
       {/* 입력 영역 */}
       <div className="shrink-0 px-6 pb-6 pt-2">
         <div className="flex items-end gap-2 rounded-2xl border border-gray-200 bg-white px-4 py-3 shadow-sm focus-within:border-blue-400 focus-within:shadow-md transition-all">
+          <button
+            onClick={toggleRecording}
+            disabled={!hasDoc || loading} 
+            className={`flex items-center justify-center w-8 h-8 rounded-full transition-all shrink-0 ${
+              isRecording 
+                ? 'bg-red-500 text-white animate-pulse' 
+                : !hasDoc || loading
+                ? 'text-gray-300 cursor-default'
+                : 'text-gray-400 hover:bg-gray-100 hover:text-blue-600'
+            }`}
+            title={!hasDoc ? "PDF를 먼저 업로드하세요" : isRecording ? "녹음 중지" : "음성으로 입력"}
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path
+                d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"
+                fill="currentColor"
+              />
+              <path
+                d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"
+                fill="currentColor"
+              />
+            </svg>
+          </button>
+          
           <textarea
             ref={textareaRef}
             value={input}
@@ -242,10 +421,12 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
                 sendMessage();
               }
             }}
-            placeholder={hasDoc ? "문서에 대해 질문하세요... (Shift+Enter: 줄바꿈)" : "PDF를 먼저 업로드하세요"}
+            placeholder={
+              hint || (hasDoc ? "문서에 대해 질문하세요... (Shift+Enter: 줄바꿈)" : "PDF를 먼저 업로드하세요")
+            }
             disabled={!hasDoc || loading}
             rows={1}
-            className="flex-1 resize-none outline-none text-sm text-gray-800 placeholder-gray-400 bg-transparent"
+            className="flex-1 resize-none outline-none text-sm text-gray-800 placeholder-gray-400 bg-transparentpy-2 leading-relaxed self-center"
             style={{ maxHeight: "160px" }}
           />
           <button
