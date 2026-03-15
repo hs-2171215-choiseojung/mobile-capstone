@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.routes import stt
+from app.api.routes import tts
 
 # ─────────────────────────────────────────────
 # 1. FastAPI 앱 생성
@@ -69,6 +70,7 @@ app.include_router(documents.router, prefix="/api", tags=["Documents"])
 app.include_router(chat.router,      prefix="/api", tags=["Chat"])
 app.include_router(generate.router,  prefix="/api", tags=["Generate"])
 app.include_router(stt.router, prefix="/api/stt", tags=["STT"])
+app.include_router(tts.router, prefix="/api/tts", tags=["TTS"])
 
 
 # ─────────────────────────────────────────────

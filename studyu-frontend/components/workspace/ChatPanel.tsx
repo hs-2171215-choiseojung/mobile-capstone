@@ -48,7 +48,7 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const isStoppingRef = useRef(false);
   const lastVoiceTimeRef = useRef(Date.now());
-  const [hint, setHint] = useState("");  // 안내 문구
+  const [hint, setHint] = useState("");  // 안내 문구(입력창 hint)
 
   const hasDoc = activeDocIds.length > 0;
   const activeDocs = docs.filter((d) => activeDocIds.includes(d.id));
@@ -114,7 +114,6 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
     if (isRecording) {
       isStoppingRef.current = true;
       mediaRecorderRef.current?.stop();
-      //setIsRecording(false);
       return;
     }
 
@@ -126,7 +125,7 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
 
   // 녹음 시작 함수
   async function startRecordingSequence() {
-    if (isStoppingRef.current) return; // 정지 버튼 눌렸으면 종료
+    if (isStoppingRef.current) return;  // 정지 버튼 눌렸으면 종료
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -145,7 +144,6 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       
       let silenceStart = Date.now();
-      let lastVoiceTime = Date.now();
 
       const checkSilence = () => {
         if (recorder.state !== "recording") return;
@@ -155,7 +153,7 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
 
         const now = Date.now();
 
-        // 2초간 조용하면 전송
+        // 5초간 조용하면 전송
         if (volume > 20) { 
           silenceStart = now;
           lastVoiceTimeRef.current = now;
@@ -192,7 +190,7 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
         }
 
         if (isStoppingRef.current) {
-          setIsRecording(false); // 마이크 아이콘 불 끄기
+          setIsRecording(false);  // 마이크 아이콘 불 끄기
         } else {
           setTimeout(() => startRecordingSequence(), 100);
         }
@@ -428,7 +426,7 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
             }
             disabled={!hasDoc || loading}
             rows={1}
-            className="flex-1 resize-none outline-none text-sm text-gray-800 placeholder-gray-400 bg-transparent"
+            className="flex-1 resize-none outline-none text-sm text-gray-800 placeholder-gray-400 bg-transparentpy-2 leading-relaxed self-center"
             style={{ maxHeight: "160px" }}
           />
           <button
