@@ -25,7 +25,7 @@ export default async function HomePage() {
         </div>
         <Link
           href="/login"
-          className="px-4 py-2 text-sm font-medium text-brand-700 hover:text-brand-800 
+          className="px-4 py-2 text-sm font-medium text-brand-700 hover:text-brand-800
                      bg-brand-50 hover:bg-brand-100 rounded-lg transition-colors"
         >
           로그인
@@ -58,7 +58,7 @@ export default async function HomePage() {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
             <Link
               href="/login"
-              className="px-6 py-3 bg-brand-600 hover:bg-brand-700 text-white 
+              className="px-6 py-3 bg-brand-600 hover:bg-brand-700 text-white
                          rounded-xl font-semibold text-sm transition-colors
                          shadow-lg shadow-brand-600/25"
             >
@@ -74,7 +74,7 @@ export default async function HomePage() {
             {['RAG 질의응답', '자료 요약', '퀴즈 생성', '학습 계획', '멀티 LLM'].map((tag) => (
               <span
                 key={tag}
-                className="px-3 py-1.5 bg-white border border-surface-200 rounded-lg 
+                className="px-3 py-1.5 bg-white border border-surface-200 rounded-lg
                            text-xs font-medium text-surface-600 shadow-sm"
               >
                 {tag}

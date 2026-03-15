@@ -1,11 +1,3 @@
-// ============================================
-// app/dashboard/page.tsx
-// ============================================
-// 로그인 후 보이는 대시보드 페이지
-// 사용자 정보 표시 + 로그아웃 기능
-// 나중에 노트북 목록, 자료 업로드 등이 추가될 곳
-// ============================================
-
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import LogoutButton from '@/components/auth/LogoutButton'
@@ -16,43 +8,42 @@ import NotebookList from '@/components/dashboard/NotebookList'
 export default async function DashboardPage() {
   const supabase = await createClient()
 
-  // 현재 로그인한 사용자 정보 가져오기
   const { data: { user }, error } = await supabase.auth.getUser()
 
-  // 로그인 안 되어 있으면 → 로그인 페이지로
   if (!user || error) {
     redirect('/login')
   }
 
-  // public.users 테이블에서 프로필 정보 가져오기
   const { data: profile } = await supabase
     .from('users')
     .select('*')
     .eq('id', user.id)
     .single()
 
-  // 노트북 목록 가져오기 (RLS에 의해 본인 것만)
   const { data: notebooks } = await supabase
     .from('notebooks')
-    .select('*')
+    .select('*, documents(count)')
     .order('created_at', { ascending: false })
 
+  const isFirstTime = !notebooks || notebooks.length === 0
+
+
   return (
-    <div className="min-h-screen bg-surface-50">
-      {/* 상단 바 */}
-      <header className="bg-white border-b border-surface-200 px-6 py-3">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
+    <div className="min-h-screen bg-white">
+      {/* 헤더 */}
+      <header className="border-b border-surface-100">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
           {/* 로고 */}
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center">
               <span className="text-white font-bold text-sm">S</span>
             </div>
-            <span className="font-bold text-lg tracking-tight">
+            <span className="font-bold text-lg">
               STUDY<span className="text-brand-600">:U</span>
             </span>
           </div>
 
-          {/* 사용자 정보 + 로그아웃 */}
+          {/* 사용자 메뉴 */}
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               {profile?.avatar_url ? (
@@ -61,116 +52,166 @@ export default async function DashboardPage() {
                   alt="프로필"
                   width={32}
                   height={32}
-                  className="rounded-full"
+                  className="rounded-full w-8 h-8"
                 />
               ) : (
-                <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center">
-                  <span className="text-brand-600 font-medium text-sm">
-                    {(profile?.display_name || user.email || '?')[0].toUpperCase()}
-                  </span>
+                <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center text-xs font-semibold text-brand-600">
+                  {(profile?.display_name || user.email || '?')[0].toUpperCase()}
                 </div>
               )}
-              <span className="text-sm font-medium text-surface-700 hidden sm:block">
-                {profile?.display_name || user.email}
+              <span className="text-sm text-surface-700 hidden sm:block">
+                {profile?.display_name || user.email?.split('@')[0] || '사용자'}
               </span>
             </div>
+            <div className="h-6 w-px bg-surface-200" />
             <LogoutButton />
           </div>
         </div>
       </header>
 
-      {/* 메인 콘텐츠 */}
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        {/* 환영 메시지 */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-surface-900">
-            안녕하세요, {profile?.display_name || '학습자'}님 👋
-          </h1>
-          <p className="mt-1 text-sm text-surface-500">
-            학습 자료를 업로드하고 AI와 함께 공부를 시작하세요
-          </p>
-        </div>
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
 
-        {/* 로그인 성공 확인 카드 */}
-        <div className="bg-white rounded-2xl border border-surface-200 p-6 shadow-sm mb-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
-              <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
+        {/* 첫 사용자 온보딩 */}
+        {isFirstTime && (
+          <section className="py-12 sm:py-16">
+            <div className="text-center mb-12">
+              <h1 className="text-4xl sm:text-5xl font-bold text-surface-900 mb-4">
+                환영합니다! 👋
+              </h1>
+              <p className="text-xl text-surface-600 max-w-2xl mx-auto">
+                첫 번째 노트북을 만들고 AI 학습을 시작해보세요
+              </p>
             </div>
-            <div>
-              <h2 className="font-semibold text-surface-900">Google 로그인 성공!</h2>
-              <p className="text-sm text-surface-500">Supabase Auth 연동이 정상적으로 동작하고 있습니다</p>
-            </div>
-          </div>
 
-          {/* 디버그 정보 (개발 중에만 표시) */}
-          <details className="mt-4">
-            <summary className="text-xs text-surface-400 cursor-pointer hover:text-surface-600">
-              개발자 정보 보기 (디버그용)
-            </summary>
-            <div className="mt-3 p-4 bg-surface-50 rounded-xl font-mono text-xs space-y-2">
-              <div><span className="text-surface-400">User ID:</span> <span className="text-surface-700">{user.id}</span></div>
-              <div><span className="text-surface-400">Email:</span> <span className="text-surface-700">{user.email}</span></div>
-              <div><span className="text-surface-400">Provider:</span> <span className="text-surface-700">{user.app_metadata?.provider}</span></div>
-              <div><span className="text-surface-400">Display Name:</span> <span className="text-surface-700">{profile?.display_name || '(없음)'}</span></div>
-              <div><span className="text-surface-400">Avatar URL:</span> <span className="text-surface-700 break-all">{profile?.avatar_url || '(없음)'}</span></div>
-              <div><span className="text-surface-400">public.users 존재:</span> <span className="text-surface-700">{profile ? '✅ Yes' : '❌ No (트리거 확인 필요)'}</span></div>
-              <div><span className="text-surface-400">노트북 수:</span> <span className="text-surface-700">{notebooks?.length ?? 0}개</span></div>
+            {/* 온보딩 스텝 */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+              {[
+                {
+                  step: '1️⃣',
+                  title: '노트북 만들기',
+                  desc: '"이산수학" 또는 "Python 프로젝트" 같이 목적별로 만들어요',
+                },
+                {
+                  step: '2️⃣',
+                  title: '자료 업로드',
+                  desc: 'PDF 강의노트, 텍스트 파일 등을 한 노트북에 여러 개 올려요',
+                },
+                {
+                  step: '3️⃣',
+                  title: '공부 시작',
+                  desc: '자료에 대해 질문하고 요약받고 퀴즈를 풀어요',
+                },
+              ].map((item, idx) => (
+                <div key={idx} className="bg-surface-50 rounded-lg p-6 border border-surface-200">
+                  <div className="text-3xl mb-3">{item.step}</div>
+                  <h3 className="font-semibold text-surface-900 mb-2">{item.title}</h3>
+                  <p className="text-sm text-surface-600">{item.desc}</p>
+                </div>
+              ))}
             </div>
-          </details>
-        </div>
 
-        {/* 노트북 목록 */}
-        <div className="bg-white rounded-2xl border border-surface-200 p-6 shadow-sm">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-surface-900">내 노트북</h2>
+            {/* CTA */}
+            <div className="flex justify-center mb-12">
+              <CreateNotebookButton />
+            </div>
+
+            {/* FAQ */}
+            <div className="bg-surface-50 rounded-lg p-8 border border-surface-200">
+              <h2 className="text-lg font-semibold text-surface-900 mb-6">🤔 궁금한 점</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {[
+                  {
+                    q: '먼저 설정이 필요한가요?',
+                    a: '아니요! 바로 노트북을 만들고 시작할 수 있습니다.',
+                  },
+                  {
+                    q: '어떤 파일을 올릴 수 있나요?',
+                    a: 'PDF, 텍스트 파일, Markdown, URL 등 다양한 형식을 지원합니다.',
+                  },
+                  {
+                    q: '한 번에 몇 개까지 올릴 수 있나요?',
+                    a: '제한 없이 여러 자료를 한 노트북에 업로드할 수 있어요.',
+                  },
+                  {
+                    q: '자료는 어디에 저장되나요?',
+                    a: '당신의 계정에 안전하게 암호화되어 저장됩니다.',
+                  },
+                ].map((item, idx) => (
+                  <div key={idx}>
+                    <h3 className="font-medium text-surface-900 mb-2">{item.q}</h3>
+                    <p className="text-sm text-surface-600">{item.a}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* 기존 노트북이 있을 때 */}
+        {!isFirstTime && (
+          <section className="py-8 space-y-8">
+            <div className="mb-8">
+              <h1 className="text-3xl font-bold text-surface-900 mb-2">
+                안녕하세요, {profile?.display_name || user.email?.split('@')[0]}님 👋
+              </h1>
+              <p className="text-surface-600">
+                계속 공부하거나 새로운 노트북을 만들어보세요
+              </p>
+            </div>
+
+            {/* 최근 본 노트북 (상위 3개) */}
+            {notebooks && notebooks.length > 0 && (
+              <div className="bg-white rounded-lg border border-surface-200 p-6">
+                <h2 className="text-lg font-semibold text-surface-900 mb-4">
+                  ⭐ 자주 쓰는 노트북
+                </h2>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {notebooks.slice(0, 3).map((nb) => (
+                    <a
+                      key={nb.id}
+                      href={`/workspace/${nb.id}`}
+                      className="p-4 bg-gradient-to-br from-brand-50 to-brand-100 border border-brand-200 rounded-lg hover:shadow-md hover:border-brand-300 transition-all cursor-pointer"
+                    >
+                      <h3 className="font-semibold text-brand-900 truncate">{nb.title}</h3>
+                      <p className="text-xs text-brand-700 mt-2">
+                        바로 열기 →
+                      </p>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 모든 노트북 섹션 */}
+            <div className="bg-white rounded-lg border border-surface-200 p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-lg font-semibold text-surface-900">
+                  📚 내 노트북 ({notebooks?.length || 0}개)
+                </h2>
+                <CreateNotebookButton />
+              </div>
+
+              <NotebookList notebooks={notebooks} />
+            </div>
+          </section>
+        )}
+
+        {/* 노트북 없을 때만 표시 */}
+        {!isFirstTime && notebooks && notebooks.length === 0 && (
+          <div className="text-center py-12">
+            <div className="w-16 h-16 bg-surface-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <span className="text-2xl">📚</span>
+            </div>
+            <p className="text-surface-600 mb-4">아직 노트북이 없습니다</p>
             <CreateNotebookButton />
           </div>
-
-          {notebooks && notebooks.length > 0 ? (
-            <NotebookList notebooks={notebooks} />
-          ) : (
-            <div className="text-center py-12">
-              <div className="w-16 h-16 bg-surface-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                        d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
-                </svg>
-              </div>
-              <p className="text-sm text-surface-500 mb-1">아직 노트북이 없습니다</p>
-              <p className="text-xs text-surface-400">노트북을 만들고 학습 자료를 업로드해보세요</p>
-            </div>
-          )}
-        </div>
-
-        {/* 1주차 체크리스트 */}
-        <div className="mt-6 bg-brand-50 border border-brand-200 rounded-2xl p-6">
-          <h2 className="font-semibold text-brand-900 mb-3">✅ 1주차 세팅 체크리스트</h2>
-          <div className="space-y-2 text-sm">
-            <div className="flex items-center gap-2 text-brand-700">
-              <span>☑️</span> <span>Supabase 프로젝트 생성</span>
-            </div>
-            <div className="flex items-center gap-2 text-brand-700">
-              <span>☑️</span> <span>DB 스키마 (migration SQL) 실행</span>
-            </div>
-            <div className="flex items-center gap-2 text-brand-700">
-              <span>☑️</span> <span>Google OAuth 설정</span>
-            </div>
-            <div className="flex items-center gap-2 text-brand-700">
-              <span>☑️</span> <span>Next.js 프로젝트 세팅</span>
-            </div>
-            <div className="flex items-center gap-2 text-brand-700">
-              <span>{profile ? '☑️' : '⬜'}</span>
-              <span>Google 로그인 → public.users 자동 생성 확인 {profile ? '← 지금 이것!' : ''}</span>
-            </div>
-            <div className="flex items-center gap-2 text-surface-400">
-              <span>⬜</span> <span>FastAPI 프로젝트 세팅 (다음 단계)</span>
-            </div>
-          </div>
-        </div>
+        )}
       </main>
+
+      {/* 푸터 */}
+      <footer className="border-t border-surface-100 py-6 text-center text-sm text-surface-500 mt-12">
+        STUDY:U · 기업연계 캡스톤
+      </footer>
     </div>
   )
 }
