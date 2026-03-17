@@ -29,5 +29,12 @@ export default async function WorkspacePage({ params }: Props) {
 
   if (!notebook) redirect("/dashboard");
 
-  return <WorkspaceClient notebook={notebook} />;
+  const { data: initialDocs } = await supabase
+    .from("documents")
+    .select("id, filename, chunk_count")
+    .eq("notebook_id", notebookId)
+    .eq("status", "ready")
+    .order("created_at", { ascending: true });
+
+  return <WorkspaceClient notebook={notebook} initialDocs={initialDocs ?? []} />;
 }

@@ -13,8 +13,15 @@ interface Notebook {
   description?: string;
 }
 
+interface InitialDoc {
+  id: string;
+  filename: string;
+  chunk_count: number | null;
+}
+
 interface Props {
   notebook: Notebook;
+  initialDocs: InitialDoc[];
 }
 
 function Divider({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
@@ -32,10 +39,14 @@ async function getToken(): Promise<string> {
   return data.session?.access_token ?? "";
 }
 
-export default function WorkspaceClient({ notebook }: Props) {
+export default function WorkspaceClient({ notebook, initialDocs }: Props) {
   const router = useRouter();
-  const [docs, setDocs] = useState<Doc[]>([]);
-  const [activeDocIds, setActiveDocIds] = useState<string[]>([]);
+  const [docs, setDocs] = useState<Doc[]>(
+    initialDocs.map((d) => ({ id: d.id, name: d.filename, chunks: d.chunk_count ?? 0 }))
+  );
+  const [activeDocIds, setActiveDocIds] = useState<string[]>(
+    initialDocs.map((d) => d.id)
+  );
   const [sourceWidth, setSourceWidth] = useState(272);
   const [studioWidth, setStudioWidth] = useState(304);
 
