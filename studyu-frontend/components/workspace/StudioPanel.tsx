@@ -1,6 +1,7 @@
 ﻿"use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import type { Doc } from "./SourcePanel";
 
@@ -918,22 +919,40 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
     else alert("곧 지원 예정인 기능입니다 ✨");
   }
 
-  const wrapClass = `${isExpanded ? "fixed inset-0 z-50 bg-white" : "h-full w-full"} relative`;
-  const collapseBtn = isExpanded ? (
+  const expandToggleBtn = (
     <button
-      onClick={() => setIsExpanded(false)}
-      title="축소"
+      onClick={() => setIsExpanded((v) => !v)}
+      title={isExpanded ? "축소" : "전체화면"}
       className="absolute top-2.5 right-2.5 z-20 p-1.5 rounded-lg bg-white/90 border border-gray-200 shadow-sm hover:bg-gray-50 text-gray-400 hover:text-gray-600 transition-colors"
     >
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9V4.5M15 9h4.5M15 9l5.25-5.25M15 15v4.5M15 15h4.5M15 15l5.25 5.25" />
-      </svg>
+      {isExpanded ? (
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9V4.5M15 9h4.5M15 9l5.25-5.25M15 15v4.5M15 15h4.5M15 15l5.25 5.25" />
+        </svg>
+      ) : (
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+        </svg>
+      )}
     </button>
-  ) : null;
-  if (activeQuiz) return <div className={wrapClass}><QuizView quiz={activeQuiz} onBack={() => setActiveQuiz(null)} />{collapseBtn}</div>;
-  if (summaryContent) return <div className={wrapClass}><SummaryView content={summaryContent} onBack={() => setSummaryContent(null)} />{collapseBtn}</div>;
-  if (activeAudio) return <div className={wrapClass}><AudioView audioBase64={activeAudio.base64} audioUrl={activeAudio.audioUrl} script={activeAudio.script} title={activeAudio.title} onBack={() => setActiveAudio(null)} />{collapseBtn}</div>;
-  if (activeMindmap) return <div className={wrapClass}><MindMapView nodes={activeMindmap.nodes} title={activeMindmap.title} onBack={() => setActiveMindmap(null)} />{collapseBtn}</div>;
+  );
+
+  const subviewContent =
+    activeQuiz ? <QuizView quiz={activeQuiz} onBack={() => setActiveQuiz(null)} /> :
+    summaryContent ? <SummaryView content={summaryContent} onBack={() => setSummaryContent(null)} /> :
+    activeAudio ? <AudioView audioBase64={activeAudio.base64} audioUrl={activeAudio.audioUrl} script={activeAudio.script} title={activeAudio.title} onBack={() => setActiveAudio(null)} /> :
+    activeMindmap ? <MindMapView nodes={activeMindmap.nodes} title={activeMindmap.title} onBack={() => setActiveMindmap(null)} /> :
+    null;
+
+  if (subviewContent) {
+    const inner = (
+      <div className="fixed inset-0 z-[9999] bg-white">
+        {subviewContent}
+        {expandToggleBtn}
+      </div>
+    );
+    return isExpanded ? createPortal(inner, document.body) : <div className="h-full w-full relative">{subviewContent}{expandToggleBtn}</div>;
+  }
 
   return (
     <aside className={`flex flex-col bg-[#f8f9fa] overflow-hidden ${isExpanded ? "fixed inset-0 z-50" : "w-full h-full"}`}>
