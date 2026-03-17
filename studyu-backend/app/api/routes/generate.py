@@ -207,3 +207,49 @@ async def generate_mindmap_route(
         "title": title,
         "item_id": item_id,
     }
+
+
+class FlashcardGenerateRequest(BaseModel):
+    doc_ids: list[str]
+    count: str = "standard"        # fewer | standard | more
+    difficulty: str = "intermediate"  # easy | intermediate | hard
+    topic: str = ""
+    language: str = "ko"           # ko | en | ja | zh
+    model: Optional[str] = "gpt-4o-mini"
+    item_title: Optional[str] = None
+
+
+@router.post("/generate/flashcard")
+async def generate_flashcard(
+    req: FlashcardGenerateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """문서 내용을 바탕으로 플래시카드 세트를 생성."""
+    if not req.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
+
+    from app.services.rag import generate_flashcards
+    try:
+        cards, title = generate_flashcards(
+            doc_ids=req.doc_ids,
+            count=req.count,
+            difficulty=req.difficulty,
+            topic=req.topic,
+            language=req.language,
+            model=req.model or "gpt-4o-mini",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"플래시카드 생성 실패: {str(e)}")
+
+    item_id = _save_studio_item(
+        user_id=user["id"],
+        item_type="flashcard",
+        title=req.item_title or title,
+        subtitle=f"플래시카드 · 소스 {len(req.doc_ids)}개",
+        content={"cards": cards, "difficulty": req.difficulty},
+    )
+    return {
+        "cards": cards,
+        "title": title,
+        "item_id": item_id,
+    }

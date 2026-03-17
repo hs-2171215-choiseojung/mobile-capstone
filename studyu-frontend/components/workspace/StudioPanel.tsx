@@ -44,6 +44,19 @@ interface MindmapConfig {
   focus: string;
 }
 
+interface FlashcardConfig {
+  count: "fewer" | "standard" | "more";
+  difficulty: "easy" | "intermediate" | "hard";
+  topic: string;
+  language: "ko" | "en" | "ja" | "zh";
+}
+
+interface FlashCard {
+  front: string;
+  back: string;
+  hint: string;
+}
+
 interface MindmapNode {
   id: string;
   text: string;
@@ -52,7 +65,7 @@ interface MindmapNode {
 
 interface SavedItem {
   id: string;
-  type: "summary" | "quiz" | "audio" | "mindmap";
+  type: "summary" | "quiz" | "audio" | "mindmap" | "flashcard";
   title: string;
   subtitle: string;
   createdAt: Date;
@@ -61,6 +74,7 @@ interface SavedItem {
   audio?: { base64?: string; script: string };
   audioUrl?: string;  // Supabase Storage 서명 URL (DB 로드 시)
   mindmap?: { nodes: MindmapNode[] };
+  flashcard?: { cards: FlashCard[]; difficulty: string };
 }
 
 interface Props {
@@ -676,15 +690,330 @@ function MindmapModal({
   );
 }
 
+// ── FlashcardModal ─────────────────────────────────────────────────────────
+function FlashcardModal({
+  loading,
+  onClose,
+  onGenerate,
+}: {
+  loading: boolean;
+  onClose: () => void;
+  onGenerate: (cfg: FlashcardConfig) => void;
+}) {
+  const [cfg, setCfg] = useState<FlashcardConfig>({
+    count: "standard",
+    difficulty: "intermediate",
+    topic: "",
+    language: "ko",
+  });
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.45)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-md rounded-2xl shadow-2xl bg-white">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: "#f9a8c0" }}>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="#be123c" strokeWidth="1.5">
+                <rect x="2" y="6" width="20" height="13" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M16 2l-2 4M12 2v4M8 2l2 4" />
+              </svg>
+            </div>
+            <span className="font-semibold text-gray-800">플래시카드 맞춤설정</span>
+          </div>
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 transition-colors">
+            <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div className="px-6 py-5 space-y-5">
+          {/* 카드 수 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2.5">카드 수</p>
+            <div className="flex gap-2">
+              {(["fewer", "standard", "more"] as const).map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setCfg((p) => ({ ...p, count: c }))}
+                  className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
+                  style={
+                    cfg.count === c
+                      ? { background: "#fde0ea", color: "#be123c", borderColor: "#f9a8c0" }
+                      : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }
+                  }
+                >
+                  {c === "fewer" ? "간략히 보기" : c === "standard" ? "표준(기본)" : "더보기"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* 난이도 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2.5">난이도</p>
+            <div className="flex gap-2">
+              {(["easy", "intermediate", "hard"] as const).map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setCfg((p) => ({ ...p, difficulty: d }))}
+                  className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
+                  style={
+                    cfg.difficulty === d
+                      ? { background: "#fde0ea", color: "#be123c", borderColor: "#f9a8c0" }
+                      : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }
+                  }
+                >
+                  {d === "easy" ? "쉬움" : d === "intermediate" ? "보통(기본)" : "어려움"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* 주제 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">주제는 무엇인가요?</p>
+            <textarea
+              value={cfg.topic}
+              onChange={(e) => setCfg((p) => ({ ...p, topic: e.target.value }))}
+              placeholder={"다음과 같이 시도해 보세요.\n  • 플래시카드는 특정 소스로 제한해 줘 (예: '이탈리아에 대한 기사만')\n  • 플래시카드는 특정 주제 위주로 해 줘 (예: '뉴턴의 제2법칙')\n  • 기억하기 쉽도록 카드 앞면은 짧게 작성해 줘 (영문 기준 1~3단어)"}
+              rows={5}
+              className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-pink-300 text-gray-800"
+              style={{ lineHeight: 1.6 }}
+            />
+          </div>
+        </div>
+        <div className="flex justify-end px-6 pb-5">
+          <button
+            onClick={() => onGenerate(cfg)}
+            disabled={loading}
+            className="px-8 py-2.5 rounded-full text-sm font-semibold flex items-center gap-2 transition-all"
+            style={{ background: "#be123c", color: "white", opacity: loading ? 0.75 : 1, cursor: loading ? "not-allowed" : "pointer" }}
+          >
+            {loading && <Spinner className="w-3.5 h-3.5" />}
+            {loading ? "생성 중..." : "만들기"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── FlashcardView ──────────────────────────────────────────────────────────
+function FlashcardView({
+  cards,
+  title,
+  onBack,
+}: {
+  cards: FlashCard[];
+  title: string;
+  onBack: () => void;
+}) {
+  const [idx, setIdx] = useState(0);
+  const [flipped, setFlipped] = useState(false);
+  const [showHint, setShowHint] = useState(false);
+  const [known, setKnown] = useState<boolean[]>([]);
+  const [done, setDone] = useState(false);
+
+  const total = cards.length;
+  const card = cards[idx];
+
+  function handleKnow(isKnown: boolean) {
+    setKnown((prev) => { const n = [...prev]; n[idx] = isKnown; return n; });
+    if (idx + 1 >= total) { setDone(true); return; }
+    setIdx((i) => i + 1);
+    setFlipped(false);
+    setShowHint(false);
+  }
+
+  function restart() {
+    setIdx(0);
+    setFlipped(false);
+    setShowHint(false);
+    setKnown([]);
+    setDone(false);
+  }
+
+  if (done) {
+    const knownCount = known.filter(Boolean).length;
+    const pct = Math.round((knownCount / total) * 100);
+    return (
+      <div className="flex flex-col h-full">
+        <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-2 shrink-0">
+          <button onClick={onBack} className="text-sm text-gray-500 hover:text-pink-600 flex items-center gap-1">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            스튜디오
+          </button>
+          <span className="text-gray-300">›</span>
+          <span className="text-sm font-medium text-gray-700">{title}</span>
+        </div>
+        <div className="flex flex-col items-center justify-center flex-1 gap-5 px-6 text-center">
+          <div className="w-24 h-24 rounded-full flex items-center justify-center text-3xl font-bold"
+            style={{ background: pct >= 70 ? "#fde0ea" : "#fce8e6", color: pct >= 70 ? "#be123c" : "#c5221f" }}>
+            {pct}%
+          </div>
+          <div>
+            <p className="text-xl font-bold text-gray-800 mb-1">
+              {pct >= 80 ? "완벽해요! 🎉" : pct >= 60 ? "잘하셨어요!" : "다시 한번 복습해봐요"}
+            </p>
+            <p className="text-sm text-gray-500">{total}장 중 {knownCount}장 알고 있음</p>
+          </div>
+          <div className="flex gap-3">
+            <button onClick={restart}
+              className="px-6 py-2.5 rounded-full text-sm font-semibold text-white"
+              style={{ background: "#be123c" }}>다시 학습하기</button>
+            <button onClick={onBack} className="px-6 py-2.5 rounded-full text-sm font-semibold border border-gray-200 text-gray-500">스튜디오로</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-2 shrink-0">
+        <button onClick={onBack} className="text-sm text-gray-500 hover:text-pink-600 flex items-center gap-1">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          스튜디오
+        </button>
+        <span className="text-gray-300">›</span>
+        <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
+      </div>
+
+      {/* Progress */}
+      <div className="px-4 pt-3 pb-1 shrink-0">
+        <div className="flex justify-between text-xs text-gray-400 mb-1.5">
+          <span>{idx + 1} / {total}</span>
+          <span className="text-pink-500">{known.filter(Boolean).length}개 알고 있음</span>
+        </div>
+        <div className="w-full h-1.5 rounded-full bg-gray-200">
+          <div className="h-1.5 rounded-full transition-all" style={{ width: `${((idx) / total) * 100}%`, background: "#be123c" }} />
+        </div>
+        <p className="text-[11px] text-gray-400 mt-1.5 text-center">
+          {'스페이스바'}를 눌러 뒤집기, {'←/→'} 키를 눌러 이동
+        </p>
+      </div>
+
+      {/* Card */}
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-2 gap-4">
+        {/* Flip card */}
+        <div
+          className="w-full max-w-3xl cursor-pointer select-none"
+          style={{ perspective: "1200px" }}
+          onClick={() => { setFlipped((v) => !v); setShowHint(false); }}
+          onKeyDown={(e) => {
+            if (e.key === " ") { e.preventDefault(); setFlipped((v) => !v); }
+            if (e.key === "ArrowRight") handleKnow(true);
+            if (e.key === "ArrowLeft") handleKnow(false);
+          }}
+          tabIndex={0}
+        >
+          <div
+            className="relative transition-transform duration-500"
+            style={{
+              transformStyle: "preserve-3d",
+              transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)",
+              minHeight: "320px",
+            }}
+          >
+            {/* Front */}
+            <div
+              className="absolute inset-0 rounded-2xl flex flex-col items-center justify-center p-10 text-center shadow-md border border-gray-100"
+              style={{ backfaceVisibility: "hidden", background: "#1e1e2e", minHeight: "320px" }}
+            >
+              <p className="text-white text-2xl font-semibold leading-relaxed">{card.front}</p>
+              {!flipped && (
+                <p className="text-gray-400 text-sm mt-5">정답 보기</p>
+              )}
+            </div>
+            {/* Back */}
+            <div
+              className="absolute inset-0 rounded-2xl flex flex-col items-center justify-center p-10 text-center shadow-md border border-pink-100"
+              style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)", background: "white", minHeight: "320px" }}
+            >
+              <p className="text-gray-800 text-xl font-medium leading-relaxed">{card.back}</p>
+              {card.hint && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setShowHint((v) => !v); }}
+                  className="mt-4 text-sm text-pink-500 hover:underline flex items-center gap-1"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" strokeLinecap="round" />
+                  </svg>
+                  설명
+                </button>
+              )}
+              {showHint && card.hint && (
+                <p className="mt-2 text-sm text-gray-500 bg-pink-50 rounded-lg px-4 py-2.5">{card.hint}</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Action buttons */}
+        {flipped ? (
+          <div className="flex items-center gap-3 w-full max-w-3xl">
+            <button
+              onClick={() => handleKnow(false)}
+              className="flex-1 py-3 rounded-xl text-sm font-semibold border-2 border-red-200 text-red-500 hover:bg-red-50 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" />
+              </svg>
+              모르겠어요
+            </button>
+            <button
+              onClick={() => handleKnow(true)}
+              className="flex-1 py-3 rounded-xl text-sm font-semibold border-2 border-green-200 text-green-600 hover:bg-green-50 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              알고 있어요
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-4 w-full max-w-3xl justify-center">
+            {/* 이전 버튼 */}
+            <button
+              onClick={() => { if (idx > 0) { setIdx((i) => i - 1); setFlipped(false); setShowHint(false); } }}
+              disabled={idx === 0}
+              className="w-11 h-11 rounded-full border-2 flex items-center justify-center transition-colors"
+              style={idx === 0 ? { borderColor: "#e0e0e0", color: "#ccc", cursor: "not-allowed" } : { borderColor: "#f9a8c0", color: "#be123c", background: "white" }}
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <p className="text-sm text-gray-400">카드를 클릭하면 뒷면을 볼 수 있어요</p>
+            {/* 다음 버튼 */}
+            <button
+              onClick={() => { if (idx < total - 1) { setIdx((i) => i + 1); setFlipped(false); setShowHint(false); } else { setDone(true); } }}
+              className="w-11 h-11 rounded-full border-2 flex items-center justify-center transition-colors"
+              style={{ borderColor: "#f9a8c0", color: "#be123c", background: "white" }}
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main StudioPanel ───────────────────────────────────────────────────────
-export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
-  const [loadingType, setLoadingType] = useState<string | null>(null);
+export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  const [loadingType, setLoadingType] = useState<string | null>(null);
   const [showQuizModal, setShowQuizModal] = useState(false);
   const [showAudioModal, setShowAudioModal] = useState(false);
   const [showMindmapModal, setShowMindmapModal] = useState(false);
+  const [showFlashcardModal, setShowFlashcardModal] = useState(false);
   const [activeQuiz, setActiveQuiz] = useState<SavedQuiz | null>(null);
   const [activeAudio, setActiveAudio] = useState<{ base64?: string; audioUrl?: string; script: string; title: string } | null>(null);
   const [activeMindmap, setActiveMindmap] = useState<{ nodes: MindmapNode[]; title: string } | null>(null);
+  const [activeFlashcard, setActiveFlashcard] = useState<{ cards: FlashCard[]; title: string } | null>(null);
   const [summaryContent, setSummaryContent] = useState<string | null>(null);
   const [savedItems, setSavedItems] = useState<SavedItem[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -725,6 +1054,10 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
           audio: item.type === "audio" ? { script: (item.content?.script as string) || "" } : undefined,
           audioUrl: item.audio_url,
           mindmap: item.type === "mindmap" ? { nodes: (item.content?.nodes as MindmapNode[]) || [] } : undefined,
+          flashcard: item.type === "flashcard" ? {
+            cards: (item.content?.cards as FlashCard[]) || [],
+            difficulty: (item.content?.difficulty as string) || "intermediate",
+          } : undefined,
         }));
         setSavedItems(loaded);
       } catch { /* 로드 실패 시 빈 목록 유지 */ }
@@ -910,12 +1243,49 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
     }
   }
 
+  async function handleFlashcardGenerate(cfg: FlashcardConfig) {
+    setLoadingType("flashcard");
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API}/api/generate/flashcard`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          doc_ids: activeDocIds,
+          count: cfg.count,
+          difficulty: cfg.difficulty,
+          topic: cfg.topic,
+          language: cfg.language,
+          item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "플래시카드",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      const newItem: SavedItem = {
+        id: data.item_id || Date.now().toString(),
+        type: "flashcard",
+        title: data.title || "플래시카드",
+        subtitle: `플래시카드 · 소스 ${activeDocIds.length}개`,
+        createdAt: new Date(),
+        flashcard: { cards: data.cards || [], difficulty: cfg.difficulty },
+      };
+      setSavedItems((prev) => [newItem, ...prev]);
+      setActiveFlashcard({ cards: data.cards || [], title: data.title || "플래시카드" });
+      setShowFlashcardModal(false);
+    } catch (e: unknown) {
+      alert(`플래시카드 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
+    } finally {
+      setLoadingType(null);
+    }
+  }
+
   function handleCardClick(typeId: string) {
     if (!hasDoc) { alert("소스를 먼저 선택해주세요."); return; }
     if (typeId === "report") handleSummary();
     else if (typeId === "quiz") setShowQuizModal(true);
     else if (typeId === "audio") setShowAudioModal(true);
     else if (typeId === "mindmap") setShowMindmapModal(true);
+    else if (typeId === "flashcard") setShowFlashcardModal(true);
     else alert("곧 지원 예정인 기능입니다 ✨");
   }
 
@@ -942,6 +1312,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
     summaryContent ? <SummaryView content={summaryContent} onBack={() => setSummaryContent(null)} /> :
     activeAudio ? <AudioView audioBase64={activeAudio.base64} audioUrl={activeAudio.audioUrl} script={activeAudio.script} title={activeAudio.title} onBack={() => setActiveAudio(null)} /> :
     activeMindmap ? <MindMapView nodes={activeMindmap.nodes} title={activeMindmap.title} onBack={() => setActiveMindmap(null)} /> :
+    activeFlashcard ? <FlashcardView cards={activeFlashcard.cards} title={activeFlashcard.title} onBack={() => setActiveFlashcard(null)} /> :
     null;
 
   if (subviewContent) {
@@ -964,6 +1335,9 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
       )}
       {showMindmapModal && (
         <MindmapModal loading={loadingType === "mindmap"} onClose={() => setShowMindmapModal(false)} onGenerate={handleMindmapGenerate} />
+      )}
+      {showFlashcardModal && (
+        <FlashcardModal loading={loadingType === "flashcard"} onClose={() => setShowFlashcardModal(false)} onGenerate={handleFlashcardGenerate} />
       )}
 
       {/* Header */}
@@ -1022,8 +1396,8 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
                 {/* Type icon */}
                 <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
                   style={{
-                    background: item.type === "quiz" ? "#dbeafe" : item.type === "audio" ? "#d0f5f1" : item.type === "mindmap" ? "#f0e6ff" : "#dcf2e8",
-                    color: item.type === "quiz" ? "#1d4ed8" : item.type === "audio" ? "#0d9488" : item.type === "mindmap" ? "#7c3aed" : "#166534",
+                    background: item.type === "quiz" ? "#dbeafe" : item.type === "audio" ? "#d0f5f1" : item.type === "mindmap" ? "#f0e6ff" : item.type === "flashcard" ? "#fde0ea" : "#dcf2e8",
+                    color: item.type === "quiz" ? "#1d4ed8" : item.type === "audio" ? "#0d9488" : item.type === "mindmap" ? "#7c3aed" : item.type === "flashcard" ? "#be123c" : "#166534",
                   }}>
                   {item.type === "quiz" ? (
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
@@ -1042,6 +1416,10 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
                       <circle cx="19" cy="19" r="1.5" fill="currentColor" stroke="none" />
                       <path strokeLinecap="round" d="M10.5 10.5L6.5 6.5M13.5 10.5L17.5 6.5M10.5 13.5L6.5 17.5M13.5 13.5L17.5 17.5" />
                     </svg>
+                  ) : item.type === "flashcard" ? (
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                      <rect x="2" y="6" width="20" height="13" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M16 2l-2 4M12 2v4M8 2l2 4" />
+                    </svg>
                   ) : (
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
@@ -1059,6 +1437,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
                     if (item.type === "quiz" && item.quiz) setActiveQuiz(item.quiz);
                     else if (item.type === "audio") setActiveAudio({ base64: item.audio?.base64, audioUrl: item.audioUrl, script: item.audio?.script || "", title: item.title });
                     else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });
+                    else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
                     else if (item.summaryContent) setSummaryContent(item.summaryContent);
                   }}
                   className="w-7 h-7 rounded-full bg-[#1a73e8] flex items-center justify-center shrink-0 hover:bg-[#1557b0] transition-colors"

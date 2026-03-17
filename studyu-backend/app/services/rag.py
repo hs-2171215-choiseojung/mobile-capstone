@@ -427,3 +427,67 @@ def generate_mindmap(
     title = result.get("title", "마인드맵")
     nodes = result.get("nodes", [{"id": "root", "text": title}])
     return nodes, title
+
+
+def generate_flashcards(
+    doc_ids: list[str],
+    count: str = "standard",
+    difficulty: str = "intermediate",
+    topic: str = "",
+    language: str = "ko",
+    model: str = "gpt-4o-mini",
+) -> tuple[list, str]:
+    """문서 내용을 바탕으로 플래시카드(앞면/뒷면) 배열을 생성.
+
+    Returns:
+        (cards_list, title)
+        cards_list: [{"front": "용어/개념", "back": "설명", "hint": "힌트(선택)"}]
+    """
+    count_map = {"fewer": 10, "standard": 20, "more": 40}
+    card_count = count_map.get(count, 20)
+
+    difficulty_map = {"easy": "쉬운", "intermediate": "보통", "hard": "어려운"}
+    difficulty_ko = difficulty_map.get(difficulty, "보통")
+
+    lang_map = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
+    lang_label = lang_map.get(language, "한국어")
+
+    topic_instruction = f"\n특히 '{topic}' 주제와 관련된 카드를 만들어주세요." if topic.strip() else ""
+    context = _get_context(doc_ids, max_chars=10000)
+
+    prompt = f"""아래 문서 내용을 바탕으로 {difficulty_ko} 난이도의 학습용 플래시카드 {card_count}개를 {lang_label}로 만들어주세요.{topic_instruction}
+
+플래시카드 규칙:
+- 앞면(front): 핵심 용어, 개념 또는 질문 (짧고 명확하게)
+- 뒷면(back): 앞면에 대한 설명, 정의 또는 답변 (이해하기 쉽게)
+- 힌트(hint): 정답을 직접 언급하지 않고 방향만 제시 (선택사항)
+- 내용이 점점 어려워지도록 순서를 정렬해주세요
+
+문서 내용:
+{context}
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{{
+  "title": "플래시카드 세트 제목",
+  "cards": [
+    {{
+      "front": "앞면 내용 (질문 또는 용어)",
+      "back": "뒷면 내용 (답변 또는 설명)",
+      "hint": "힌트 (선택, 없으면 빈 문자열)"
+    }}
+  ]
+}}"""
+
+    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=safe_model,
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.4,
+    )
+
+    result = json.loads(response.choices[0].message.content or "{}")
+    title = result.get("title", "플래시카드")
+    cards = result.get("cards", [])
+    return cards, title
