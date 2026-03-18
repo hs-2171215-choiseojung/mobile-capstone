@@ -253,3 +253,98 @@ async def generate_flashcard(
         "title": title,
         "item_id": item_id,
     }
+
+
+class SlideGenerateRequest(BaseModel):
+    doc_ids: list[str]
+    format: str = "presenter"      # presenter | detailed
+    length: str = "default"        # short | default | long
+    language: str = "ko"           # ko | en | ja | zh
+    prompt: str = ""               # 사용자 커스텀 프롬프트
+    model: Optional[str] = "gpt-4o-mini"
+    item_title: Optional[str] = None
+
+
+@router.post("/generate/slides")
+async def generate_slides_route(
+    req: SlideGenerateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """문서 내용을 바탕으로 슬라이드 자료를 생성."""
+    if not req.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
+
+    from app.services.rag import generate_slides
+    try:
+        slides, title, cover_image_b64 = generate_slides(
+            doc_ids=req.doc_ids,
+            format=req.format,
+            length=req.length,
+            language=req.language,
+            prompt=req.prompt,
+            model=req.model or "gpt-4o-mini",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"슬라이드 생성 실패: {str(e)}")
+
+    item_id = _save_studio_item(
+        user_id=user["id"],
+        item_type="slides",
+        title=req.item_title or title,
+        subtitle=f"슬라이드 · 소스 {len(req.doc_ids)}개",
+        content={"slides": slides, "format": req.format, "cover_image_b64": cover_image_b64},
+    )
+    return {
+        "slides": slides,
+        "title": title,
+        "cover_image_b64": cover_image_b64,
+        "item_id": item_id,
+    }
+
+
+class ReportGenerateRequest(BaseModel):
+    doc_ids: list[str]
+    format: str = "briefing"       # briefing | study_guide | blog | prd | architecture | tech_explainer | learning_guide | custom
+    language: str = "ko"           # ko | en | ja | zh
+    length: str = "default"        # short | default | long
+    tone: str = "formal"           # formal | casual | academic
+    instructions: str = ""         # 사용자 커스텀 지시사항
+    model: Optional[str] = "gpt-4o-mini"
+    item_title: Optional[str] = None
+
+
+@router.post("/generate/report")
+async def generate_report_route(
+    req: ReportGenerateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """문서 내용을 바탕으로 구조화된 보고서를 생성."""
+    if not req.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
+
+    from app.services.rag import generate_report
+    try:
+        sections, title = generate_report(
+            doc_ids=req.doc_ids,
+            format=req.format,
+            language=req.language,
+            length=req.length,
+            tone=req.tone,
+            instructions=req.instructions,
+            model=req.model or "gpt-4o-mini",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"보고서 생성 실패: {str(e)}")
+
+    item_id = _save_studio_item(
+        user_id=user["id"],
+        item_type="report",
+        title=req.item_title or title,
+        subtitle=f"보고서 · 소스 {len(req.doc_ids)}개",
+        content={"sections": sections, "format": req.format},
+    )
+    return {
+        "sections": sections,
+        "title": title,
+        "item_id": item_id,
+    }

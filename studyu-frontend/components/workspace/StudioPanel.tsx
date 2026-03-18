@@ -51,6 +51,35 @@ interface FlashcardConfig {
   language: "ko" | "en" | "ja" | "zh";
 }
 
+interface SlideConfig {
+  format: "presenter" | "detailed";
+  length: "short" | "default" | "long";
+  language: "ko" | "en" | "ja" | "zh";
+  prompt: string;
+}
+
+interface ReportConfig {
+  format: "briefing" | "study_guide" | "blog" | "prd" | "architecture" | "tech_explainer" | "learning_guide" | "custom";
+  language: "ko" | "en" | "ja" | "zh";
+  length: "short" | "default" | "long";
+  tone: "formal" | "casual" | "academic";
+  instructions: string;
+}
+
+interface ReportSection {
+  heading: string;
+  content: string;
+}
+
+interface Slide {
+  title: string;
+  subtitle?: string;
+  bullets: string[];
+  speaker_notes?: string;
+  layout: "title" | "content" | "two_column" | "summary";
+  image_b64?: string;
+}
+
 interface FlashCard {
   front: string;
   back: string;
@@ -65,7 +94,7 @@ interface MindmapNode {
 
 interface SavedItem {
   id: string;
-  type: "summary" | "quiz" | "audio" | "mindmap" | "flashcard";
+  type: "summary" | "quiz" | "audio" | "mindmap" | "flashcard" | "slides" | "report";
   title: string;
   subtitle: string;
   createdAt: Date;
@@ -75,6 +104,8 @@ interface SavedItem {
   audioUrl?: string;  // Supabase Storage 서명 URL (DB 로드 시)
   mindmap?: { nodes: MindmapNode[] };
   flashcard?: { cards: FlashCard[]; difficulty: string };
+  slides?: { slides: Slide[]; format: string; cover_image_b64?: string };
+  report?: { sections: ReportSection[]; format: string };
 }
 
 interface Props {
@@ -690,6 +721,318 @@ function MindmapModal({
   );
 }
 
+// ── SlideModal ─────────────────────────────────────────────────────────────
+function SlideModal({
+  loading,
+  onClose,
+  onGenerate,
+}: {
+  loading: boolean;
+  onClose: () => void;
+  onGenerate: (cfg: SlideConfig) => void;
+}) {
+  const [cfg, setCfg] = useState<SlideConfig>({
+    format: "presenter",
+    length: "default",
+    language: "ko",
+    prompt: "",
+  });
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100">
+          <h2 className="text-base font-bold text-gray-800">슬라이드 자료 만들기</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M6 18L18 6M6 6l12 12" strokeLinecap="round" /></svg>
+          </button>
+        </div>
+        <div className="px-6 py-5 flex flex-col gap-5">
+          {/* 형식 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">형식</p>
+            <div className="flex gap-2">
+              {(["presenter", "detailed"] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setCfg((p) => ({ ...p, format: f }))}
+                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                  style={cfg.format === f ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
+                >
+                  {f === "presenter" ? "발표자 슬라이드" : "자세한 자료"}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400 mt-1.5">
+              {cfg.format === "presenter" ? "핵심 키워드 위주의 깔끔한 발표용 슬라이드" : "전체 텍스트와 세부정보가 담긴 자료형 슬라이드"}
+            </p>
+          </div>
+          {/* 길이 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">길이</p>
+            <div className="flex gap-2">
+              {(["short", "default", "long"] as const).map((l) => (
+                <button
+                  key={l}
+                  onClick={() => setCfg((p) => ({ ...p, length: l }))}
+                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                  style={cfg.length === l ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
+                >
+                  {l === "short" ? "짧게" : l === "default" ? "기본" : "길게"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* 언어 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">언어</p>
+            <div className="flex gap-2">
+              {(["ko", "en", "ja", "zh"] as const).map((lang) => (
+                <button
+                  key={lang}
+                  onClick={() => setCfg((p) => ({ ...p, language: lang }))}
+                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                  style={cfg.language === lang ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
+                >
+                  {lang === "ko" ? "한국어" : lang === "en" ? "English" : lang === "ja" ? "日本語" : "中文"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* 커스텀 프롬프트 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">추가 지시사항 (선택)</p>
+            <textarea
+              value={cfg.prompt}
+              onChange={(e) => setCfg((p) => ({ ...p, prompt: e.target.value }))}
+              placeholder={"예:\n• 초보자를 위한 단계별 안내식으로 만들어줘\n• 논문 발표용으로 학술적인 톤으로"}
+              rows={3}
+              className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-amber-400 text-gray-800"
+              style={{ lineHeight: 1.6 }}
+            />
+          </div>
+        </div>
+        <div className="flex justify-end px-6 pb-5">
+          <button
+            onClick={() => onGenerate(cfg)}
+            disabled={loading}
+            className="px-8 py-2.5 rounded-full text-sm font-semibold flex items-center gap-2 transition-all"
+            style={{ background: "#d97706", color: "white", opacity: loading ? 0.75 : 1, cursor: loading ? "not-allowed" : "pointer" }}
+          >
+            {loading && <Spinner />}
+            {loading ? "생성 중..." : "만들기"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── SlideView ──────────────────────────────────────────────────────────────
+function SlideView({
+  slides,
+  title,
+  coverImageB64,
+  onBack,
+}: {
+  slides: Slide[];
+  title: string;
+  coverImageB64?: string;
+  onBack: () => void;
+}) {
+  const [idx, setIdx] = useState(0);
+  const [showNotes, setShowNotes] = useState(false);
+  const total = slides.length;
+  const slide = slides[idx] || { title: "", bullets: [], layout: "content" };
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") setIdx((i) => Math.min(i + 1, total - 1));
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp") setIdx((i) => Math.max(i - 1, 0));
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [total]);
+
+  // 슬라이드별 배경색
+  const SLIDE_THEMES = [
+    { bg: "#0f172a", accent: "#60a5fa", sub: "#94a3b8" },  // 딥 네이비
+    { bg: "#1e1b4b", accent: "#a78bfa", sub: "#c4b5fd" },  // 인디고
+    { bg: "#0c4a6e", accent: "#38bdf8", sub: "#7dd3fc" },  // 딥 블루
+    { bg: "#14532d", accent: "#4ade80", sub: "#86efac" },  // 딥 그린
+    { bg: "#1c1917", accent: "#fb923c", sub: "#fdba74" },  // 딥 브라운
+    { bg: "#1e1e2e", accent: "#c084fc", sub: "#e9d5ff" },  // 다크 퍼플
+  ];
+  const theme = idx === 0 ? SLIDE_THEMES[0] : SLIDE_THEMES[idx % SLIDE_THEMES.length];
+
+  return (
+    <div className="flex flex-col h-full bg-[#f1f3f4]">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-2.5 bg-white border-b border-gray-200 shrink-0">
+        <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M19 12H5M12 5l-7 7 7 7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          스튜디오
+        </button>
+        <span className="text-sm font-medium text-gray-700 truncate max-w-[160px]">{title}</span>
+        <button
+          onClick={() => setShowNotes((v) => !v)}
+          className="text-xs px-2.5 py-1 rounded-full border transition-colors"
+          style={showNotes ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { color: "#6b7280", borderColor: "#e5e7eb" }}
+        >
+          발표자 노트
+        </button>
+      </div>
+
+      {/* Slide area */}
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-4 gap-4 overflow-hidden">
+        {/* Card */}
+        <div
+          className="w-full max-w-3xl rounded-2xl shadow-xl overflow-hidden"
+          style={{ background: theme.bg, aspectRatio: "16/9", maxHeight: "60vh", position: "relative" }}
+        >
+          {slide.layout === "title" ? (
+            // ── 표지 슬라이드 ──
+            <div className="absolute inset-0 flex">
+              {/* 왼쪽: 텍스트 */}
+              <div className="flex flex-col justify-center px-8 py-6 z-10" style={{ width: coverImageB64 ? "55%" : "100%", textAlign: coverImageB64 ? "left" : "center", alignItems: coverImageB64 ? "flex-start" : "center" }}>
+                <div className="mb-3 flex gap-2 flex-wrap">
+                  {[title.split(" ")[0], "AI", "학습"].map((tag, i) => (
+                    <span key={i} className="text-[10px] font-semibold px-2.5 py-1 rounded-full" style={{ background: `${theme.accent}22`, color: theme.accent, border: `1px solid ${theme.accent}44` }}>
+                      #{tag}
+                    </span>
+                  ))}
+                </div>
+                <p className="text-white text-2xl font-bold leading-tight mb-2">{slide.title}</p>
+                {slide.subtitle && (
+                  <p className="text-sm leading-relaxed" style={{ color: theme.sub }}>{slide.subtitle}</p>
+                )}
+                <div className="mt-4 h-0.5 w-12 rounded" style={{ background: theme.accent }} />
+              </div>
+              {/* 오른쪽: AI 생성 이미지 */}
+              {coverImageB64 && (
+                <div className="absolute right-0 top-0 bottom-0" style={{ width: "48%" }}>
+                  {/* 그라데이션 페이드 */}
+                  <div className="absolute inset-y-0 left-0 w-16 z-10" style={{ background: `linear-gradient(to right, ${theme.bg}, transparent)` }} />
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={`data:image/png;base64,${coverImageB64}`}
+                    alt="표지 일러스트"
+                    className="w-full h-full object-cover opacity-90"
+                  />
+                </div>
+              )}
+            </div>
+          ) : slide.layout === "summary" ? (
+            // ── 정리 슬라이드 ──
+            <div className="absolute inset-0 flex flex-col px-8 py-6">
+              {/* 상단 강조 바 */}
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-1 h-6 rounded-full" style={{ background: theme.accent }} />
+                <p className="text-lg font-bold" style={{ color: theme.accent }}>{slide.title}</p>
+              </div>
+              <div className="grid grid-cols-1 gap-2 flex-1">
+                {slide.bullets.map((b, i) => (
+                  <div key={i} className="flex items-start gap-3 px-3 py-2 rounded-lg" style={{ background: "rgba(255,255,255,0.06)" }}>
+                    <span className="mt-0.5 w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold shrink-0 text-white" style={{ background: theme.accent }}>
+                      {i + 1}
+                    </span>
+                    <span className="text-sm text-white/90">{b}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : slide.layout === "two_column" ? (
+            // ── 두 컬럼 슬라이드 ──
+            <div className="absolute inset-0 flex flex-col px-8 py-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-1 h-5 rounded-full" style={{ background: theme.accent }} />
+                <p className="text-base font-bold" style={{ color: theme.accent }}>{slide.title}</p>
+              </div>
+              <div className="flex gap-4 flex-1">
+                <div className="flex-1 rounded-xl p-3" style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)" }}>
+                  <ul className="flex flex-col gap-2">
+                    {slide.bullets.slice(0, Math.ceil(slide.bullets.length / 2)).map((b, i) => (
+                      <li key={i} className="flex items-start gap-2 text-white/85 text-xs">
+                        <span className="mt-1 w-1.5 h-1.5 rounded-full shrink-0" style={{ background: theme.accent }} />{b}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="flex-1 rounded-xl p-3" style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)" }}>
+                  <ul className="flex flex-col gap-2">
+                    {slide.bullets.slice(Math.ceil(slide.bullets.length / 2)).map((b, i) => (
+                      <li key={i} className="flex items-start gap-2 text-white/85 text-xs">
+                        <span className="mt-1 w-1.5 h-1.5 rounded-full shrink-0" style={{ background: theme.accent }} />{b}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          ) : (
+            // ── 일반 content 슬라이드 ──
+            <div className="absolute inset-0 flex flex-col px-8 py-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-1 h-5 rounded-full" style={{ background: theme.accent }} />
+                <p className="text-base font-bold" style={{ color: theme.accent }}>{slide.title}</p>
+              </div>
+              <ul className="flex flex-col gap-2.5">
+                {slide.bullets.map((b, i) => (
+                  <li key={i} className="flex items-start gap-3 text-white/85 text-sm">
+                    <span className="mt-1.5 w-1.5 h-1.5 rounded-full shrink-0" style={{ background: theme.accent }} />{b}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {/* 슬라이드 번호 */}
+          <div className="absolute bottom-3 right-4 z-20">
+            <span className="text-white/30 text-[10px]">{idx + 1} / {total}</span>
+          </div>
+        </div>
+
+        {/* Navigation */}
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => setIdx((i) => Math.max(i - 1, 0))}
+            disabled={idx === 0}
+            className="w-10 h-10 rounded-full border-2 flex items-center justify-center transition-colors"
+            style={idx === 0 ? { borderColor: "#e0e0e0", color: "#ccc", cursor: "not-allowed" } : { borderColor: "#fdd89a", color: "#d97706", background: "white" }}
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </button>
+          {/* Dot indicators */}
+          <div className="flex gap-1.5 max-w-[200px] overflow-hidden">
+            {slides.map((_, i) => (
+              <button
+                key={i}
+                onClick={() => setIdx(i)}
+                className="rounded-full transition-all"
+                style={{ width: i === idx ? "20px" : "6px", height: "6px", background: i === idx ? "#d97706" : "#d1d5db", flexShrink: 0 }}
+              />
+            ))}
+          </div>
+          <button
+            onClick={() => setIdx((i) => Math.min(i + 1, total - 1))}
+            disabled={idx === total - 1}
+            className="w-10 h-10 rounded-full border-2 flex items-center justify-center transition-colors"
+            style={idx === total - 1 ? { borderColor: "#e0e0e0", color: "#ccc", cursor: "not-allowed" } : { borderColor: "#fdd89a", color: "#d97706", background: "white" }}
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </button>
+        </div>
+
+        {/* Speaker notes */}
+        {showNotes && slide.speaker_notes && (
+          <div className="w-full max-w-3xl bg-amber-50 border border-amber-200 rounded-xl px-5 py-3">
+            <p className="text-xs font-semibold text-amber-700 mb-1">발표자 노트</p>
+            <p className="text-sm text-gray-700 leading-relaxed">{slide.speaker_notes}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── FlashcardModal ─────────────────────────────────────────────────────────
 function FlashcardModal({
   loading,
@@ -1004,20 +1347,312 @@ function FlashcardView({
   );
 }
 
+// ── ReportModal ────────────────────────────────────────────────────────────
+function ReportModal({
+  loading,
+  onClose,
+  onGenerate,
+}: {
+  loading: boolean;
+  onClose: () => void;
+  onGenerate: (cfg: ReportConfig) => void;
+}) {
+  const [cfg, setCfg] = useState<ReportConfig>({
+    format: "briefing",
+    language: "ko",
+    length: "default",
+    tone: "formal",
+    instructions: "",
+  });
+
+  const formats: { id: ReportConfig["format"]; label: string; desc: string; recommended?: boolean }[] = [
+    { id: "custom", label: "직접 만들기", desc: "구조, 스타일, 어조 등을 지정하여 원하는 방식으로 보고서를 작성하세요." },
+    { id: "briefing", label: "브리핑 문서", desc: "주요 인사이트와 인용문을 포함한 소스 개요" },
+    { id: "study_guide", label: "학습 가이드", desc: "단답형 퀴즈, 추천 에세이 질문, 핵심 용어집", recommended: true },
+    { id: "blog", label: "블로그 게시물", desc: "읽기 쉬운 기사 형식으로 요약된 유용한 정보", recommended: true },
+    { id: "prd", label: "제품 요구사항 정의서", desc: "STUDY U 서비스의 핵심 기능 요구사항과 기술적 제약을 상세히 정의하여 개발 방향을 제시하는 문서", recommended: true },
+    { id: "architecture", label: "시스템 아키텍처 설계서", desc: "Next.js, FastAPI, RAG 기술 스택을 활용한 서비스의 데이터 흐름과 시스템 구조를 설계하는 문서", recommended: true },
+    { id: "tech_explainer", label: "기술 개념 설명서", desc: "AI가 사용자의 문서를 이해하고 답변을 생성하는 핵심 원리인 RAG 시스템을 쉽게 설명합니다.", recommended: true },
+    { id: "learning_guide", label: "학습 활용 가이드", desc: "STUDY U의 주요 기능을 활용하여 자기주도 학습 효율을 높이는 방법을 안내하는 입문용 자료입니다.", recommended: true },
+  ];
+
+  const recommendedFormats = formats.filter((f) => f.recommended);
+  const isCustom = cfg.format === "custom";
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100 shrink-0">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: "#a3e8c4" }}>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="#166534" strokeWidth="1.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+            </div>
+            <h2 className="text-base font-bold text-gray-800">보고서 생성</h2>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M6 18L18 6M6 6l12 12" strokeLinecap="round" /></svg>
+          </button>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-6 py-5 flex flex-col gap-5">
+          {/* 형식 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-3">형식</p>
+            {/* 직접 만들기 */}
+            <button
+              onClick={() => setCfg((p) => ({ ...p, format: "custom" }))}
+              className="w-full flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-left mb-3 transition-all"
+              style={cfg.format === "custom" ? { background: "#f0fdf4", borderColor: "#166534" } : { background: "white", borderColor: "#e5e7eb" }}
+            >
+              <svg className="w-4 h-4 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke={cfg.format === "custom" ? "#166534" : "#9ca3af"} strokeWidth="1.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" />
+              </svg>
+              <div>
+                <p className="text-sm font-semibold" style={{ color: cfg.format === "custom" ? "#166534" : "#374151" }}>직접 만들기</p>
+                <p className="text-xs text-gray-400 mt-0.5">구조, 스타일, 어조 등을 지정하여 원하는 방식으로 보고서를 작성하세요.</p>
+              </div>
+            </button>
+
+            {/* 추천 형식 */}
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              추천 형식
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {recommendedFormats.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setCfg((p) => ({ ...p, format: f.id }))}
+                  className="flex flex-col items-start px-3 py-2.5 rounded-xl border-2 text-left transition-all"
+                  style={cfg.format === f.id ? { background: "#f0fdf4", borderColor: "#166534" } : { background: "white", borderColor: "#e5e7eb" }}
+                >
+                  <span className="text-sm font-medium leading-tight" style={{ color: cfg.format === f.id ? "#166534" : "#374151" }}>{f.label}</span>
+                  <span className="text-[11px] text-gray-400 mt-0.5 leading-snug line-clamp-2">{f.desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 커스텀 지시사항 (직접 만들기 선택 시 or 추가 설명) */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">
+              {isCustom ? "원하는 형식을 직접 설명해주세요" : "추가 지시사항 (선택)"}
+            </p>
+            <textarea
+              value={cfg.instructions}
+              onChange={(e) => setCfg((p) => ({ ...p, instructions: e.target.value }))}
+              placeholder={isCustom
+                ? "예시:\n• 서론, 본론 3개 섹션, 결론 구조로 만들어줘\n• SWOT 분석 형식으로 작성해줘\n• 경영진을 위한 1페이지 보고서로 만들어줘"
+                : "예시:\n• 2장의 핵심 내용에 집중해줘\n• 예시와 비유를 많이 포함해줘"}
+              rows={isCustom ? 4 : 3}
+              className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 text-gray-800 transition-colors"
+              style={{ lineHeight: 1.6, borderColor: "#86efac" }}
+            />
+          </div>
+
+          {/* 길이 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">길이</p>
+            <div className="flex gap-2">
+              {(["short", "default", "long"] as const).map((l) => (
+                <button
+                  key={l}
+                  onClick={() => setCfg((p) => ({ ...p, length: l }))}
+                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                  style={cfg.length === l ? { background: "#f0fdf4", color: "#166534", borderColor: "#166534" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
+                >
+                  {l === "short" ? "간결하게" : l === "default" ? "기본값" : "상세하게"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 언어 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">언어</p>
+            <div className="flex gap-2">
+              {(["ko", "en", "ja", "zh"] as const).map((lang) => (
+                <button
+                  key={lang}
+                  onClick={() => setCfg((p) => ({ ...p, language: lang }))}
+                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                  style={cfg.language === lang ? { background: "#f0fdf4", color: "#166534", borderColor: "#166534" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
+                >
+                  {lang === "ko" ? "한국어" : lang === "en" ? "English" : lang === "ja" ? "日本語" : "中文"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 문체 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">문체</p>
+            <div className="flex gap-2">
+              {(["formal", "casual", "academic"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setCfg((p) => ({ ...p, tone: t }))}
+                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                  style={cfg.tone === t ? { background: "#f0fdf4", color: "#166534", borderColor: "#166534" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
+                >
+                  {t === "formal" ? "격식체" : t === "casual" ? "구어체" : "학술체"}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end px-6 py-4 border-t border-gray-100 shrink-0">
+          <button
+            onClick={() => onGenerate(cfg)}
+            disabled={loading || (isCustom && !cfg.instructions.trim())}
+            className="px-8 py-2.5 rounded-full text-sm font-semibold flex items-center gap-2 transition-all text-white"
+            style={{ background: "#166534", opacity: (loading || (isCustom && !cfg.instructions.trim())) ? 0.6 : 1, cursor: (loading || (isCustom && !cfg.instructions.trim())) ? "not-allowed" : "pointer" }}
+          >
+            {loading && <Spinner className="w-3.5 h-3.5" />}
+            {loading ? "생성 중..." : "만들기"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ReportView ─────────────────────────────────────────────────────────────
+const FORMAT_LABEL: Record<string, string> = {
+  briefing: "브리핑 문서",
+  study_guide: "학습 가이드",
+  blog: "블로그 게시물",
+  prd: "제품 요구사항 정의서",
+  architecture: "시스템 아키텍처 설계서",
+  tech_explainer: "기술 개념 설명서",
+  learning_guide: "학습 활용 가이드",
+  custom: "보고서",
+};
+
+function ReportView({
+  sections,
+  title,
+  format,
+  onBack,
+}: {
+  sections: ReportSection[];
+  title: string;
+  format: string;
+  onBack: () => void;
+}) {
+  function renderContent(text: string) {
+    return text.split("\n").map((line, i) => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("• ") || trimmed.startsWith("- ")) {
+        return (
+          <li key={i} className="flex items-start gap-2 text-gray-700">
+            <span className="mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 bg-green-600" />
+            <span>{trimmed.slice(2)}</span>
+          </li>
+        );
+      }
+      if (trimmed.startsWith("**") && trimmed.endsWith("**")) {
+        return <p key={i} className="font-semibold text-gray-800">{trimmed.slice(2, -2)}</p>;
+      }
+      if (!trimmed) return <div key={i} className="h-1" />;
+      return <p key={i} className="text-gray-700 leading-relaxed">{trimmed}</p>;
+    });
+  }
+
+  return (
+    <div className="flex flex-col h-full overflow-y-auto">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-2 shrink-0">
+        <button onClick={onBack} className="text-sm text-gray-500 hover:text-green-700 flex items-center gap-1">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          스튜디오
+        </button>
+        <span className="text-gray-300">›</span>
+        <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
+      </div>
+
+      <div className="p-4 space-y-4">
+        {/* 보고서 헤더 카드 */}
+        <div className="rounded-2xl p-4 bg-gradient-to-br from-green-50 to-emerald-50 border border-green-100">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "#a3e8c4" }}>
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="#166534" strokeWidth="1.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-base font-bold text-gray-800 leading-snug">{title}</p>
+              <span className="mt-1 inline-block text-xs font-medium px-2.5 py-0.5 rounded-full" style={{ background: "#dcfce7", color: "#166534" }}>
+                {FORMAT_LABEL[format] || "보고서"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* 섹션들 */}
+        {sections.map((section, i) => (
+          <div key={i} className="rounded-2xl bg-white border border-gray-100 overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-50 flex items-center gap-2" style={{ background: "#f0fdf4" }}>
+              <span className="w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0" style={{ background: "#166534" }}>
+                {i + 1}
+              </span>
+              <p className="text-sm font-semibold text-gray-800">{section.heading}</p>
+            </div>
+            <div className="p-4 text-sm space-y-1.5">
+              <ul className="space-y-1.5">
+                {renderContent(section.content)}
+              </ul>
+            </div>
+          </div>
+        ))}
+
+        {/* 유용/유용하지 않음 피드백 */}
+        <div className="flex items-center justify-center gap-4 py-2">
+          <button className="flex items-center gap-1.5 px-4 py-2 rounded-full border border-gray-200 text-sm text-gray-500 hover:bg-gray-50 transition-colors">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6.633 10.5c.806 0 1.533-.446 2.031-1.08a9.041 9.041 0 012.861-2.4c.723-.384 1.35-.956 1.653-1.715a4.498 4.498 0 00.322-1.672V3a.75.75 0 01.75-.75A2.25 2.25 0 0116.5 4.5c0 1.152-.26 2.243-.723 3.218-.266.558.107 1.282.725 1.282h3.126c1.026 0 1.945.694 2.054 1.715.045.422.068.85.068 1.285a11.95 11.95 0 01-2.649 7.521c-.388.482-.987.729-1.605.729H13.48c-.483 0-.964-.078-1.423-.23l-3.114-1.04a4.501 4.501 0 00-1.423-.23H5.904M14.25 9h2.25M5.904 18.75c.083.205.173.405.27.602.197.4-.078.898-.523.898h-.908c-.889 0-1.713-.518-1.972-1.368a12 12 0 01-.521-3.507c0-1.553.295-3.036.831-4.398C3.387 10.203 4.167 9.75 5 9.75h1.053c.472 0 .745.556.5.96a8.958 8.958 0 00-1.302 4.665c0 1.194.232 2.333.654 3.375z" />
+            </svg>
+            유용한 보고서
+          </button>
+          <button className="flex items-center gap-1.5 px-4 py-2 rounded-full border border-gray-200 text-sm text-gray-500 hover:bg-gray-50 transition-colors">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 15h2.25m8.024-9.75c.011.05.028.1.052.148.591 1.2.924 2.55.924 3.977a8.96 8.96 0 01-.999 4.125m.023-8.25c-.076-.365.183-.75.575-.75h.908c.889 0 1.713.518 1.972 1.368.339 1.11.521 2.287.521 3.507 0 1.553-.295 3.036-.831 4.398C20.613 14.547 19.833 15 19 15h-1.053c-.472 0-.745-.556-.5-.96a8.95 8.95 0 00.303-.54m.023-8.25H16.48a4.5 4.5 0 01-1.423-.23l-3.114-1.04a4.501 4.501 0 00-1.423-.23H6.504c-.618 0-1.217.247-1.605.729A11.95 11.95 0 002.25 12c0 .434.023.863.068 1.285C2.427 14.306 3.346 15 4.372 15h3.126c.618 0 .991.724.725 1.282A7.471 7.471 0 007.5 19.5a2.25 2.25 0 002.25 2.25.75.75 0 00.75-.75v-.633c0-.573.11-1.14.322-1.672.304-.76.93-1.33 1.653-1.715a9.04 9.04 0 002.86-2.4c.498-.634 1.226-1.08 2.032-1.08h.384" />
+            </svg>
+            유용하지 않은 보고서
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main StudioPanel ───────────────────────────────────────────────────────
 export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  const [loadingType, setLoadingType] = useState<string | null>(null);
   const [showQuizModal, setShowQuizModal] = useState(false);
   const [showAudioModal, setShowAudioModal] = useState(false);
   const [showMindmapModal, setShowMindmapModal] = useState(false);
   const [showFlashcardModal, setShowFlashcardModal] = useState(false);
+  const [showSlideModal, setShowSlideModal] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
   const [activeQuiz, setActiveQuiz] = useState<SavedQuiz | null>(null);
   const [activeAudio, setActiveAudio] = useState<{ base64?: string; audioUrl?: string; script: string; title: string } | null>(null);
   const [activeMindmap, setActiveMindmap] = useState<{ nodes: MindmapNode[]; title: string } | null>(null);
   const [activeFlashcard, setActiveFlashcard] = useState<{ cards: FlashCard[]; title: string } | null>(null);
+  const [activeSlides, setActiveSlides] = useState<{ slides: Slide[]; title: string; cover_image_b64?: string } | null>(null);
+  const [activeReport, setActiveReport] = useState<{ sections: ReportSection[]; title: string; format: string } | null>(null);
   const [summaryContent, setSummaryContent] = useState<string | null>(null);
   const [savedItems, setSavedItems] = useState<SavedItem[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
 
   const hasDoc = activeDocIds.length > 0;
 
@@ -1058,6 +1693,15 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
             cards: (item.content?.cards as FlashCard[]) || [],
             difficulty: (item.content?.difficulty as string) || "intermediate",
           } : undefined,
+          slides: item.type === "slides" ? {
+            slides: (item.content?.slides as Slide[]) || [],
+            format: (item.content?.format as string) || "presenter",
+            cover_image_b64: (item.content?.cover_image_b64 as string) || "",
+          } : undefined,
+          report: item.type === "report" ? {
+            sections: (item.content?.sections as ReportSection[]) || [],
+            format: (item.content?.format as string) || "briefing",
+          } : undefined,
         }));
         setSavedItems(loaded);
       } catch { /* 로드 실패 시 빈 목록 유지 */ }
@@ -1075,6 +1719,27 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
         headers: { Authorization: `Bearer ${token}` },
       });
     } catch { /* 삭제 실패 무시 */ }
+  }
+
+  function startRename(item: SavedItem) {
+    setOpenMenuId(null);
+    setRenamingItemId(item.id);
+    setRenameValue(item.title);
+  }
+
+  async function commitRename(itemId: string) {
+    const trimmed = renameValue.trim();
+    if (!trimmed) { setRenamingItemId(null); return; }
+    setSavedItems((prev) => prev.map((i) => i.id === itemId ? { ...i, title: trimmed } : i));
+    setRenamingItemId(null);
+    try {
+      const token = await getToken();
+      await fetch(`${API}/api/studio/${itemId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ title: trimmed }),
+      });
+    } catch { /* 실패 시 낙관적 업데이트 유지 */ }
   }
 
   async function handleSummary() {
@@ -1279,13 +1944,88 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
     }
   }
 
+  async function handleSlideGenerate(cfg: SlideConfig) {
+    setLoadingType("slides");
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API}/api/generate/slides`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          doc_ids: activeDocIds,
+          format: cfg.format,
+          length: cfg.length,
+          language: cfg.language,
+          prompt: cfg.prompt,
+          item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "슬라이드 자료",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      const newItem: SavedItem = {
+        id: data.item_id || Date.now().toString(),
+        type: "slides",
+        title: data.title || "슬라이드 자료",
+        subtitle: `슬라이드 · 소스 ${activeDocIds.length}개`,
+        createdAt: new Date(),
+        slides: { slides: data.slides || [], format: cfg.format, cover_image_b64: data.cover_image_b64 || "" },
+      };
+      setSavedItems((prev) => [newItem, ...prev]);
+      setActiveSlides({ slides: data.slides || [], title: data.title || "슬라이드 자료", cover_image_b64: data.cover_image_b64 || "" });
+      setShowSlideModal(false);
+    } catch (e: unknown) {
+      alert(`슬라이드 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
+    } finally {
+      setLoadingType(null);
+    }
+  }
+
+  async function handleReportGenerate(cfg: ReportConfig) {
+    setLoadingType("report");
+    try {
+      const token = await getToken();
+      const docNames = docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ");
+      const res = await fetch(`${API}/api/generate/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          doc_ids: activeDocIds,
+          format: cfg.format,
+          language: cfg.language,
+          length: cfg.length,
+          tone: cfg.tone,
+          instructions: cfg.instructions,
+          item_title: docNames || "보고서",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      const newItem: SavedItem = {
+        id: data.item_id || Date.now().toString(),
+        type: "report",
+        title: data.title || docNames || "보고서",
+        subtitle: `보고서 · 소스 ${activeDocIds.length}개`,
+        createdAt: new Date(),
+        report: { sections: data.sections || [], format: cfg.format },
+      };
+      setSavedItems((prev) => [newItem, ...prev]);
+      setActiveReport({ sections: data.sections || [], title: data.title || "보고서", format: cfg.format });
+      setShowReportModal(false);
+    } catch (e: unknown) {
+      alert(`보고서 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
+    } finally {
+      setLoadingType(null);
+    }
+  }
+
   function handleCardClick(typeId: string) {
     if (!hasDoc) { alert("소스를 먼저 선택해주세요."); return; }
-    if (typeId === "report") handleSummary();
+    if (typeId === "report") setShowReportModal(true);
     else if (typeId === "quiz") setShowQuizModal(true);
     else if (typeId === "audio") setShowAudioModal(true);
     else if (typeId === "mindmap") setShowMindmapModal(true);
     else if (typeId === "flashcard") setShowFlashcardModal(true);
+    else if (typeId === "slides") setShowSlideModal(true);
     else alert("곧 지원 예정인 기능입니다 ✨");
   }
 
@@ -1313,6 +2053,8 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
     activeAudio ? <AudioView audioBase64={activeAudio.base64} audioUrl={activeAudio.audioUrl} script={activeAudio.script} title={activeAudio.title} onBack={() => setActiveAudio(null)} /> :
     activeMindmap ? <MindMapView nodes={activeMindmap.nodes} title={activeMindmap.title} onBack={() => setActiveMindmap(null)} /> :
     activeFlashcard ? <FlashcardView cards={activeFlashcard.cards} title={activeFlashcard.title} onBack={() => setActiveFlashcard(null)} /> :
+    activeSlides ? <SlideView slides={activeSlides.slides} title={activeSlides.title} coverImageB64={activeSlides.cover_image_b64} onBack={() => setActiveSlides(null)} /> :
+    activeReport ? <ReportView sections={activeReport.sections} title={activeReport.title} format={activeReport.format} onBack={() => setActiveReport(null)} /> :
     null;
 
   if (subviewContent) {
@@ -1338,6 +2080,12 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
       )}
       {showFlashcardModal && (
         <FlashcardModal loading={loadingType === "flashcard"} onClose={() => setShowFlashcardModal(false)} onGenerate={handleFlashcardGenerate} />
+      )}
+      {showSlideModal && (
+        <SlideModal loading={loadingType === "slides"} onClose={() => setShowSlideModal(false)} onGenerate={handleSlideGenerate} />
+      )}
+      {showReportModal && (
+        <ReportModal loading={loadingType === "report"} onClose={() => setShowReportModal(false)} onGenerate={handleReportGenerate} />
       )}
 
       {/* Header */}
@@ -1396,8 +2144,8 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
                 {/* Type icon */}
                 <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
                   style={{
-                    background: item.type === "quiz" ? "#dbeafe" : item.type === "audio" ? "#d0f5f1" : item.type === "mindmap" ? "#f0e6ff" : item.type === "flashcard" ? "#fde0ea" : "#dcf2e8",
-                    color: item.type === "quiz" ? "#1d4ed8" : item.type === "audio" ? "#0d9488" : item.type === "mindmap" ? "#7c3aed" : item.type === "flashcard" ? "#be123c" : "#166534",
+                    background: item.type === "quiz" ? "#dbeafe" : item.type === "audio" ? "#d0f5f1" : item.type === "mindmap" ? "#f0e6ff" : item.type === "flashcard" ? "#fde0ea" : item.type === "slides" ? "#fef0da" : "#dcf2e8",
+                    color: item.type === "quiz" ? "#1d4ed8" : item.type === "audio" ? "#0d9488" : item.type === "mindmap" ? "#7c3aed" : item.type === "flashcard" ? "#be123c" : item.type === "slides" ? "#d97706" : "#166534",
                   }}>
                   {item.type === "quiz" ? (
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
@@ -1420,6 +2168,10 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                       <rect x="2" y="6" width="20" height="13" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M16 2l-2 4M12 2v4M8 2l2 4" />
                     </svg>
+                  ) : item.type === "slides" ? (
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                      <rect x="2" y="3" width="20" height="15" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M8 21h8M12 18v3" />
+                    </svg>
                   ) : (
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
@@ -1428,7 +2180,22 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
                 </div>
                 {/* Text */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-[#202124] truncate">{item.title}</p>
+                  {renamingItemId === item.id ? (
+                    <input
+                      autoFocus
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onBlur={() => commitRename(item.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.preventDefault(); commitRename(item.id); }
+                        if (e.key === "Escape") setRenamingItemId(null);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="w-full text-sm font-semibold text-[#202124] bg-transparent border-b-2 border-[#1a73e8] outline-none truncate"
+                    />
+                  ) : (
+                    <p className="text-sm font-semibold text-[#202124] truncate">{item.title}</p>
+                  )}
                   <p className="text-[11px] text-[#80868b] mt-0.5">{item.subtitle} · {timeAgo(item.createdAt)}</p>
                 </div>
                 {/* Play button */}
@@ -1438,6 +2205,8 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
                     else if (item.type === "audio") setActiveAudio({ base64: item.audio?.base64, audioUrl: item.audioUrl, script: item.audio?.script || "", title: item.title });
                     else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });
                     else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
+    else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
+                    else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
                     else if (item.summaryContent) setSummaryContent(item.summaryContent);
                   }}
                   className="w-7 h-7 rounded-full bg-[#1a73e8] flex items-center justify-center shrink-0 hover:bg-[#1557b0] transition-colors"
@@ -1457,11 +2226,25 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
                     </svg>
                   </button>
                   {openMenuId === item.id && (
-                    <div className="absolute right-0 top-7 z-20 bg-white rounded-xl shadow-lg border border-gray-200 py-1 w-20">
-                    <button
+                    <div className="absolute right-0 top-7 z-20 bg-white rounded-xl shadow-lg border border-gray-200 py-1 w-32">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); startRename(item); }}
+                        className="w-full px-3 py-2 text-xs text-gray-700 hover:bg-gray-50 text-left flex items-center gap-2"
+                      >
+                        <svg className="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
+                        </svg>
+                        이름 변경
+                      </button>
+                      <button
                         onClick={() => handleDeleteItem(item.id)}
-                        className="w-full px-3 py-2 text-xs text-red-600 hover:bg-red-50 text-left"
-                      >삭제</button>
+                        className="w-full px-3 py-2 text-xs text-red-600 hover:bg-red-50 text-left flex items-center gap-2"
+                      >
+                        <svg className="w-3.5 h-3.5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                        </svg>
+                        삭제
+                      </button>
                     </div>
                   )}
                 </div>
