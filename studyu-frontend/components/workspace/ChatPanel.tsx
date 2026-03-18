@@ -327,7 +327,7 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
                 </div>
               </>
             ) : (
-              <p className="text-sm text-gray-400">왼쪽에서 PDF를 업로드한 뒤 질문하세요</p>
+              <p className="text-sm text-gray-400">왼쪽에서 소스를 추가한 뒤 질문하세요</p>
             )}
           </div>
         )}
@@ -386,6 +386,25 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
 
       {/* 입력 영역 */}
       <div className="shrink-0 px-6 pb-6 pt-2">
+        {activeDocs.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {activeDocs.map((d) => (
+              <span
+                key={d.id}
+                className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200"
+              >
+                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none">
+                  {d.type === "url" ? (
+                    <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  ) : (
+                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  )}
+                </svg>
+                {d.name.replace(/\.pdf$/i, "").slice(0, 24)}
+              </span>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2 rounded-2xl border border-gray-200 bg-white px-4 py-3 shadow-sm focus-within:border-blue-400 focus-within:shadow-md transition-all">
           <button
             onClick={toggleRecording}
@@ -397,7 +416,7 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
                 ? 'text-gray-300 cursor-default'
                 : 'text-gray-400 hover:bg-gray-100 hover:text-blue-600'
             }`}
-            title={!hasDoc ? "PDF를 먼저 업로드하세요" : isRecording ? "녹음 중지" : "음성으로 입력"}
+            title={!hasDoc ? "소스를 먼저 추가하세요" : isRecording ? "녹음 중지" : "음성으로 입력"}
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path
@@ -422,7 +441,7 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
               }
             }}
             placeholder={
-              hint || (hasDoc ? "문서에 대해 질문하세요... (Shift+Enter: 줄바꿈)" : "PDF를 먼저 업로드하세요")
+              hint || (hasDoc ? "문서에 대해 질문하세요... (Shift+Enter: 줄바꿈)" : "소스를 먼저 추가하세요")
             }
             disabled={!hasDoc || loading}
             rows={1}

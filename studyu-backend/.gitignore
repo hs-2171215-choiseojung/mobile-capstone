@@ -26,3 +26,7 @@ Thumbs.db
 
 # 업로드된 테스트 파일
 uploads/
+
+# Google Cloud 서비스 계정 키
+google-credentials.json
+*-credentials.json

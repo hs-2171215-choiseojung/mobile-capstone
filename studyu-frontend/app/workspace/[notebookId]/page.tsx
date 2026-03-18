@@ -31,7 +31,7 @@ export default async function WorkspacePage({ params }: Props) {
 
   const { data: initialDocs } = await supabase
     .from("documents")
-    .select("id, filename, chunk_count")
+    .select("id, filename, chunk_count, file_type, storage_path")
     .eq("notebook_id", notebookId)
     .eq("status", "ready")
     .order("created_at", { ascending: true });

@@ -43,7 +43,7 @@ async def chat(
     if not doc_ids:
         raise HTTPException(status_code=400, detail="doc_id 또는 doc_ids가 필요합니다.")
 
-    session_key = f"{user['id']}:{','.join(doc_ids)}:{req.session_id or 'default'}"
+    session_key = f"{user['id']}:{','.join(sorted(doc_ids))}:{req.session_id or 'default'}"
     if session_key not in _history_cache:
         _history_cache[session_key] = []
     chat_history = _history_cache[session_key]

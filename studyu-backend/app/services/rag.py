@@ -3,11 +3,18 @@ RAG 파이프라인 (Supabase 영속 저장, pdfplumber + OpenAI)
 
 문서 청크는 Supabase document_chunks 테이블에 저장되어
 서버 재시작 / 배포 후에도 데이터가 유지됩니다.
+
+임베딩 기반 유사도 검색:
+  - 인덱싱 시 text-embedding-3-small로 청크 임베딩 생성 후 JSONB 컬럼에 저장
+  - 쿼리 시 질문 임베딩과 코사인 유사도로 top-k 청크만 선택
+  - document_chunks 테이블에 embedding JSONB 컬럼이 있어야 합니다:
+      ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding JSONB;
 """
 
 import io
 import json
 import re
+import numpy as np
 import pdfplumber
 from openai import OpenAI
 from app.core.config import settings
@@ -15,38 +22,35 @@ from app.core.supabase import supabase_admin
 
 CHUNK_SIZE = 900
 CHUNK_OVERLAP = 100
+TOP_K = 5  # 문서당 검색할 최대 청크 수
 
+
+# ─────────────────────────────────────────────
+# 텍스트 정제
+# ─────────────────────────────────────────────
 
 def _sanitize(text: str) -> str:
-    """PostgreSQL TEXT에 저장할 수 없는 문자를 모두 제거."""
-    # translate로 null 바이트 제거 (가장 확실한 방법)
     text = text.translate({0: None})
-    # 그 외 제어 문자 제거 (\t=9, \n=10, \r=13 유지)
     text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    # lone surrogate 등 UTF-8 불가 문자 제거
     text = text.encode('utf-8', errors='ignore').decode('utf-8')
-    # 한 번 더 null 검증
     text = text.translate({0: None})
     return text
 
 
 def _hard_sanitize(text: str) -> str:
-    """최종 방어선: 문자 단위 순회로 NULL 바이트(ordinal 0)를 완전히 제거."""
     return "".join(ch for ch in text if ord(ch) != 0)
 
 
+# ─────────────────────────────────────────────
+# DB 안전 삽입
+# ─────────────────────────────────────────────
+
 def _db_safe_insert(table: str, records: list[dict]) -> None:
-    """PostgreSQL 22P05 오류 방지:
-    supabase-py/httpx의 JSON 직렬화를 우회하여 직접 sanitized JSON 바이트를
-    REST API로 전송. null byte(\u0000)가 절대 PostgREST에 전달되지 않도록 한다."""
+    """null byte가 절대 PostgREST에 전달되지 않도록 직접 HTTP로 삽입."""
     import httpx
-    # 1) JSON 직렬화 후 \u0000 이스케이프(6글자) 제거
     serialized = json.dumps(records, ensure_ascii=True)
     cleaned = serialized.replace('\\u0000', '')
-    # 2) 한 번 더 역직렬화 후 재직렬화 — 혹시 남은 null byte 완전 제거
     safe_records = json.loads(cleaned)
-    final_json = json.dumps(safe_records, ensure_ascii=True).replace('\\u0000', '')
-    final_bytes = final_json.encode('utf-8')
 
     url = f"{settings.SUPABASE_URL}/rest/v1/{table}"
     headers = {
@@ -57,16 +61,44 @@ def _db_safe_insert(table: str, records: list[dict]) -> None:
     }
     batch_size = 50
     for i in range(0, len(safe_records), batch_size):
-        batch_json = json.dumps(safe_records[i:i + batch_size], ensure_ascii=True)
-        batch_json = batch_json.replace('\\u0000', '')
+        batch_json = json.dumps(safe_records[i:i + batch_size], ensure_ascii=True).replace('\\u0000', '')
         print(f"[_db_safe_insert] batch {i//batch_size+1}, rows={min(batch_size, len(safe_records)-i)}")
         response = httpx.post(url, content=batch_json.encode('utf-8'), headers=headers, timeout=30)
         if response.status_code not in (200, 201):
             raise Exception(f"document_chunks insert 실패: {response.status_code} {response.text[:200]}")
 
 
+# ─────────────────────────────────────────────
+# 임베딩
+# ─────────────────────────────────────────────
+
+def _embed_batch(texts: list[str], batch_size: int = 100) -> list[list[float]]:
+    """OpenAI text-embedding-3-small으로 텍스트 임베딩 생성 (배치 처리)."""
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    all_embeddings: list[list[float]] = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        response = client.embeddings.create(model="text-embedding-3-small", input=batch)
+        all_embeddings.extend([item.embedding for item in response.data])
+    return all_embeddings
+
+
+def _cosine_similarity(query_vec: list[float], embeddings: list[list[float]]) -> np.ndarray:
+    """query_vec과 embeddings 행렬의 코사인 유사도 벡터 반환."""
+    q = np.array(query_vec, dtype=np.float32)
+    m = np.array(embeddings, dtype=np.float32)
+    q_norm = np.linalg.norm(q)
+    m_norms = np.linalg.norm(m, axis=1)
+    m_norms = np.where(m_norms == 0, 1e-10, m_norms)
+    return (m @ q) / (m_norms * (q_norm if q_norm != 0 else 1e-10))
+
+
+# ─────────────────────────────────────────────
+# 인덱싱 (PDF)
+# ─────────────────────────────────────────────
+
 def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple[int, int]:
-    """PDF 바이트를 청크로 분할하여 Supabase document_chunks에 저장.
+    """PDF 바이트를 청크로 분할하고 임베딩을 포함하여 Supabase에 저장.
 
     Returns:
         (chunk_count, page_count)
@@ -83,36 +115,397 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple
                 continue
             step = CHUNK_SIZE - CHUNK_OVERLAP
             for i in range(0, len(text), step):
-                chunk = _hard_sanitize(_sanitize(text[i : i + CHUNK_SIZE]))
+                chunk = _hard_sanitize(_sanitize(text[i: i + CHUNK_SIZE]))
                 if chunk.strip():
                     chunks.append(chunk)
 
     if not chunks:
         return 0, page_count
 
+    # 임베딩 생성
+    try:
+        embeddings = _embed_batch(chunks)
+    except Exception as e:
+        print(f"[WARNING] 임베딩 생성 실패, 임베딩 없이 저장: {e}")
+        embeddings = [None] * len(chunks)  # type: ignore
+
     records = [
-        {"doc_id": doc_id, "chunk_index": idx, "content": content}
-        for idx, content in enumerate(chunks)
+        {
+            "doc_id": doc_id,
+            "chunk_index": idx,
+            "content": _hard_sanitize(content),
+            "embedding": emb,
+        }
+        for idx, (content, emb) in enumerate(zip(chunks, embeddings))
     ]
 
-    # 진단: null 바이트 잔존 여부 확인
-    null_found = [(idx, r["content"].count('\x00')) for idx, r in enumerate(records) if '\x00' in r["content"]]
-    if null_found:
-        print(f"[WARNING] ingest_document: null bytes still present in {len(null_found)} chunks after sanitize!")
-        for idx, cnt in null_found:
-            records[idx]["content"] = _hard_sanitize(records[idx]["content"])
-    else:
-        print(f"[INFO] ingest_document: {len(records)} chunks, null bytes = 0 ✓")
-
     _db_safe_insert("document_chunks", records)
-
+    print(f"[INFO] ingest_document: {len(records)} chunks 저장 완료")
     return len(chunks), page_count
 
 
-def _get_context(doc_ids: list[str], max_chars: int = 10000) -> str:
-    """Supabase document_chunks에서 청크를 가져와 컨텍스트 문자열 반환."""
+# ─────────────────────────────────────────────
+# 인덱싱 (URL)
+# ─────────────────────────────────────────────
+
+def _extract_youtube_video_id(url: str) -> str | None:
+    """YouTube URL에서 video ID 추출. 아니면 None."""
+    import re
+    patterns = [
+        r"(?:youtube\.com/watch\?.*v=|youtu\.be/)([A-Za-z0-9_-]{11})",
+        r"youtube\.com/embed/([A-Za-z0-9_-]{11})",
+        r"youtube\.com/shorts/([A-Za-z0-9_-]{11})",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _fetch_youtube_transcript(video_id: str) -> str:
+    """youtube_transcript_api로 자막 텍스트 추출 (한국어 → 영어 순)."""
+    from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+    api = YouTubeTranscriptApi()
+    try:
+        transcript = api.fetch(video_id, languages=["ko", "ko-KR", "en", "en-US"])
+    except NoTranscriptFound:
+        try:
+            transcript_list = api.list(video_id)
+            # 자동 생성 포함 아무 언어나
+            for t in transcript_list:
+                transcript = api.fetch(video_id, languages=[t.language_code])
+                break
+            else:
+                raise ValueError("유튜브 영상에 자막이 없습니다.")
+        except TranscriptsDisabled:
+            raise ValueError("이 유튜브 영상은 자막이 비활성화되어 있습니다.")
+    except TranscriptsDisabled:
+        raise ValueError("이 유튜브 영상은 자막이 비활성화되어 있습니다.")
+
+    text = " ".join(s.text.replace("\n", " ") for s in transcript.snippets)
+    return text.strip()
+
+
+def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
+    """URL에서 텍스트를 추출하여 임베딩과 함께 Supabase document_chunks에 저장.
+
+    Returns:
+        (chunk_count, 0)
+    Raises:
+        ValueError: URL 접근 실패 또는 텍스트 부족
+    """
+    import httpx
+
+    # ── YouTube 처리 ──
+    video_id = _extract_youtube_video_id(url)
+    if video_id:
+        try:
+            text = _fetch_youtube_transcript(video_id)
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"유튜브 자막 추출 실패: {str(e)}")
+    else:
+        # ── 일반 웹페이지 처리 ──
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+        }
+
+        try:
+            response = httpx.get(url, headers=headers, timeout=30, follow_redirects=True)
+            response.raise_for_status()
+            html_content = response.text
+        except httpx.HTTPStatusError as e:
+            raise ValueError(f"URL 접근 실패 (HTTP {e.response.status_code}): 접근이 제한된 페이지일 수 있습니다.")
+        except Exception as e:
+            raise ValueError(f"URL을 가져오는 데 실패했습니다: {str(e)}")
+
+        from bs4 import BeautifulSoup
+        from urllib.parse import urljoin, urlparse
+
+        def _extract_meta(html: str) -> str:
+            try:
+                soup = BeautifulSoup(html, "html.parser")
+                parts = []
+                title = soup.find("title")
+                if title and title.get_text(strip=True):
+                    parts.append(title.get_text(strip=True))
+                for attr in [("name", "description"), ("property", "og:description"),
+                              ("property", "og:title"), ("name", "keywords")]:
+                    tag = soup.find("meta", attrs={attr[0]: attr[1]})
+                    if tag and tag.get("content", "").strip():
+                        parts.append(tag["content"].strip())
+                return "\n".join(parts)
+            except Exception:
+                return ""
+
+        def _extract_body(html: str, referer: str = "") -> str:
+            """HTML에서 본문 텍스트 추출. trafilatura → 콘텐츠 셀렉터 → p태그 → 전체 순."""
+            text = ""
+            try:
+                import trafilatura
+                text = trafilatura.extract(html, include_tables=True, favor_recall=True) or ""
+            except Exception:
+                pass
+
+            if len(text.strip()) < 100:
+                try:
+                    soup = BeautifulSoup(html, "html.parser")
+                    for tag in soup(["script", "style", "nav", "footer", "header", "aside", "menu"]):
+                        tag.decompose()
+
+                    content_text = ""
+                    for selector in [
+                        # Naver blog
+                        ".se-main-container", "#postViewArea", ".se_component_wrap",
+                        # 일반
+                        "article", "main", "[role='main']",
+                        ".content", "#content", ".post", ".article",
+                        ".entry-content", "#article-body", ".post-content",
+                        # Tistory
+                        ".tt_article_useless_p_margin", "#article-view",
+                    ]:
+                        nodes = soup.select(selector)
+                        if nodes:
+                            content_text = "\n".join(n.get_text(separator="\n", strip=True) for n in nodes)
+                            if len(content_text) > 200:
+                                break
+
+                    if len(content_text) < 200:
+                        paragraphs = [p.get_text(strip=True) for p in soup.find_all("p") if len(p.get_text(strip=True)) > 20]
+                        content_text = "\n".join(paragraphs)
+
+                    if len(content_text) < 200:
+                        content_text = soup.get_text(separator="\n", strip=True)
+
+                    if len(content_text) > len(text):
+                        text = content_text
+                except Exception:
+                    pass
+
+            return text.strip()
+
+        def _follow_iframe(html: str, base_url: str, req_headers: dict) -> str:
+            """페이지에 iframe이 있으면 그 내용을 가져와 본문 추출."""
+            try:
+                soup = BeautifulSoup(html, "html.parser")
+                for iframe in soup.find_all("iframe"):
+                    src = iframe.get("src", "")
+                    if not src or src.startswith("javascript"):
+                        continue
+                    iframe_url = urljoin(base_url, src)
+                    # 같은 도메인 또는 신뢰 도메인만
+                    base_host = urlparse(base_url).netloc
+                    iframe_host = urlparse(iframe_url).netloc
+                    if base_host not in iframe_host and iframe_host not in base_host:
+                        continue
+                    try:
+                        iframe_resp = httpx.get(
+                            iframe_url,
+                            headers={**req_headers, "Referer": base_url},
+                            timeout=20,
+                            follow_redirects=True,
+                        )
+                        if iframe_resp.status_code == 200:
+                            t = _extract_body(iframe_resp.text, referer=base_url)
+                            if len(t) > 100:
+                                return t
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            return ""
+
+        meta_text = _extract_meta(html_content)
+
+        # 1. 본문 직접 추출
+        text = _extract_body(html_content)
+
+        # 2. 짧으면 iframe 추적
+        if len(text) < 100:
+            iframe_text = _follow_iframe(html_content, url, headers)
+            if len(iframe_text) > len(text):
+                text = iframe_text
+
+        # 3. 여전히 짧으면 trafilatura.fetch_url 재시도
+        if len(text) < 100:
+            try:
+                import trafilatura
+                downloaded = trafilatura.fetch_url(url)
+                if downloaded:
+                    t2 = trafilatura.extract(downloaded, favor_recall=True) or ""
+                    if len(t2) > len(text):
+                        text = t2
+            except Exception:
+                pass
+
+        # 메타 정보 결합
+        if meta_text:
+            text = (meta_text + "\n\n" + text).strip()
+
+    text = _hard_sanitize(_sanitize(text)).strip()
+    if len(text) < 50:
+        raise ValueError(
+            "URL에서 충분한 텍스트를 추출할 수 없습니다. "
+            "로그인이 필요하거나, JavaScript로 렌더링되거나, 스크래핑을 차단하는 페이지일 수 있습니다. "
+            f"(추출된 텍스트: {len(text)}자)"
+        )
+
+    # 청킹
+    chunks: list[str] = []
+    step = CHUNK_SIZE - CHUNK_OVERLAP
+    for i in range(0, len(text), step):
+        chunk = _hard_sanitize(_sanitize(text[i: i + CHUNK_SIZE]))
+        if chunk.strip():
+            chunks.append(chunk)
+
+    if not chunks:
+        raise ValueError("텍스트 청킹 실패")
+
+    # 임베딩 생성
+    try:
+        embeddings = _embed_batch(chunks)
+    except Exception as e:
+        print(f"[WARNING] 임베딩 생성 실패, 임베딩 없이 저장: {e}")
+        embeddings = [None] * len(chunks)  # type: ignore
+
+    records = [
+        {
+            "doc_id": doc_id,
+            "chunk_index": idx,
+            "content": content,
+            "embedding": emb,
+        }
+        for idx, (content, emb) in enumerate(zip(chunks, embeddings))
+    ]
+    _db_safe_insert("document_chunks", records)
+    print(f"[INFO] ingest_url: {len(records)} chunks 저장 완료")
+    return len(chunks), 0
+
+
+# ─────────────────────────────────────────────
+# 컨텍스트 조회
+# ─────────────────────────────────────────────
+
+def _get_context_semantic(
+    doc_ids: list[str],
+    question: str,
+    top_k: int = TOP_K,
+    labeled: bool = False,
+) -> str:
+    """임베딩 기반 코사인 유사도로 각 문서에서 top-k 청크를 선택하여 컨텍스트 구성."""
+    if not doc_ids or not question:
+        return _get_context(doc_ids)
+
+    # 질문 임베딩
+    try:
+        query_embedding = _embed_batch([question])[0]
+    except Exception as e:
+        print(f"[WARNING] 질문 임베딩 실패, 순차 검색으로 fallback: {e}")
+        return _get_context(doc_ids, labeled=labeled)
+
+    # 문서명 조회
+    doc_name_map: dict[str, str] = {}
+    if labeled:
+        try:
+            name_result = supabase_admin.table("documents").select("id, filename").in_("id", doc_ids).execute()
+            doc_name_map = {row["id"]: row["filename"] for row in name_result.data}
+        except Exception:
+            pass
+
+    parts: list[str] = []
+
+    for doc_id in doc_ids:
+        # 해당 문서의 청크 + 임베딩 조회
+        try:
+            result = (
+                supabase_admin.table("document_chunks")
+                .select("content, embedding, chunk_index")
+                .eq("doc_id", doc_id)
+                .order("chunk_index")
+                .execute()
+            )
+        except Exception:
+            continue
+
+        rows = result.data
+        if not rows:
+            continue
+
+        # 임베딩이 있는 행만 유사도 검색, 없으면 순서대로
+        rows_with_emb = [r for r in rows if r.get("embedding")]
+        if rows_with_emb:
+            embeddings = [r["embedding"] for r in rows_with_emb]
+            scores = _cosine_similarity(query_embedding, embeddings)
+            top_indices = np.argsort(scores)[::-1][:top_k]
+            selected_chunks = [rows_with_emb[i]["content"] for i in top_indices]
+            # 원래 chunk_index 순서로 정렬
+            selected_with_idx = sorted(
+                [(rows_with_emb[i]["chunk_index"], rows_with_emb[i]["content"]) for i in top_indices],
+                key=lambda x: x[0],
+            )
+            selected_chunks = [c for _, c in selected_with_idx]
+        else:
+            # 임베딩 없으면 앞에서 top_k개
+            selected_chunks = [r["content"] for r in rows[:top_k]]
+
+        if not selected_chunks:
+            continue
+
+        doc_text = "\n\n".join(selected_chunks)
+        if labeled:
+            doc_name = doc_name_map.get(doc_id, doc_id)
+            parts.append(f"[문서명: {doc_name}]\n{doc_text}")
+        else:
+            parts.append(doc_text)
+
+    separator = "\n\n=====\n\n" if labeled else "\n\n"
+    return separator.join(parts)
+
+
+def _get_context(doc_ids: list[str], max_chars: int = 10000, labeled: bool = False) -> str:
+    """순차적으로 청크를 가져와 컨텍스트 문자열 반환 (임베딩 없는 fallback)."""
     if not doc_ids:
         return ""
+
+    if labeled:
+        # 문서별 레이블 붙이기
+        try:
+            name_result = supabase_admin.table("documents").select("id, filename").in_("id", doc_ids).execute()
+            doc_name_map = {row["id"]: row["filename"] for row in name_result.data}
+        except Exception:
+            doc_name_map = {}
+
+        parts = []
+        per_doc_chars = max_chars // max(len(doc_ids), 1)
+        for doc_id in doc_ids:
+            result = (
+                supabase_admin.table("document_chunks")
+                .select("content")
+                .eq("doc_id", doc_id)
+                .order("chunk_index")
+                .execute()
+            )
+            chunks = [row["content"] for row in result.data]
+            if not chunks:
+                continue
+            doc_text = "\n\n".join(chunks)[:per_doc_chars]
+            doc_name = doc_name_map.get(doc_id, doc_id)
+            parts.append(f"[문서명: {doc_name}]\n{doc_text}")
+        return "\n\n=====\n\n".join(parts)
 
     result = (
         supabase_admin.table("document_chunks")
@@ -122,24 +515,20 @@ def _get_context(doc_ids: list[str], max_chars: int = 10000) -> str:
         .order("chunk_index")
         .execute()
     )
-
     chunks = [row["content"] for row in result.data]
     return "\n\n".join(chunks)[:max_chars]
 
 
 def _get_filenames(doc_ids: list[str]) -> list[str]:
-    """Supabase documents 테이블에서 파일명 목록 조회."""
     if not doc_ids:
         return []
-
-    result = (
-        supabase_admin.table("documents")
-        .select("filename")
-        .in_("id", doc_ids)
-        .execute()
-    )
+    result = supabase_admin.table("documents").select("filename").in_("id", doc_ids).execute()
     return [row["filename"] for row in result.data]
 
+
+# ─────────────────────────────────────────────
+# 챗
+# ─────────────────────────────────────────────
 
 LEVEL_PROMPTS = {
     "beginner": "쉽고 친절하게, 예시를 들어 입문자 수준으로 설명해주세요.",
@@ -156,10 +545,28 @@ def chat_with_docs(
     chat_history: list | None = None,
 ) -> tuple[str, list[str]]:
     """문서 기반 RAG 질의응답. (answer, sources) 반환."""
-    context = _get_context(doc_ids)
+    is_multi = len(doc_ids) > 1
+
+    # 임베딩 기반 유사도 검색으로 컨텍스트 구성
+    context = _get_context_semantic(doc_ids, question, top_k=TOP_K, labeled=is_multi)
+
     level_hint = LEVEL_PROMPTS.get(level, LEVEL_PROMPTS["intermediate"])
 
-    system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
+    if is_multi:
+        doc_names = _get_filenames(doc_ids)
+        names_str = ", ".join(f"'{n}'" for n in doc_names)
+        system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
+총 {len(doc_ids)}개의 문서({names_str})가 제공됩니다.
+반드시 각 문서를 모두 참조하여 답변하세요.
+'**[문서명]** 에서는 ~', '**[문서명]** 에 따르면 ~' 형식으로 각 문서의 내용을 명확히 구분하여 서술하세요.
+답변 시 {level_hint}
+제공된 문서 내용에서 최대한 찾아서 답변하세요.
+
+<context>
+{context}
+</context>"""
+    else:
+        system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
 아래 문서 내용을 바탕으로 질문에 답변하세요.
 답변 시 {level_hint}
 제공된 문서 내용에서 최대한 찾아서 답변하세요. 정말로 알 수 없을 때만 "문서에서 찾을 수 없습니다"라고 하세요.
@@ -169,11 +576,9 @@ def chat_with_docs(
 </context>"""
 
     messages: list[dict] = [{"role": "system", "content": system_msg}]
-
     if chat_history:
         for msg in chat_history[-6:]:
             messages.append(msg)
-
     messages.append({"role": "user", "content": question})
 
     safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
@@ -184,10 +589,13 @@ def chat_with_docs(
         temperature=0.3,
     )
     answer = response.choices[0].message.content or ""
-
     sources = _get_filenames(doc_ids)
     return answer, sources
 
+
+# ─────────────────────────────────────────────
+# 콘텐츠 생성
+# ─────────────────────────────────────────────
 
 def generate_content(
     doc_ids: list[str],
@@ -282,11 +690,7 @@ def generate_audio_overview(
     focus: str = "",
     model: str = "gpt-4o-mini",
 ) -> tuple[bytes, str, str]:
-    """2인 토크쇼 형식의 오디오 오버뷰 생성.
-
-    Returns:
-        (audio_bytes, script_text, title)
-    """
+    """2인 토크쇼 형식의 오디오 오버뷰 생성."""
     context = _get_context(doc_ids, max_chars=12000)
 
     length_map = {
@@ -305,7 +709,6 @@ def generate_audio_overview(
 
     lang_map = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
     lang_label = lang_map.get(language, "한국어")
-
     focus_instruction = f"\n특히 다음 부분에 집중해주세요: {focus}" if focus.strip() else ""
 
     prompt = f"""아래 문서 내용을 바탕으로 팟캐스트 스타일의 오디오 오버뷰 스크립트를 {lang_label}로 작성해주세요.
@@ -344,13 +747,11 @@ def generate_audio_overview(
     title = result.get("title", "오디오 오버뷰")
     lines: list[dict] = result.get("lines", [])
 
-    # 스크립트 텍스트 빌드
     script = "\n".join(
         f"{'Host A' if l.get('speaker') == 'A' else 'Host B'}: {l.get('text', '')}"
         for l in lines
     )
 
-    # TTS 변환: A = alloy (여성), B = echo (남성)
     voice_map = {"A": "alloy", "B": "echo"}
     audio_parts: list[bytes] = []
     for line in lines:
@@ -376,17 +777,11 @@ def generate_mindmap(
     focus: str = "",
     model: str = "gpt-4o-mini",
 ) -> tuple[list, str]:
-    """문서 내용을 평면 노드 배열 형식의 마인드맵 JSON으로 변환.
-
-    Returns:
-        (nodes_list, title)
-        nodes_list: [{"id": "root", "text": "..."}, {"id": "1", "text": "...", "parent": "root"}, ...]
-    """
+    """문서 내용을 평면 노드 배열 형식의 마인드맵 JSON으로 변환."""
     context = _get_context(doc_ids, max_chars=10000)
 
     lang_map = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
     lang_label = lang_map.get(language, "한국어")
-
     focus_instruction = f"\n특히 다음 주제에 집중해주세요: {focus}" if focus.strip() else ""
 
     prompt = f"""아래 문서 내용을 바탕으로 학습용 마인드맵을 {lang_label}로 작성해주세요.{focus_instruction}
