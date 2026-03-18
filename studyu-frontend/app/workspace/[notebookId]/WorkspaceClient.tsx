@@ -17,6 +17,8 @@ interface InitialDoc {
   id: string;
   filename: string;
   chunk_count: number | null;
+  file_type?: string | null;
+  storage_path?: string | null;
 }
 
 interface Props {
@@ -42,7 +44,12 @@ async function getToken(): Promise<string> {
 export default function WorkspaceClient({ notebook, initialDocs }: Props) {
   const router = useRouter();
   const [docs, setDocs] = useState<Doc[]>(
-    initialDocs.map((d) => ({ id: d.id, name: d.filename, chunks: d.chunk_count ?? 0 }))
+    initialDocs.map((d) => ({
+      id: d.id,
+      name: d.filename,
+      chunks: d.chunk_count ?? 0,
+      type: (d.file_type === "url" || d.storage_path?.startsWith("http")) ? "url" : "pdf",
+    }))
   );
   const [activeDocIds, setActiveDocIds] = useState<string[]>(
     initialDocs.map((d) => d.id)
