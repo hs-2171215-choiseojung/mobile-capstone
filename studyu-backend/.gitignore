@@ -1,6 +1,9 @@
 # 환경변수 (비밀 키가 들어있으므로 절대 커밋 금지)
 .env
 
+# Google Cloud 서비스 계정 키 (절대 커밋 금지)
+google-credentials.json
+
 # Python
 __pycache__/
 *.py[cod]

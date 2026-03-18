@@ -33,9 +33,10 @@ interface Props {
   docs: Doc[];
   getToken: () => Promise<string>;
   notebookTitle: string;
+  notebookId: string;
 }
 
-export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle }: Props) {
+export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle, notebookId }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -52,12 +53,13 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
 
   const hasDoc = activeDocIds.length > 0;
   const activeDocs = docs.filter((d) => activeDocIds.includes(d.id));
+  const stripExt = (name: string) => name.replace(/\.pdf$/i, "");
   const titleLabel =
     activeDocs.length === 0
       ? notebookTitle
       : activeDocs.length === 1
-      ? activeDocs[0].name.replace(/\.pdf$/i, "")
-      : `${activeDocs[0].name.replace(/\.pdf$/i, "")} 외 ${activeDocs.length - 1}개`;
+      ? stripExt(activeDocs[0].name)
+      : `${stripExt(activeDocs[0].name)} 외 ${activeDocs.length - 1}개`;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -90,19 +92,22 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
           doc_ids: activeDocIds,
           doc_names: docNames,
           question,
+          session_id: notebookId,
           model,
           level,
         }),
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "서버 오류");
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: data.answer, sources: data.sources },
       ]);
-    } catch {
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "오류가 발생했습니다.";
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "오류가 발생했습니다. 백엔드 서버가 실행 중인지 확인하세요." },
+        { role: "assistant", content: `⚠️ ${msg}` },
       ]);
     } finally {
       setLoading(false);
@@ -327,7 +332,7 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
                 </div>
               </>
             ) : (
-              <p className="text-sm text-gray-400">왼쪽에서 PDF를 업로드한 뒤 질문하세요</p>
+              <p className="text-sm text-gray-400">왼쪽에서 PDF 또는 URL을 추가한 뒤 질문하세요</p>
             )}
           </div>
         )}
@@ -397,7 +402,7 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
                 ? 'text-gray-300 cursor-default'
                 : 'text-gray-400 hover:bg-gray-100 hover:text-blue-600'
             }`}
-            title={!hasDoc ? "PDF를 먼저 업로드하세요" : isRecording ? "녹음 중지" : "음성으로 입력"}
+            title={!hasDoc ? "소스를 먼저 추가하세요" : isRecording ? "녹음 중지" : "음성으로 입력"}
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path
@@ -422,7 +427,7 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
               }
             }}
             placeholder={
-              hint || (hasDoc ? "문서에 대해 질문하세요... (Shift+Enter: 줄바꿈)" : "PDF를 먼저 업로드하세요")
+              hint || (hasDoc ? "문서에 대해 질문하세요... (Shift+Enter: 줄바꿈)" : "소스를 먼저 추가하세요")
             }
             disabled={!hasDoc || loading}
             rows={1}

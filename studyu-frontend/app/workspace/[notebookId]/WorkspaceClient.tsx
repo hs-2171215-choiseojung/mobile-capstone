@@ -122,6 +122,7 @@ export default function WorkspaceClient({ notebook }: Props) {
             docs={docs}
             getToken={getToken}
             notebookTitle={notebook.title}
+            notebookId={notebook.id}
           />
         </div>
 

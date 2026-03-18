@@ -43,18 +43,22 @@ async def chat(
     if not doc_ids:
         raise HTTPException(status_code=400, detail="doc_id 또는 doc_ids가 필요합니다.")
 
-    session_key = f"{user['id']}:{','.join(doc_ids)}:{req.session_id or 'default'}"
+    # 세션은 notebookId(session_id) 기준 — doc 선택 변경과 무관하게 대화 유지
+    session_key = f"{user['id']}:{req.session_id or 'default'}"
     if session_key not in _history_cache:
         _history_cache[session_key] = []
     chat_history = _history_cache[session_key]
 
-    answer, sources = chat_with_docs(
-        doc_ids=doc_ids,
-        question=req.question,
-        model=req.model or "gpt-4o-mini",
-        level=req.level or "intermediate",
-        chat_history=chat_history,
-    )
+    try:
+        answer, sources = chat_with_docs(
+            doc_ids=doc_ids,
+            question=req.question,
+            model=req.model or "gpt-4o-mini",
+            level=req.level or "intermediate",
+            chat_history=chat_history,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     chat_history.append({"role": "user", "content": req.question})
     chat_history.append({"role": "assistant", "content": answer})

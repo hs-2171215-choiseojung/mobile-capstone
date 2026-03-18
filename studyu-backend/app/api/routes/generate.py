@@ -41,13 +41,16 @@ async def generate(
     if not doc_ids:
         raise HTTPException(status_code=400, detail="doc_id 또는 doc_ids가 필요합니다.")
 
-    result = generate_content(
-        doc_ids=doc_ids,
-        gen_type=req.type,
-        model=req.model or "gpt-4o-mini",
-        level=req.level or "intermediate",
-        quiz_count=req.quiz_count or 5,
-        topic=req.topic or "",
-        difficulty=req.difficulty or "intermediate",
-    )
+    try:
+        result = generate_content(
+            doc_ids=doc_ids,
+            gen_type=req.type,
+            model=req.model or "gpt-4o-mini",
+            level=req.level or "intermediate",
+            quiz_count=req.quiz_count or 5,
+            topic=req.topic or "",
+            difficulty=req.difficulty or "intermediate",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"result": result, "type": req.type}
