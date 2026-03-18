@@ -1,7 +1,11 @@
 ﻿"use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import dynamic from "next/dynamic";
 import type { Doc } from "./SourcePanel";
+
+const MindMapView = dynamic(() => import("./MindMapView"), { ssr: false });
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -28,14 +32,35 @@ interface QuizConfig {
   topic: string;
 }
 
+interface AudioConfig {
+  format: "deep_analysis" | "summary" | "critique" | "debate";
+  language: "ko" | "en" | "ja" | "zh";
+  length: "short" | "default";
+  focus: string;
+}
+
+interface MindmapConfig {
+  language: "ko" | "en" | "ja" | "zh";
+  focus: string;
+}
+
+interface MindmapNode {
+  id: string;
+  text: string;
+  parent?: string;
+}
+
 interface SavedItem {
   id: string;
-  type: "summary" | "quiz";
+  type: "summary" | "quiz" | "audio" | "mindmap";
   title: string;
   subtitle: string;
   createdAt: Date;
   summaryContent?: string;
   quiz?: SavedQuiz;
+  audio?: { base64?: string; script: string };
+  audioUrl?: string;  // Supabase Storage 서명 URL (DB 로드 시)
+  mindmap?: { nodes: MindmapNode[] };
 }
 
 interface Props {
@@ -144,6 +169,206 @@ function TypeIcon({ id, color, size = 16 }: { id: string; color: string; size?: 
   if (id === "quiz") return <svg {...s}><circle cx="12" cy="12" r="10" stroke={color} fill="none" /><path strokeLinecap="round" strokeLinejoin="round" d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3M12 17h.01" /></svg>;
   if (id === "infographic") return <svg {...s}><path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>;
   return <svg {...s}><path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M3 14h18M10 3v18M4 3h16a1 1 0 011 1v16a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" /></svg>;
+}
+
+// ── AudioModal ─────────────────────────────────────────────────────────────
+function AudioModal({
+  loading,
+  onClose,
+  onGenerate,
+}: {
+  loading: boolean;
+  onClose: () => void;
+  onGenerate: (cfg: AudioConfig) => void;
+}) {
+  const [cfg, setCfg] = useState<AudioConfig>({
+    format: "deep_analysis",
+    language: "ko",
+    length: "default",
+    focus: "",
+  });
+
+  const formats: { id: AudioConfig["format"]; label: string; desc: string }[] = [
+    { id: "deep_analysis", label: "심층 분석", desc: "핵심 개념을 깊이 파헤치는 대화" },
+    { id: "summary", label: "요약", desc: "핵심 아이디어를 간결하게 정리" },
+    { id: "critique", label: "비평", desc: "장단점을 전문가 시각으로 분석" },
+    { id: "debate", label: "토론", desc: "다른 관점으로 주제를 논쟁" },
+  ];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.45)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-md rounded-2xl shadow-2xl bg-white">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <span className="font-semibold text-gray-800">AI 오디오 오버뷰 맞춤설정</span>
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 transition-colors">
+            <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div className="px-6 py-5 space-y-5">
+          {/* Format */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2.5">형식</p>
+            <div className="grid grid-cols-2 gap-2">
+              {formats.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setCfg((p) => ({ ...p, format: f.id }))}
+                  className="flex flex-col items-start px-3 py-2.5 rounded-xl text-left border transition-all"
+                  style={
+                    cfg.format === f.id
+                      ? { background: "#e8f0fe", borderColor: "#1a73e8" }
+                      : { background: "white", borderColor: "#e0e0e0" }
+                  }
+                >
+                  <span className="text-sm font-medium" style={{ color: cfg.format === f.id ? "#1a73e8" : "#202124" }}>{f.label}</span>
+                  <span className="text-[11px] text-gray-400 mt-0.5 leading-tight">{f.desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* Language */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">언어</p>
+            <select
+              value={cfg.language}
+              onChange={(e) => setCfg((p) => ({ ...p, language: e.target.value as AudioConfig["language"] }))}
+              className="w-full text-sm rounded-xl px-4 py-2.5 border border-gray-200 outline-none focus:border-blue-400 text-gray-800 bg-white"
+            >
+              <option value="ko">한국어</option>
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+              <option value="zh">中文</option>
+            </select>
+          </div>
+          {/* Length */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2.5">길이</p>
+            <div className="flex gap-2">
+              {(["short", "default"] as const).map((l) => (
+                <button
+                  key={l}
+                  onClick={() => setCfg((p) => ({ ...p, length: l }))}
+                  className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
+                  style={
+                    cfg.length === l
+                      ? { background: "#e8f0fe", color: "#1a73e8", borderColor: "#1a73e8" }
+                      : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }
+                  }
+                >
+                  {l === "short" ? "짧게" : "기본값"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* Focus */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">AI 호스트가 이 에피소드의 어떤 부분에 집중해야 하나요?</p>
+            <textarea
+              value={cfg.focus}
+              onChange={(e) => setCfg((p) => ({ ...p, focus: e.target.value }))}
+              placeholder={"예시:\n• 2장의 핵심 이론에 집중해줘\n• 실생활 적용 사례 위주로 얘기해줘"}
+              rows={3}
+              className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-blue-400 text-gray-800"
+              style={{ lineHeight: 1.6 }}
+            />
+          </div>
+        </div>
+        <div className="flex justify-end px-6 pb-5">
+          <button
+            onClick={() => onGenerate(cfg)}
+            disabled={loading}
+            className="px-8 py-2.5 rounded-full text-sm font-semibold flex items-center gap-2 transition-all bg-blue-600 text-white"
+            style={{ opacity: loading ? 0.75 : 1, cursor: loading ? "not-allowed" : "pointer" }}
+          >
+            {loading && <Spinner className="w-3.5 h-3.5" />}
+            {loading ? "생성 중..." : "만들기"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── AudioView ──────────────────────────────────────────────────────────────
+function AudioView({ audioBase64, audioUrl: propAudioUrl, script, title, onBack }: {
+  audioBase64?: string;
+  audioUrl?: string;
+  script: string;
+  title: string;
+  onBack: () => void;
+}) {
+  // data URI 방식 — Blob URL revoke 문제 없음
+  const audioSrc = propAudioUrl || (audioBase64 ? `data:audio/mpeg;base64,${audioBase64}` : "");
+
+  const scriptLines = script.split("\n").filter(Boolean);
+
+  return (
+    <div className="flex flex-col h-full overflow-y-auto">
+      <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-2 shrink-0">
+        <button onClick={onBack} className="text-sm text-gray-500 hover:text-blue-600 flex items-center gap-1">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          스튜디오
+        </button>
+        <span className="text-gray-300">›</span>
+        <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
+      </div>
+      <div className="p-4 space-y-4">
+        {/* Audio player */}
+        <div className="rounded-2xl p-4 bg-gradient-to-br from-teal-50 to-cyan-50 border border-teal-100">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-teal-100">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="#0d9488" strokeWidth="1.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-gray-800">{title}</p>
+              <p className="text-xs text-gray-500">AI 오디오 오버뷰</p>
+            </div>
+          </div>
+          <audio controls className="w-full" src={audioSrc} style={{ height: 40 }} />
+        </div>
+        {/* Script */}
+        <div className="rounded-2xl bg-white border border-gray-100 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">스크립트</p>
+          </div>
+          <div className="p-4 space-y-3 text-sm leading-relaxed">
+            {scriptLines.map((line, i) => {
+              const isA = line.startsWith("Host A:");
+              const isB = line.startsWith("Host B:");
+              const text = line.replace(/^Host [AB]: /, "");
+              return (
+                <div key={i} className={`flex gap-2.5 ${isB ? "flex-row-reverse" : ""}`}>
+                  <div
+                    className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[10px] font-bold text-white mt-0.5"
+                    style={{ background: isA ? "#0d9488" : "#7c3aed" }}
+                  >
+                    {isA ? "A" : isB ? "B" : "?"}
+                  </div>
+                  <div
+                    className="rounded-xl px-3 py-2 text-sm max-w-[80%]"
+                    style={{
+                      background: isA ? "#f0fdfb" : isB ? "#f5f3ff" : "#f3f4f6",
+                      color: "#1f2937",
+                    }}
+                  >
+                    {text}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── QuizModal ──────────────────────────────────────────────────────────────
@@ -382,16 +607,142 @@ function SummaryView({ content, onBack }: { content: string; onBack: () => void 
   );
 }
 
+// ── MindmapModal ───────────────────────────────────────────────────────────
+function MindmapModal({
+  loading,
+  onClose,
+  onGenerate,
+}: {
+  loading: boolean;
+  onClose: () => void;
+  onGenerate: (cfg: MindmapConfig) => void;
+}) {
+  const [cfg, setCfg] = useState<MindmapConfig>({ language: "ko", focus: "" });
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.45)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-md rounded-2xl shadow-2xl bg-white">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <span className="font-semibold text-gray-800">마인드맵 맞춤설정</span>
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 transition-colors">
+            <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div className="px-6 py-5 space-y-5">
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">언어</p>
+            <select
+              value={cfg.language}
+              onChange={(e) => setCfg((p) => ({ ...p, language: e.target.value as MindmapConfig["language"] }))}
+              className="w-full text-sm rounded-xl px-4 py-2.5 border border-gray-200 outline-none focus:border-purple-400 text-gray-800 bg-white"
+            >
+              <option value="ko">한국어</option>
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+              <option value="zh">中文</option>
+            </select>
+          </div>
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">집중할 주제 (선택)</p>
+            <textarea
+              value={cfg.focus}
+              onChange={(e) => setCfg((p) => ({ ...p, focus: e.target.value }))}
+              placeholder={"예시:\n• 2장의 핵심 개념만 포함해줘\n• 실생활 응용 사례 위주로 정리해줘"}
+              rows={3}
+              className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-purple-400 text-gray-800"
+              style={{ lineHeight: 1.6 }}
+            />
+          </div>
+        </div>
+        <div className="flex justify-end px-6 pb-5">
+          <button
+            onClick={() => onGenerate(cfg)}
+            disabled={loading}
+            className="px-8 py-2.5 rounded-full text-sm font-semibold flex items-center gap-2 transition-all bg-purple-600 text-white"
+            style={{ opacity: loading ? 0.75 : 1, cursor: loading ? "not-allowed" : "pointer" }}
+          >
+            {loading && <Spinner className="w-3.5 h-3.5" />}
+            {loading ? "생성 중..." : "만들기"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main StudioPanel ───────────────────────────────────────────────────────
 export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
   const [loadingType, setLoadingType] = useState<string | null>(null);
   const [showQuizModal, setShowQuizModal] = useState(false);
+  const [showAudioModal, setShowAudioModal] = useState(false);
+  const [showMindmapModal, setShowMindmapModal] = useState(false);
   const [activeQuiz, setActiveQuiz] = useState<SavedQuiz | null>(null);
+  const [activeAudio, setActiveAudio] = useState<{ base64?: string; audioUrl?: string; script: string; title: string } | null>(null);
+  const [activeMindmap, setActiveMindmap] = useState<{ nodes: MindmapNode[]; title: string } | null>(null);
   const [summaryContent, setSummaryContent] = useState<string | null>(null);
   const [savedItems, setSavedItems] = useState<SavedItem[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
 
   const hasDoc = activeDocIds.length > 0;
+
+  // DB에서 저장된 아이템 불러오기
+  useEffect(() => {
+    async function loadItems() {
+      try {
+        const token = await getToken();
+        const res = await fetch(`${API}/api/studio`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const rows = await res.json();
+        const loaded: SavedItem[] = rows.map((item: {
+          id: string; type: string; title: string; subtitle: string;
+          created_at: string; content: Record<string, unknown>; audio_url?: string;
+        }) => ({
+          id: item.id,
+          type: item.type as SavedItem["type"],
+          title: item.title,
+          subtitle: item.subtitle || "",
+          createdAt: new Date(item.created_at),
+          summaryContent: item.type === "summary" ? (item.content?.text as string) : undefined,
+          quiz: item.type === "quiz" ? {
+            id: item.id,
+            title: item.title,
+            questions: ((item.content?.questions as unknown[]) || []).map((q: unknown) => {
+              const qq = q as { question: string; options: string[]; answerIndex?: number; answer?: number; hint: string; explanation: string };
+              return { question: qq.question, options: qq.options, answer: qq.answerIndex ?? qq.answer ?? 0, hint: qq.hint || "", explanation: qq.explanation || "" };
+            }),
+            createdAt: new Date(item.created_at),
+            difficulty: (item.content?.difficulty as string) || "intermediate",
+          } : undefined,
+          audio: item.type === "audio" ? { script: (item.content?.script as string) || "" } : undefined,
+          audioUrl: item.audio_url,
+          mindmap: item.type === "mindmap" ? { nodes: (item.content?.nodes as MindmapNode[]) || [] } : undefined,
+        }));
+        setSavedItems(loaded);
+      } catch { /* 로드 실패 시 빈 목록 유지 */ }
+    }
+    loadItems();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleDeleteItem(itemId: string) {
+    setSavedItems((prev) => prev.filter((i) => i.id !== itemId));
+    setOpenMenuId(null);
+    try {
+      const token = await getToken();
+      await fetch(`${API}/api/studio/${itemId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch { /* 삭제 실패 무시 */ }
+  }
 
   async function handleSummary() {
     if (!hasDoc) return;
@@ -436,25 +787,44 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
           quiz_count: COUNT_MAP[cfg.count],
           difficulty: cfg.difficulty,
           topic: cfg.topic,
+          item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "퀴즈",
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "생성 실패");
-      let questions: QuizQuestion[] = [];
-      const raw = data.result as string;
-      const match = raw.match(/\[[\s\S]*\]/);
-      if (match) questions = JSON.parse(match[0]);
+
+      // data.result는 백엔드에서 파싱된 객체: { title, questions: [{id, question, options, answerIndex, hint, explanation}] }
+      const quizData = data.result as {
+        title: string;
+        questions: {
+          id: number;
+          question: string;
+          options: string[];
+          answerIndex: number;
+          hint: string;
+          explanation: string;
+        }[];
+      };
+
+      const questions: QuizQuestion[] = quizData.questions.map((q) => ({
+        question: q.question,
+        options: q.options,
+        answer: q.answerIndex,
+        hint: q.hint,
+        explanation: q.explanation,
+      }));
+
       const quiz: SavedQuiz = {
-        id: Date.now().toString(),
-        title: "퀴즈",
+        id: data.item_id || Date.now().toString(),
+        title: quizData.title || "퀴즈",
         questions,
         createdAt: new Date(),
         difficulty: cfg.difficulty,
       };
       const newItem: SavedItem = {
-        id: Date.now().toString(),
+        id: data.item_id || Date.now().toString(),
         type: "quiz",
-        title: "퀴즈",
+        title: quizData.title || "퀴즈",
         subtitle: `퀴즈 · 소스 ${activeDocIds.length}개`,
         createdAt: new Date(),
         quiz,
@@ -469,30 +839,150 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
     }
   }
 
+  async function handleAudioGenerate(cfg: AudioConfig) {
+    setLoadingType("audio");
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API}/api/generate/audio`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          doc_ids: activeDocIds,
+          format: cfg.format,
+          language: cfg.language,
+          length: cfg.length,
+          focus: cfg.focus,
+          item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "오디오 오버뷰",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      const docNames = docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ");
+      const newItem: SavedItem = {
+        id: data.item_id || Date.now().toString(),
+        type: "audio",
+        title: data.title || docNames || "오디오 오버뷰",
+        subtitle: `오디오 · 소스 ${activeDocIds.length}개`,
+        createdAt: new Date(),
+        audio: { base64: data.audio_base64, script: data.script },
+      };
+      setSavedItems((prev) => [newItem, ...prev]);
+      setActiveAudio({ base64: data.audio_base64, script: data.script, title: data.title || "오디오 오버뷰" });
+      setShowAudioModal(false);
+    } catch (e: unknown) {
+      alert(`오디오 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
+    } finally {
+      setLoadingType(null);
+    }
+  }
+
+  async function handleMindmapGenerate(cfg: MindmapConfig) {
+    setLoadingType("mindmap");
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API}/api/generate/mindmap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          doc_ids: activeDocIds,
+          language: cfg.language,
+          focus: cfg.focus,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+
+      const newItem: SavedItem = {
+        id: data.item_id || Date.now().toString(),
+        type: "mindmap",
+        title: data.title || "마인드맵",
+        subtitle: `마인드맵 · 소스 ${activeDocIds.length}개`,
+        createdAt: new Date(),
+        mindmap: { nodes: data.nodes || [] },
+      };
+      setSavedItems((prev) => [newItem, ...prev]);
+      setActiveMindmap({ nodes: data.nodes || [], title: data.title || "마인드맵" });
+      setShowMindmapModal(false);
+    } catch (e: unknown) {
+      alert(`마인드맵 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
+    } finally {
+      setLoadingType(null);
+    }
+  }
+
   function handleCardClick(typeId: string) {
     if (!hasDoc) { alert("소스를 먼저 선택해주세요."); return; }
     if (typeId === "report") handleSummary();
     else if (typeId === "quiz") setShowQuizModal(true);
+    else if (typeId === "audio") setShowAudioModal(true);
+    else if (typeId === "mindmap") setShowMindmapModal(true);
     else alert("곧 지원 예정인 기능입니다 ✨");
   }
 
-  if (activeQuiz) return <QuizView quiz={activeQuiz} onBack={() => setActiveQuiz(null)} />;
-  if (summaryContent) return <SummaryView content={summaryContent} onBack={() => setSummaryContent(null)} />;
+  const expandToggleBtn = (
+    <button
+      onClick={() => setIsExpanded((v) => !v)}
+      title={isExpanded ? "축소" : "전체화면"}
+      className="absolute top-2.5 right-2.5 z-20 p-1.5 rounded-lg bg-white/90 border border-gray-200 shadow-sm hover:bg-gray-50 text-gray-400 hover:text-gray-600 transition-colors"
+    >
+      {isExpanded ? (
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9V4.5M15 9h4.5M15 9l5.25-5.25M15 15v4.5M15 15h4.5M15 15l5.25 5.25" />
+        </svg>
+      ) : (
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+        </svg>
+      )}
+    </button>
+  );
+
+  const subviewContent =
+    activeQuiz ? <QuizView quiz={activeQuiz} onBack={() => setActiveQuiz(null)} /> :
+    summaryContent ? <SummaryView content={summaryContent} onBack={() => setSummaryContent(null)} /> :
+    activeAudio ? <AudioView audioBase64={activeAudio.base64} audioUrl={activeAudio.audioUrl} script={activeAudio.script} title={activeAudio.title} onBack={() => setActiveAudio(null)} /> :
+    activeMindmap ? <MindMapView nodes={activeMindmap.nodes} title={activeMindmap.title} onBack={() => setActiveMindmap(null)} /> :
+    null;
+
+  if (subviewContent) {
+    const inner = (
+      <div className="fixed inset-0 z-[9999] bg-white">
+        {subviewContent}
+        {expandToggleBtn}
+      </div>
+    );
+    return isExpanded ? createPortal(inner, document.body) : <div className="h-full w-full relative">{subviewContent}{expandToggleBtn}</div>;
+  }
 
   return (
-    <aside className="flex flex-col w-full h-full bg-[#f8f9fa] overflow-hidden">
+    <aside className={`flex flex-col bg-[#f8f9fa] overflow-hidden ${isExpanded ? "fixed inset-0 z-50" : "w-full h-full"}`}>
       {showQuizModal && (
         <QuizModal loading={loadingType === "quiz"} onClose={() => setShowQuizModal(false)} onGenerate={handleQuizGenerate} />
+      )}
+      {showAudioModal && (
+        <AudioModal loading={loadingType === "audio"} onClose={() => setShowAudioModal(false)} onGenerate={handleAudioGenerate} />
+      )}
+      {showMindmapModal && (
+        <MindmapModal loading={loadingType === "mindmap"} onClose={() => setShowMindmapModal(false)} onGenerate={handleMindmapGenerate} />
       )}
 
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 shrink-0">
         <span className="text-[15px] font-semibold text-[#1f2937]">스튜디오</span>
-        <button className="p-1.5 rounded-lg hover:bg-black/5 text-[#5f6368] transition-colors">
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-            <rect x="3" y="3" width="5" height="18" rx="1" />
-            <rect x="10" y="3" width="11" height="18" rx="1" />
-          </svg>
+        <button
+          onClick={() => setIsExpanded((v) => !v)}
+          title={isExpanded ? "축소" : "전체화면"}
+          className="p-1.5 rounded-lg hover:bg-black/5 text-[#5f6368] hover:text-blue-600 transition-colors"
+        >
+          {isExpanded ? (
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9V4.5M15 9h4.5M15 9l5.25-5.25M15 15v4.5M15 15h4.5M15 15l5.25 5.25" />
+            </svg>
+          ) : (
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 20.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+            </svg>
+          )}
         </button>
       </div>
 
@@ -531,10 +1021,26 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
               <div key={item.id} className="relative flex items-center gap-2.5 px-2 py-2.5 rounded-xl hover:bg-black/5 transition-colors">
                 {/* Type icon */}
                 <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-                  style={{ background: item.type === "quiz" ? "#dbeafe" : "#dcf2e8", color: item.type === "quiz" ? "#1d4ed8" : "#166534" }}>
+                  style={{
+                    background: item.type === "quiz" ? "#dbeafe" : item.type === "audio" ? "#d0f5f1" : item.type === "mindmap" ? "#f0e6ff" : "#dcf2e8",
+                    color: item.type === "quiz" ? "#1d4ed8" : item.type === "audio" ? "#0d9488" : item.type === "mindmap" ? "#7c3aed" : "#166534",
+                  }}>
                   {item.type === "quiz" ? (
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                       <circle cx="12" cy="12" r="10" /><path strokeLinecap="round" strokeLinejoin="round" d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3M12 17h.01" />
+                    </svg>
+                  ) : item.type === "audio" ? (
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z" />
+                    </svg>
+                  ) : item.type === "mindmap" ? (
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                      <circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none" />
+                      <circle cx="5" cy="5" r="1.5" fill="currentColor" stroke="none" />
+                      <circle cx="19" cy="5" r="1.5" fill="currentColor" stroke="none" />
+                      <circle cx="5" cy="19" r="1.5" fill="currentColor" stroke="none" />
+                      <circle cx="19" cy="19" r="1.5" fill="currentColor" stroke="none" />
+                      <path strokeLinecap="round" d="M10.5 10.5L6.5 6.5M13.5 10.5L17.5 6.5M10.5 13.5L6.5 17.5M13.5 13.5L17.5 17.5" />
                     </svg>
                   ) : (
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
@@ -551,6 +1057,8 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
                 <button
                   onClick={() => {
                     if (item.type === "quiz" && item.quiz) setActiveQuiz(item.quiz);
+                    else if (item.type === "audio") setActiveAudio({ base64: item.audio?.base64, audioUrl: item.audioUrl, script: item.audio?.script || "", title: item.title });
+                    else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });
                     else if (item.summaryContent) setSummaryContent(item.summaryContent);
                   }}
                   className="w-7 h-7 rounded-full bg-[#1a73e8] flex items-center justify-center shrink-0 hover:bg-[#1557b0] transition-colors"
@@ -571,8 +1079,8 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {
                   </button>
                   {openMenuId === item.id && (
                     <div className="absolute right-0 top-7 z-20 bg-white rounded-xl shadow-lg border border-gray-200 py-1 w-20">
-                      <button
-                        onClick={() => { setSavedItems((prev) => prev.filter((i) => i.id !== item.id)); setOpenMenuId(null); }}
+                    <button
+                        onClick={() => handleDeleteItem(item.id)}
                         className="w-full px-3 py-2 text-xs text-red-600 hover:bg-red-50 text-left"
                       >삭제</button>
                     </div>
