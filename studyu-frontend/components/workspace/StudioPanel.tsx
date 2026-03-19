@@ -1852,6 +1852,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
       setActiveMemo((prev) => prev ? { ...prev, id: newId } : null);
       return newId;
     }
+  }
 
   function startRename(item: SavedItem) {
     setOpenMenuId(null);
@@ -2308,6 +2309,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
                   ) : item.type === "memo" ? (
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
                   ) : item.type === "flashcard" ? (
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                       <rect x="2" y="6" width="20" height="13" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M16 2l-2 4M12 2v4M8 2l2 4" />
