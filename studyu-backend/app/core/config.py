@@ -9,6 +9,10 @@
 
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from pathlib import Path
+
+# 이 파일 기준으로 .env 절대 경로 계산
+_ENV_FILE = Path(__file__).parent.parent.parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -33,7 +37,7 @@ class Settings(BaseSettings):
     GCP_PROJECT_ID: str = ""
 
     class Config:
-        env_file = ".env"          # .env 파일에서 자동으로 읽음
+        env_file = str(_ENV_FILE)  # .env 파일에서 자동으로 읽음 (절대 경로)
         env_file_encoding = "utf-8"
 
 

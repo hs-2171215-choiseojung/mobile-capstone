@@ -2,6 +2,7 @@
 
 엔드포인트:
     GET    /api/studio        → 사용자의 스튜디오 아이템 목록 조회
+    PATCH  /api/studio/{id}  → 아이템 제목 변경
     DELETE /api/studio/{id}  → 아이템 삭제 (오디오 파일 포함)
 """
 
@@ -43,6 +44,37 @@ async def list_studio_items(user: dict = Depends(get_current_user)):
             except Exception:
                 item["audio_url"] = ""
     return rows
+
+
+class RenameRequest(BaseModel):
+    title: str
+
+
+@router.patch("/studio/{item_id}")
+async def rename_studio_item(
+    item_id: str,
+    body: RenameRequest,
+    user: dict = Depends(get_current_user),
+):
+    """아이템 제목 변경."""
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="제목을 입력해주세요.")
+
+    rows = (
+        supabase_admin
+        .table("studio_items")
+        .select("id")
+        .eq("id", item_id)
+        .eq("user_id", user["id"])
+        .execute()
+        .data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다.")
+
+    supabase_admin.table("studio_items").update({"title": title}).eq("id", item_id).execute()
+    return {"ok": True}
 
 
 @router.delete("/studio/{item_id}")
