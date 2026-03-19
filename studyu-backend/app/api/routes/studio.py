@@ -6,6 +6,7 @@
     DELETE /api/studio/{id}  → 아이템 삭제 (오디오 파일 포함)
 """
 
+import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from app.core.auth import get_current_user
@@ -99,4 +100,45 @@ async def delete_studio_item(item_id: str, user: dict = Depends(get_current_user
             pass  # 파일 삭제 실패해도 DB 레코드는 삭제
 
     supabase_admin.table("studio_items").delete().eq("id", item_id).execute()
+    return {"ok": True}
+
+
+class MemoRequest(BaseModel):
+    title: str
+    content: str
+
+
+@router.post("/studio/memo")
+async def create_memo(req: MemoRequest, user: dict = Depends(get_current_user)):
+    """메모 생성 후 저장된 item_id 반환."""
+    item_id = str(uuid.uuid4())
+    supabase_admin.table("studio_items").insert({
+        "id": item_id,
+        "user_id": user["id"],
+        "type": "memo",
+        "title": req.title or "제목 없음",
+        "subtitle": "메모",
+        "content": {"text": req.content},
+    }).execute()
+    return {"item_id": item_id}
+
+
+@router.patch("/studio/memo/{item_id}")
+async def update_memo(item_id: str, req: MemoRequest, user: dict = Depends(get_current_user)):
+    """메모 내용 수정."""
+    rows = (
+        supabase_admin.table("studio_items")
+        .select("id")
+        .eq("id", item_id)
+        .eq("user_id", user["id"])
+        .eq("type", "memo")
+        .execute()
+        .data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="메모를 찾을 수 없습니다.")
+    supabase_admin.table("studio_items").update({
+        "title": req.title or "제목 없음",
+        "content": {"text": req.content},
+    }).eq("id", item_id).execute()
     return {"ok": True}

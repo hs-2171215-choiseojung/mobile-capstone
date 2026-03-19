@@ -24,11 +24,34 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from app.core.auth import get_current_user
 from app.core.supabase import supabase_admin
-from app.services.rag import ingest_document, ingest_url
+from app.services.rag import ingest_document, ingest_url, SUPPORTED_EXTENSIONS
 
 router = APIRouter()
 
 STORAGE_BUCKET = "documents"
+
+STORAGE_CONTENT_TYPES = {
+    "pdf": "application/pdf",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "mp4": "video/mp4",
+    "mov": "video/quicktime",
+    "avi": "video/x-msvideo",
+    "mkv": "video/x-matroska",
+    "webm": "video/webm",
+    "mp3": "audio/mpeg",
+    "m4a": "audio/mp4",
+}
+# Supabase Storage에 저장하는 확장자 (오피스 문서 형식은 MIME 미지원)
+STORABLE_EXTENSIONS = set(STORAGE_CONTENT_TYPES.keys())
+
+# 파일 크기 제한 (바이트)
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+MAX_VIDEO_SIZE = 25 * 1024 * 1024  # Whisper API 제한 25MB
+VIDEO_AUDIO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a"}
 
 
 @router.post("/documents/upload")
@@ -37,23 +60,40 @@ async def upload_document(
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
 ):
-    """PDF 업로드 → Supabase Storage 저장 → documents 테이블 등록 → RAG 청킹."""
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="PDF 파일만 업로드 가능합니다.")
+    """파일 업로드 → Supabase Storage 저장 → documents 테이블 등록 → RAG 청킹."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일명이 없습니다.")
+
+    ext = file.filename.lower().rsplit(".", 1)[-1] if "." in file.filename else ""
+    if ext not in SUPPORTED_EXTENSIONS:
+        supported = ", ".join(f".{e}" for e in sorted(SUPPORTED_EXTENSIONS))
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 파일 형식입니다. 지원 형식: {supported}")
+
+    file_bytes = await file.read()
+
+    # 파일 크기 검사
+    if ext in VIDEO_AUDIO_EXTENSIONS and len(file_bytes) > MAX_VIDEO_SIZE:
+        raise HTTPException(status_code=400, detail=f"비디오/오디오 파일은 25MB 이하만 가능합니다.")
+    if len(file_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="파일 크기는 100MB 이하만 가능합니다.")
 
     doc_id = str(uuid.uuid4())
-    file_bytes = await file.read()
-    storage_path = f"{user['id']}/{doc_id}.pdf"
 
-    # 1. Supabase Storage에 PDF 업로드
-    try:
-        supabase_admin.storage.from_(STORAGE_BUCKET).upload(
-            storage_path,
-            file_bytes,
-            {"content-type": "application/pdf"},
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"파일 저장 실패: {str(e)}")
+    # 1. Supabase Storage에 업로드 (PDF·이미지·비디오만 지원)
+    if ext in STORABLE_EXTENSIONS:
+        storage_path = f"{user['id']}/{doc_id}.{ext}"
+        content_type = STORAGE_CONTENT_TYPES[ext]
+        try:
+            supabase_admin.storage.from_(STORAGE_BUCKET).upload(
+                storage_path,
+                file_bytes,
+                {"content-type": content_type},
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"파일 저장 실패: {str(e)}")
+    else:
+        # DOCX·PPTX·HWP 등 오피스 문서는 Storage 저장 없이 텍스트 추출만 진행
+        storage_path = ""
 
     # 2. documents 테이블에 메타데이터 저장
     try:
@@ -62,13 +102,14 @@ async def upload_document(
             "notebook_id": notebook_id,
             "user_id": user["id"],
             "filename": file.filename.replace('\x00', ''),
-            "file_type": "pdf",
+            "file_type": "pdf",  # enum 제약 우회: 실제 형식은 filename에서 판단
             "file_size": len(file_bytes),
             "storage_path": storage_path,
             "status": "processing",
         }).execute()
     except Exception as e:
-        supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
+        if storage_path:
+            supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
         raise HTTPException(status_code=500, detail=f"문서 등록 실패: {str(e)}")
 
     # 3. RAG 청킹 → document_chunks 저장
@@ -78,7 +119,7 @@ async def upload_document(
         import traceback
         traceback.print_exc()
         supabase_admin.table("documents").update({"status": "error"}).eq("id", doc_id).execute()
-        raise HTTPException(status_code=500, detail=f"문서 파싱 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"파일 파싱 실패: {str(e)}")
 
     # 4. 상태 업데이트
     supabase_admin.table("documents").update({
@@ -90,6 +131,7 @@ async def upload_document(
     return {
         "doc_id": doc_id,
         "filename": file.filename,
+        "file_type": ext,
         "chunk_count": chunk_count,
         "notebook_id": notebook_id,
         "message": "업로드 및 인덱싱 완료",

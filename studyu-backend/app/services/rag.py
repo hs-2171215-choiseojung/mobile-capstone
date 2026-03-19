@@ -94,30 +94,220 @@ def _cosine_similarity(query_vec: list[float], embeddings: list[list[float]]) ->
 
 
 # ─────────────────────────────────────────────
-# 인덱싱 (PDF)
+# 파일 형식별 텍스트 추출
 # ─────────────────────────────────────────────
 
-def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple[int, int]:
-    """PDF 바이트를 청크로 분할하고 임베딩을 포함하여 Supabase에 저장.
-
-    Returns:
-        (chunk_count, page_count)
-    """
-    chunks: list[str] = []
-    page_count = 0
-
+def _extract_text_from_pdf(file_bytes: bytes) -> tuple[str, int]:
+    """PDF에서 텍스트 추출. (text, page_count) 반환."""
+    parts: list[str] = []
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         page_count = len(pdf.pages)
         for page in pdf.pages:
             raw = page.extract_text() or ""
             text = _hard_sanitize(_sanitize(raw)).strip()
-            if not text:
-                continue
-            step = CHUNK_SIZE - CHUNK_OVERLAP
-            for i in range(0, len(text), step):
-                chunk = _hard_sanitize(_sanitize(text[i: i + CHUNK_SIZE]))
-                if chunk.strip():
-                    chunks.append(chunk)
+            if text:
+                parts.append(text)
+    return "\n\n".join(parts), page_count
+
+
+def _extract_text_from_docx(file_bytes: bytes) -> tuple[str, int]:
+    """DOCX에서 텍스트 추출. (text, 0) 반환."""
+    from docx import Document
+    doc = Document(io.BytesIO(file_bytes))
+    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+    # 표 내용도 추출
+    for table in doc.tables:
+        for row in table.rows:
+            row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+            if row_text:
+                paragraphs.append(row_text)
+    return "\n".join(paragraphs), 0
+
+
+def _extract_text_from_pptx(file_bytes: bytes) -> tuple[str, int]:
+    """PPTX에서 텍스트 추출. (text, slide_count) 반환."""
+    from pptx import Presentation
+    prs = Presentation(io.BytesIO(file_bytes))
+    slides_text: list[str] = []
+    for slide in prs.slides:
+        lines: list[str] = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    line = " ".join(run.text for run in para.runs).strip()
+                    if line:
+                        lines.append(line)
+        if lines:
+            slides_text.append("\n".join(lines))
+    return "\n\n".join(slides_text), len(prs.slides)
+
+
+def _extract_text_from_hwpx(file_bytes: bytes) -> tuple[str, int]:
+    """HWPX(zip 기반 XML)에서 텍스트 추출. (text, 0) 반환."""
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    texts: list[str] = []
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+        for name in sorted(z.namelist()):
+            if "Contents" in name and name.endswith(".xml"):
+                with z.open(name) as f:
+                    try:
+                        root = ET.fromstring(f.read())
+                        for elem in root.iter():
+                            if elem.text and elem.text.strip():
+                                texts.append(elem.text.strip())
+                    except Exception:
+                        pass
+    return "\n".join(texts), 0
+
+
+def _extract_text_from_hwp(file_bytes: bytes) -> tuple[str, int]:
+    """HWP 5.x (OLE 바이너리)에서 텍스트 추출. (text, 0) 반환."""
+    import zlib
+    import struct
+    import olefile
+
+    texts: list[str] = []
+    try:
+        ole = olefile.OleFileIO(io.BytesIO(file_bytes))
+        section_idx = 0
+        while True:
+            section_name = f"BodyText/Section{section_idx:04d}"
+            if not ole.exists(section_name):
+                break
+            stream_data = ole.openstream(section_name).read()
+            try:
+                decompressed = zlib.decompress(stream_data, -15)
+            except Exception:
+                decompressed = stream_data
+
+            pos = 0
+            while pos < len(decompressed):
+                if pos + 4 > len(decompressed):
+                    break
+                header = struct.unpack_from("<I", decompressed, pos)[0]
+                rec_type = header & 0x3FF
+                size = (header >> 20) & 0xFFF
+                if size == 0xFFF:
+                    if pos + 8 > len(decompressed):
+                        break
+                    size = struct.unpack_from("<I", decompressed, pos + 4)[0]
+                    pos += 8
+                else:
+                    pos += 4
+                data = decompressed[pos: pos + size]
+                pos += size
+                # Record type 67 = 단락 텍스트
+                if rec_type == 67 and data:
+                    try:
+                        text = data.decode("utf-16-le")
+                        text = "".join(c for c in text if c.isprintable() or c in "\n\t ")
+                        if text.strip():
+                            texts.append(text.strip())
+                    except Exception:
+                        pass
+            section_idx += 1
+    except Exception as e:
+        raise ValueError(f"HWP 파일을 읽을 수 없습니다: {e}")
+    return "\n".join(texts), 0
+
+
+def _extract_text_from_image(file_bytes: bytes, filename: str) -> tuple[str, int]:
+    """이미지에서 GPT-4o Vision으로 텍스트/내용 추출. (text, 0) 반환."""
+    import base64
+    ext = filename.lower().rsplit(".", 1)[-1]
+    mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                "gif": "image/gif", "webp": "image/webp"}
+    mime_type = mime_map.get(ext, "image/jpeg")
+    b64 = base64.b64encode(file_bytes).decode("utf-8")
+
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "이 이미지에서 모든 텍스트를 그대로 추출하고, 이미지 내용을 상세히 설명해주세요."},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}},
+            ],
+        }],
+        max_tokens=2000,
+    )
+    return response.choices[0].message.content or "", 0
+
+
+def _extract_text_from_video(file_bytes: bytes, filename: str) -> tuple[str, int]:
+    """비디오/오디오에서 OpenAI Whisper로 STT. (text, 0) 반환."""
+    import tempfile
+    import os
+    ext = filename.lower().rsplit(".", 1)[-1]
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        with open(tmp_path, "rb") as f:
+            response = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                response_format="text",
+            )
+        text = response if isinstance(response, str) else getattr(response, "text", "")
+        return text, 0
+    finally:
+        os.unlink(tmp_path)
+
+
+# ─────────────────────────────────────────────
+# 인덱싱 (공통)
+# ─────────────────────────────────────────────
+
+SUPPORTED_EXTENSIONS = {
+    "pdf", "docx", "pptx", "ppt", "hwp", "hwpx",
+    "jpg", "jpeg", "png", "gif", "webp",
+    "mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a",
+}
+
+VIDEO_AUDIO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a"}
+IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
+
+
+def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple[int, int]:
+    """파일을 청크로 분할하고 임베딩을 포함하여 Supabase에 저장.
+
+    Returns:
+        (chunk_count, page_count)
+    """
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else "pdf"
+
+    if ext == "pdf":
+        text, page_count = _extract_text_from_pdf(file_bytes)
+    elif ext == "docx":
+        text, page_count = _extract_text_from_docx(file_bytes)
+    elif ext in ("pptx", "ppt"):
+        text, page_count = _extract_text_from_pptx(file_bytes)
+    elif ext == "hwpx":
+        text, page_count = _extract_text_from_hwpx(file_bytes)
+    elif ext == "hwp":
+        text, page_count = _extract_text_from_hwp(file_bytes)
+    elif ext in IMAGE_EXTENSIONS:
+        text, page_count = _extract_text_from_image(file_bytes, filename)
+    elif ext in VIDEO_AUDIO_EXTENSIONS:
+        text, page_count = _extract_text_from_video(file_bytes, filename)
+    else:
+        raise ValueError(f"지원하지 않는 파일 형식: .{ext}")
+
+    text = _hard_sanitize(_sanitize(text)).strip()
+    if not text:
+        return 0, page_count
+
+    chunks: list[str] = []
+    step = CHUNK_SIZE - CHUNK_OVERLAP
+    for i in range(0, len(text), step):
+        chunk = _hard_sanitize(_sanitize(text[i: i + CHUNK_SIZE]))
+        if chunk.strip():
+            chunks.append(chunk)
 
     if not chunks:
         return 0, page_count
@@ -140,7 +330,7 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple
     ]
 
     _db_safe_insert("document_chunks", records)
-    print(f"[INFO] ingest_document: {len(records)} chunks 저장 완료")
+    print(f"[INFO] ingest_document: {len(records)} chunks 저장 완료 ({ext})")
     return len(chunks), page_count
 
 
