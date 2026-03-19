@@ -44,11 +44,13 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        settings.FRONTEND_URL,          # http://localhost:3000 (개발)
-        "http://localhost:3000",         # 확실하게 하드코딩도 추가
-        "http://localhost:3001",         # 혹시 포트가 바뀔 때 대비
-        # 배포 후에는 여기에 실제 도메인 추가:
-        # "https://studyu.vercel.app",
+        settings.FRONTEND_URL,
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:3003",
+        "http://localhost:3004",
+        "http://localhost:3005",
     ],
     allow_credentials=True,              # 쿠키/인증 헤더 허용
     allow_methods=["*"],                 # GET, POST, PUT, DELETE 등 모두 허용

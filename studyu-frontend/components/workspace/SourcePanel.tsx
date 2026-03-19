@@ -8,7 +8,24 @@ export interface Doc {
   id: string;
   name: string;
   chunks: number;
-  type?: "pdf" | "url";
+  type?: string;
+}
+
+const SUPPORTED_EXTENSIONS = new Set([
+  "pdf", "docx", "pptx", "ppt", "hwp", "hwpx",
+  "jpg", "jpeg", "png", "gif", "webp",
+  "mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a",
+]);
+
+function getFileCategory(filename: string): string {
+  const ext = filename.toLowerCase().split(".").pop() ?? "";
+  if (["jpg", "jpeg", "png", "gif", "webp"].includes(ext)) return "image";
+  if (["mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a"].includes(ext)) return "video";
+  if (["pptx", "ppt"].includes(ext)) return "ppt";
+  if (["docx"].includes(ext)) return "docx";
+  if (["hwp", "hwpx"].includes(ext)) return "hwp";
+  if (ext === "pdf") return "pdf";
+  return "file";
 }
 
 interface Props {
@@ -20,55 +37,84 @@ interface Props {
   getToken: () => Promise<string>;
 }
 
-function PdfIcon({ active }: { active: boolean }) {
-  return (
-    <div
-      className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0"
-      style={{ background: active ? "#d2e3fc" : "#f1f3f4" }}
-    >
+function FileIcon({ category, active }: { category: string; active: boolean }) {
+  const color = active ? "#1a73e8" : "#80868b";
+  const bg = active ? "#d2e3fc" : "#f1f3f4";
+
+  if (category === "url") return (
+    <div className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0" style={{ background: bg }}>
       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
-        <path
-          d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z"
-          stroke={active ? "#1a73e8" : "#80868b"}
-          strokeWidth="1.5"
-          strokeLinejoin="round"
-        />
-        <path d="M14 2v6h6" stroke={active ? "#1a73e8" : "#80868b"} strokeWidth="1.5" strokeLinejoin="round" />
-        <path d="M8 13h8M8 17h5" stroke={active ? "#1a73e8" : "#80868b"} strokeWidth="1.5" strokeLinecap="round" />
+        <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     </div>
   );
-}
 
-function LinkIcon({ active }: { active: boolean }) {
-  return (
-    <div
-      className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0"
-      style={{ background: active ? "#d2e3fc" : "#f1f3f4" }}
-    >
+  if (category === "image") return (
+    <div className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0" style={{ background: bg }}>
       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
-        <path
-          d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"
-          stroke={active ? "#1a73e8" : "#80868b"}
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"
-          stroke={active ? "#1a73e8" : "#80868b"}
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
+        <rect x="3" y="3" width="18" height="18" rx="2" stroke={color} strokeWidth="1.5" />
+        <circle cx="8.5" cy="8.5" r="1.5" stroke={color} strokeWidth="1.5" />
+        <path d="M21 15l-5-5L5 21" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </div>
+  );
+
+  if (category === "video") return (
+    <div className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0" style={{ background: bg }}>
+      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
+        <rect x="2" y="5" width="15" height="14" rx="2" stroke={color} strokeWidth="1.5" />
+        <path d="M17 9l5-3v12l-5-3V9z" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+      </svg>
+    </div>
+  );
+
+  if (category === "ppt") return (
+    <div className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0" style={{ background: active ? "#fce8d2" : "#f1f3f4" }}>
+      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke={active ? "#e8711a" : "#80868b"} strokeWidth="1.5" strokeLinejoin="round" />
+        <path d="M14 2v6h6" stroke={active ? "#e8711a" : "#80868b"} strokeWidth="1.5" strokeLinejoin="round" />
+        <rect x="7" y="12" width="5" height="5" rx="1" stroke={active ? "#e8711a" : "#80868b"} strokeWidth="1.5" />
+        <path d="M15 13h1M15 16h1" stroke={active ? "#e8711a" : "#80868b"} strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    </div>
+  );
+
+  if (category === "docx") return (
+    <div className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0" style={{ background: active ? "#d2e8fc" : "#f1f3f4" }}>
+      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke={active ? "#1a6ee8" : "#80868b"} strokeWidth="1.5" strokeLinejoin="round" />
+        <path d="M14 2v6h6" stroke={active ? "#1a6ee8" : "#80868b"} strokeWidth="1.5" strokeLinejoin="round" />
+        <path d="M8 13h8M8 17h5" stroke={active ? "#1a6ee8" : "#80868b"} strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    </div>
+  );
+
+  if (category === "hwp") return (
+    <div className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0" style={{ background: active ? "#d2fce8" : "#f1f3f4" }}>
+      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke={active ? "#1ae870" : "#80868b"} strokeWidth="1.5" strokeLinejoin="round" />
+        <path d="M14 2v6h6" stroke={active ? "#1ae870" : "#80868b"} strokeWidth="1.5" strokeLinejoin="round" />
+        <path d="M8 13h8M8 17h5" stroke={active ? "#1ae870" : "#80868b"} strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    </div>
+  );
+
+  // pdf / 기본
+  return (
+    <div className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0" style={{ background: bg }}>
+      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+        <path d="M14 2v6h6" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+        <path d="M8 13h8M8 17h5" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
       </svg>
     </div>
   );
 }
 
 function DocIcon({ doc, active }: { doc: Doc; active: boolean }) {
-  if (doc.type === "url") return <LinkIcon active={active} />;
-  return <PdfIcon active={active} />;
+  const category = doc.type === "url" ? "url" : getFileCategory(doc.name);
+  return <FileIcon category={category} active={active} />;
 }
 
 export default function SourcePanel({
@@ -102,8 +148,9 @@ export default function SourcePanel({
   }
 
   async function handleUpload(file: File) {
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
-      alert("PDF 파일만 업로드 가능합니다.");
+    const ext = file.name.toLowerCase().split(".").pop() ?? "";
+    if (!SUPPORTED_EXTENSIONS.has(ext)) {
+      alert(`지원하지 않는 파일 형식입니다.\n지원 형식: PDF, PPTX, DOCX, HWP/HWPX, 이미지(JPG/PNG/GIF/WEBP), 비디오(MP4/MOV/AVI/MKV), 오디오(MP3/M4A)`);
       return;
     }
     setUploading(true);
@@ -121,7 +168,7 @@ export default function SourcePanel({
       if (!res.ok) throw new Error(data.detail ?? "업로드 실패");
       setDocs((prev) => [
         ...prev,
-        { id: data.doc_id, name: data.filename, chunks: data.chunk_count, type: "pdf" },
+        { id: data.doc_id, name: data.filename, chunks: data.chunk_count, type: data.file_type ?? ext },
       ]);
       setActiveDocIds((prev) => [...prev, data.doc_id]);
     } catch (e: unknown) {
@@ -231,28 +278,30 @@ export default function SourcePanel({
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          {/* PDF 버튼 — label로 파일 다이얼로그 직접 열기 (버튼 텍스트 안 바뀜) */}
+          {/* 파일 업로드 버튼 */}
           <label
-            htmlFor="pdf-file-input"
+            htmlFor="file-input"
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-medium cursor-pointer transition-all select-none"
             style={{ background: "#1a73e8", color: "white" }}
-            title="PDF 파일 추가"
+            title="파일 추가 (PDF, PPTX, DOCX, HWP, 이미지, 비디오)"
           >
             <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none">
               <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
               <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+              <path d="M12 11v6M9 14l3-3 3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            PDF
+            파일
           </label>
           <input
-            id="pdf-file-input"
+            id="file-input"
             ref={inputRef}
             type="file"
-            accept=".pdf"
+            accept=".pdf,.docx,.pptx,.ppt,.hwp,.hwpx,.jpg,.jpeg,.png,.gif,.webp,.mp4,.mov,.avi,.mkv,.webm,.mp3,.m4a"
+            multiple
             className="hidden"
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) handleUpload(file);
+              const files = Array.from(e.target.files ?? []);
+              files.forEach((file) => handleUpload(file));
               e.target.value = "";
             }}
           />
@@ -277,13 +326,13 @@ export default function SourcePanel({
         </div>
       </div>
 
-      {/* PDF 업로드 진행 표시 */}
+      {/* 업로드 진행 표시 */}
       {uploading && (
         <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2">
           <svg className="w-3.5 h-3.5 text-blue-500 animate-spin shrink-0" viewBox="0 0 24 24" fill="none">
             <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40" strokeDashoffset="10" />
           </svg>
-          <span className="text-xs text-blue-600">PDF 업로드 중...</span>
+          <span className="text-xs text-blue-600">파일 업로드 및 분석 중...</span>
         </div>
       )}
 
@@ -344,10 +393,11 @@ export default function SourcePanel({
               <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
               <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
             </svg>
-            <p className="text-sm text-gray-500 mb-1">PDF를 드래그하거나</p>
-            <label htmlFor="pdf-file-input" className="text-sm font-medium text-blue-600 hover:underline cursor-pointer">
+            <p className="text-sm text-gray-500 mb-1">파일을 드래그하거나</p>
+            <label htmlFor="file-input" className="text-sm font-medium text-blue-600 hover:underline cursor-pointer">
               파일 선택
             </label>
+            <p className="text-xs text-gray-400 mt-1">PDF · PPTX · DOCX · HWP · 이미지 · 비디오</p>
           </div>
         ) : (
           <div className="p-3 space-y-1">
