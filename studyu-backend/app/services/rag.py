@@ -822,3 +822,276 @@ def generate_mindmap(
     title = result.get("title", "마인드맵")
     nodes = result.get("nodes", [{"id": "root", "text": title}])
     return nodes, title
+
+
+def generate_flashcards(
+    doc_ids: list[str],
+    count: str = "standard",
+    difficulty: str = "intermediate",
+    topic: str = "",
+    language: str = "ko",
+    model: str = "gpt-4o-mini",
+) -> tuple[list, str]:
+    """문서 내용을 바탕으로 플래시카드(앞면/뒷면) 배열을 생성.
+
+    Returns:
+        (cards_list, title)
+        cards_list: [{"front": "용어/개념", "back": "설명", "hint": "힌트(선택)"}]
+    """
+    count_map = {"fewer": 10, "standard": 20, "more": 40}
+    card_count = count_map.get(count, 20)
+
+    difficulty_map = {"easy": "쉬운", "intermediate": "보통", "hard": "어려운"}
+    difficulty_ko = difficulty_map.get(difficulty, "보통")
+
+    lang_map = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
+    lang_label = lang_map.get(language, "한국어")
+
+    topic_instruction = f"\n특히 '{topic}' 주제와 관련된 카드를 만들어주세요." if topic.strip() else ""
+    context = _get_context(doc_ids, max_chars=10000)
+
+    prompt = f"""아래 문서 내용을 바탕으로 {difficulty_ko} 난이도의 학습용 플래시카드 {card_count}개를 {lang_label}로 만들어주세요.{topic_instruction}
+
+플래시카드 규칙:
+- 앞면(front): 핵심 용어, 개념 또는 질문 (짧고 명확하게)
+- 뒷면(back): 앞면에 대한 설명, 정의 또는 답변 (이해하기 쉽게)
+- 힌트(hint): 정답을 직접 언급하지 않고 방향만 제시 (선택사항)
+- 내용이 점점 어려워지도록 순서를 정렬해주세요
+
+문서 내용:
+{context}
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{{
+  "title": "플래시카드 세트 제목",
+  "cards": [
+    {{
+      "front": "앞면 내용 (질문 또는 용어)",
+      "back": "뒷면 내용 (답변 또는 설명)",
+      "hint": "힌트 (선택, 없으면 빈 문자열)"
+    }}
+  ]
+}}"""
+
+    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=safe_model,
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.4,
+    )
+
+    result = json.loads(response.choices[0].message.content or "{}")
+    title = result.get("title", "플래시카드")
+    cards = result.get("cards", [])
+    return cards, title
+
+
+def generate_slides(
+    doc_ids: list[str],
+    format: str = "presenter",
+    length: str = "default",
+    language: str = "ko",
+    prompt: str = "",
+    model: str = "gpt-4o-mini",
+) -> tuple[list, str, str]:
+    """문서 내용을 바탕으로 슬라이드 자료(JSON)를 생성.
+
+    Returns:
+        (slides_list, title, cover_image_b64)
+        slides_list: [{"title": "슬라이드 제목", "bullets": ["내용1", "내용2"], "speaker_notes": "발표자 노트", "layout": "title|content|two_column"}]
+        cover_image_b64: 표지 이미지 base64 문자열 (DALL-E 3)
+    """
+    length_map = {"short": (5, 8), "default": (8, 12), "long": (12, 18)}
+    min_slides, max_slides = length_map.get(length, (8, 12))
+
+    lang_map = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
+    lang_label = lang_map.get(language, "한국어")
+
+    if format == "detailed":
+        format_instruction = "자세한 자료: 전체 텍스트와 세부정보를 포함한 포괄적인 슬라이드로, 이메일로 공유하거나 단독으로 읽기에 적합합니다. 각 슬라이드에 충분한 텍스트를 포함해 주세요."
+    else:
+        format_instruction = "발표자 슬라이드: 발표 중 참고할 핵심 키워드와 간결한 bullet point만 포함한 시각적인 슬라이드입니다. 각 bullet은 5단어 이내로 짧게 작성해 주세요."
+
+    custom_instruction = f"\n추가 요구사항: {prompt.strip()}" if prompt.strip() else ""
+    context = _get_context(doc_ids, max_chars=12000)
+
+    prompt_text = f"""아래 문서 내용을 바탕으로 {lang_label} 슬라이드 자료를 만들어주세요.
+
+형식: {format_instruction}{custom_instruction}
+
+슬라이드 수: {min_slides}~{max_slides}장 (첫 슬라이드는 표지, 마지막은 정리/결론)
+
+규칙:
+- 첫 슬라이드: layout = "title", bullets는 비우고 subtitle 필드에 부제목만 기입
+- 중간 슬라이드: layout = "content" (단일 컬럼) 또는 "two_column" (양쪽 비교)
+- 마지막 슬라이드: layout = "summary", 핵심 내용 3~5개 정리
+- bullets: 각 슬라이드의 본문 내용 (문자열 배열)
+- speaker_notes: 발표자가 구두로 설명할 내용 (발표자 슬라이드 형식일 때 더 자세히)
+
+문서 내용:
+{context}
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{{
+  "title": "슬라이드 전체 제목",
+  "slides": [
+    {{
+      "title": "슬라이드 제목",
+      "subtitle": "부제목 (표지에만 사용, 나머지는 빈 문자열)",
+      "bullets": ["내용1", "내용2", "내용3"],
+      "speaker_notes": "발표자 노트",
+      "layout": "title"
+    }}
+  ]
+}}"""
+
+    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=safe_model,
+        messages=[{"role": "user", "content": prompt_text}],
+        response_format={"type": "json_object"},
+        temperature=0.5,
+    )
+
+    result = json.loads(response.choices[0].message.content or "{}")
+    title = result.get("title", "슬라이드 자료")
+    slides = result.get("slides", [])
+
+    # DALL-E 3 표지 이미지 생성
+    cover_image_b64 = ""
+    try:
+        # 표지 이미지 프롬프트 자동 생성
+        img_prompt_resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role": "user",
+                "content": f"""다음 슬라이드 제목을 위한 DALL-E 이미지 생성 프롬프트를 영어로 한 문장으로 작성해주세요.
+제목: {title}
+
+요구사항:
+- 학술/교육 자료에 어울리는 전문적인 flat illustration 스타일
+- 파란색 계열 색상 팔레트 (#1e3a5f, #2563eb 계열)
+- 깔끔하고 미니멀한 디자인, 흰색 배경
+- 텍스트 없이 아이콘/도형/다이어그램으로만 구성
+- 16:9 비율에 맞는 가로형 구도
+프롬프트만 출력하세요."""
+            }],
+            max_tokens=200,
+        )
+        img_prompt = img_prompt_resp.choices[0].message.content or ""
+        dalle_resp = client.images.generate(
+            model="dall-e-3",
+            prompt=img_prompt,
+            size="1792x1024",
+            quality="standard",
+            response_format="b64_json",
+            n=1,
+        )
+        cover_image_b64 = dalle_resp.data[0].b64_json or ""
+    except Exception as e:
+        print(f"[slides] DALL-E image generation failed: {e}")
+
+    return slides, title, cover_image_b64
+
+
+def generate_report(
+    doc_ids: list[str],
+    format: str = "briefing",
+    language: str = "ko",
+    length: str = "default",
+    tone: str = "formal",
+    instructions: str = "",
+    model: str = "gpt-4o-mini",
+) -> tuple[list, str]:
+    """문서 내용을 바탕으로 구조화된 보고서를 생성.
+
+    Returns:
+        (sections, title)
+        sections: [{"heading": "섹션 제목", "content": "내용 텍스트"}]
+    """
+    lang_map = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
+    lang_label = lang_map.get(language, "한국어")
+
+    tone_map = {
+        "formal": "격식체(공식적이고 전문적인 문체)",
+        "casual": "구어체(친근하고 읽기 쉬운 문체)",
+        "academic": "학술체(논문 수준의 엄밀하고 인용 중심의 문체)",
+    }
+    tone_label = tone_map.get(tone, "격식체")
+
+    length_map = {"short": 3, "default": 5, "long": 8}
+    section_count = length_map.get(length, 5)
+
+    format_prompts = {
+        "briefing": f"""브리핑 문서: 핵심 인사이트를 간결하게 정리한 요약 보고서입니다.
+구성: 개요, 주요 발견사항 {section_count-2}개, 결론
+각 섹션은 bullet point 중심으로 간결하게 작성하세요.""",
+
+        "study_guide": f"""학습 가이드: 학습자가 내용을 효과적으로 복습하고 이해할 수 있도록 돕는 구조입니다.
+구성: 핵심 개념 요약, 단답형 퀴즈 (질문 {max(section_count-2, 3)}개와 정답), 추천 에세이 질문 2개, 핵심 용어집
+학습자 친화적이고 교육적인 톤으로 작성하세요.""",
+
+        "blog": f"""블로그 게시물: 일반 독자가 쉽게 이해할 수 있는 기사 형식입니다.
+구성: 흥미로운 서론, 본론 {section_count-2}개의 소제목(각 2~3문단), 결론
+스토리텔링 방식으로 읽기 쉽게 작성하세요.""",
+
+        "prd": f"""제품 요구사항 정의서(PRD): 제품/서비스의 요구사항을 체계적으로 정리한 문서입니다.
+구성: 개요 및 목적, 사용자 페르소나, 핵심 기능 요구사항, 기술적 제약 및 고려사항, 성공 지표
+명확하고 구체적인 요구사항 형식으로 작성하세요.""",
+
+        "architecture": f"""시스템 아키텍처 설계서: 시스템의 구조와 구성요소를 설명하는 기술 문서입니다.
+구성: 시스템 개요, 핵심 컴포넌트 설명, 데이터 흐름, 기술 스택, 확장성/보안 고려사항
+기술적이고 상세하게 작성하세요.""",
+
+        "tech_explainer": f"""기술 개념 설명서: 복잡한 기술 개념을 이해하기 쉽게 설명하는 문서입니다.
+구성: 개념 소개(비유 포함), 원리 설명, 실제 동작 방식, 활용 사례, 장단점 및 한계
+단계적으로 개념을 쌓아가는 방식으로 설명하세요.""",
+
+        "learning_guide": f"""학습 활용 가이드: 서비스나 도구를 효과적으로 활용하는 방법을 안내하는 입문용 자료입니다.
+구성: 시작하기, 주요 기능 소개 (각 {max(section_count-3, 2)}가지), 활용 팁 및 모범 사례, 자주 묻는 질문
+초보자를 위한 친절한 안내서 형식으로 작성하세요.""",
+
+        "custom": "사용자가 아래 추가 지시사항에 명시한 형식으로 보고서를 작성하세요.",
+    }
+
+    format_instruction = format_prompts.get(format, format_prompts["briefing"])
+    custom_instruction = f"\n\n추가 지시사항: {instructions.strip()}" if instructions.strip() else ""
+    context = _get_context(doc_ids, max_chars=12000)
+
+    prompt_text = f"""아래 문서 내용을 바탕으로 {lang_label} 보고서를 생성해주세요.
+
+보고서 형식:
+{format_instruction}{custom_instruction}
+
+문체: {tone_label}
+
+문서 내용:
+{context}
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{{
+  "title": "보고서 제목",
+  "sections": [
+    {{
+      "heading": "섹션 제목",
+      "content": "섹션 내용 (마크다운 bullet 사용 가능. \\n으로 줄바꿈)"
+    }}
+  ]
+}}"""
+
+    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=safe_model,
+        messages=[{"role": "user", "content": prompt_text}],
+        response_format={"type": "json_object"},
+        temperature=0.5,
+    )
+
+    result = json.loads(response.choices[0].message.content or "{}")
+    title = result.get("title", "보고서")
+    sections = result.get("sections", [])
+    return sections, title
