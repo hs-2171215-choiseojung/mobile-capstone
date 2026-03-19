@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import type { Doc } from "./SourcePanel";
@@ -94,7 +94,7 @@ interface MindmapNode {
 
 interface SavedItem {
   id: string;
-  type: "summary" | "quiz" | "audio" | "mindmap" | "flashcard" | "slides" | "report";
+  type: "summary" | "quiz" | "audio" | "mindmap" | "memo" | "flashcard" | "slides" | "report";
   title: string;
   subtitle: string;
   createdAt: Date;
@@ -103,6 +103,7 @@ interface SavedItem {
   audio?: { base64?: string; script: string };
   audioUrl?: string;  // Supabase Storage 서명 URL (DB 로드 시)
   mindmap?: { nodes: MindmapNode[] };
+  memoContent?: string;
   flashcard?: { cards: FlashCard[]; difficulty: string };
   slides?: { slides: Slide[]; format: string; cover_image_b64?: string };
   report?: { sections: ReportSection[]; format: string };
@@ -647,6 +648,97 @@ function SummaryView({ content, onBack }: { content: string; onBack: () => void 
         <div className="rounded-2xl p-4 bg-white border border-gray-200 text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
           {content}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MemoView ───────────────────────────────────────────────────────────────
+function MemoView({
+  initialId,
+  initialTitle,
+  initialContent,
+  onBack,
+  onSave,
+}: {
+  initialId: string | null;
+  initialTitle: string;
+  initialContent: string;
+  onBack: () => void;
+  onSave: (id: string | null, title: string, content: string) => Promise<string>;
+}) {
+  const [title, setTitle] = useState(initialTitle);
+  const [content, setContent] = useState(initialContent);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await onSave(initialId, title, content);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-full bg-white">
+      {/* 상단 바 */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 shrink-0">
+        <button
+          onClick={onBack}
+          className="text-sm text-gray-500 hover:text-blue-600 flex items-center gap-1"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
+            <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          스튜디오
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="px-4 py-1.5 rounded-full text-xs font-semibold transition-all flex items-center gap-1.5"
+          style={{
+            background: saved ? "#e6f4ea" : "#1a73e8",
+            color: saved ? "#137333" : "white",
+            opacity: saving ? 0.7 : 1,
+          }}
+        >
+          {saving ? (
+            <Spinner className="w-3 h-3" />
+          ) : saved ? (
+            <>
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+              저장됨
+            </>
+          ) : "저장"}
+        </button>
+      </div>
+
+      {/* 제목 */}
+      <input
+        type="text"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="제목"
+        className="w-full px-5 pt-5 pb-2 text-xl font-bold text-gray-900 outline-none placeholder-gray-300 bg-white"
+      />
+
+      {/* 본문 */}
+      <textarea
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        placeholder="내용을 입력하세요..."
+        className="flex-1 w-full px-5 py-2 text-sm text-gray-800 leading-relaxed outline-none resize-none bg-white placeholder-gray-300"
+      />
+
+      {/* 하단 정보 */}
+      <div className="px-5 py-2 border-t border-gray-100 shrink-0">
+        <p className="text-[11px] text-gray-400">{content.length}자</p>
       </div>
     </div>
   );
@@ -1648,6 +1740,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
   const [activeSlides, setActiveSlides] = useState<{ slides: Slide[]; title: string; cover_image_b64?: string } | null>(null);
   const [activeReport, setActiveReport] = useState<{ sections: ReportSection[]; title: string; format: string } | null>(null);
   const [summaryContent, setSummaryContent] = useState<string | null>(null);
+  const [activeMemo, setActiveMemo] = useState<{ id: string | null; title: string; content: string } | null>(null);
   const [savedItems, setSavedItems] = useState<SavedItem[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -1689,6 +1782,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
           audio: item.type === "audio" ? { script: (item.content?.script as string) || "" } : undefined,
           audioUrl: item.audio_url,
           mindmap: item.type === "mindmap" ? { nodes: (item.content?.nodes as MindmapNode[]) || [] } : undefined,
+          memoContent: item.type === "memo" ? (item.content?.text as string) || "" : undefined,
           flashcard: item.type === "flashcard" ? {
             cards: (item.content?.cards as FlashCard[]) || [],
             difficulty: (item.content?.difficulty as string) || "intermediate",
@@ -1720,6 +1814,44 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
       });
     } catch { /* 삭제 실패 무시 */ }
   }
+
+  async function handleSaveMemo(id: string | null, title: string, content: string): Promise<string> {
+    const token = await getToken();
+    if (id) {
+      // 기존 메모 수정
+      await fetch(`${API}/api/studio/memo/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ title, content }),
+      });
+      setSavedItems((prev) =>
+        prev.map((item) =>
+          item.id === id ? { ...item, title: title || "제목 없음", memoContent: content } : item
+        )
+      );
+      return id;
+    } else {
+      // 새 메모 생성
+      const res = await fetch(`${API}/api/studio/memo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ title, content }),
+      });
+      const data = await res.json();
+      const newId = data.item_id;
+      const newItem: SavedItem = {
+        id: newId,
+        type: "memo",
+        title: title || "제목 없음",
+        subtitle: "메모",
+        createdAt: new Date(),
+        memoContent: content,
+      };
+      setSavedItems((prev) => [newItem, ...prev]);
+      // 새로 생성된 id로 activeMemo 업데이트 (이후 수정 시 PATCH 사용)
+      setActiveMemo((prev) => prev ? { ...prev, id: newId } : null);
+      return newId;
+    }
 
   function startRename(item: SavedItem) {
     setOpenMenuId(null);
@@ -2052,6 +2184,15 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
     summaryContent ? <SummaryView content={summaryContent} onBack={() => setSummaryContent(null)} /> :
     activeAudio ? <AudioView audioBase64={activeAudio.base64} audioUrl={activeAudio.audioUrl} script={activeAudio.script} title={activeAudio.title} onBack={() => setActiveAudio(null)} /> :
     activeMindmap ? <MindMapView nodes={activeMindmap.nodes} title={activeMindmap.title} onBack={() => setActiveMindmap(null)} /> :
+    activeMemo !== null ? (
+      <MemoView
+        initialId={activeMemo.id}
+        initialTitle={activeMemo.title}
+        initialContent={activeMemo.content}
+        onBack={() => setActiveMemo(null)}
+        onSave={handleSaveMemo}
+      />
+    ) :
     activeFlashcard ? <FlashcardView cards={activeFlashcard.cards} title={activeFlashcard.title} onBack={() => setActiveFlashcard(null)} /> :
     activeSlides ? <SlideView slides={activeSlides.slides} title={activeSlides.title} coverImageB64={activeSlides.cover_image_b64} onBack={() => setActiveSlides(null)} /> :
     activeReport ? <ReportView sections={activeReport.sections} title={activeReport.title} format={activeReport.format} onBack={() => setActiveReport(null)} /> :
@@ -2144,8 +2285,8 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
                 {/* Type icon */}
                 <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
                   style={{
-                    background: item.type === "quiz" ? "#dbeafe" : item.type === "audio" ? "#d0f5f1" : item.type === "mindmap" ? "#f0e6ff" : item.type === "flashcard" ? "#fde0ea" : item.type === "slides" ? "#fef0da" : "#dcf2e8",
-                    color: item.type === "quiz" ? "#1d4ed8" : item.type === "audio" ? "#0d9488" : item.type === "mindmap" ? "#7c3aed" : item.type === "flashcard" ? "#be123c" : item.type === "slides" ? "#d97706" : "#166534",
+                    background: item.type === "quiz" ? "#dbeafe" : item.type === "audio" ? "#d0f5f1" : item.type === "mindmap" ? "#f0e6ff" : item.type === "memo" ? "#fef9c3" : item.type === "flashcard" ? "#fde0ea" : item.type === "slides" ? "#fef0da" : "#dcf2e8",
+                    color: item.type === "quiz" ? "#1d4ed8" : item.type === "audio" ? "#0d9488" : item.type === "mindmap" ? "#7c3aed" : item.type === "memo" ? "#854d0e" : item.type === "flashcard" ? "#be123c" : item.type === "slides" ? "#d97706" : "#166534",
                   }}>
                   {item.type === "quiz" ? (
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
@@ -2164,6 +2305,9 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
                       <circle cx="19" cy="19" r="1.5" fill="currentColor" stroke="none" />
                       <path strokeLinecap="round" d="M10.5 10.5L6.5 6.5M13.5 10.5L17.5 6.5M10.5 13.5L6.5 17.5M13.5 13.5L17.5 17.5" />
                     </svg>
+                  ) : item.type === "memo" ? (
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                   ) : item.type === "flashcard" ? (
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                       <rect x="2" y="6" width="20" height="13" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M16 2l-2 4M12 2v4M8 2l2 4" />
@@ -2204,6 +2348,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
                     if (item.type === "quiz" && item.quiz) setActiveQuiz(item.quiz);
                     else if (item.type === "audio") setActiveAudio({ base64: item.audio?.base64, audioUrl: item.audioUrl, script: item.audio?.script || "", title: item.title });
                     else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });
+                    else if (item.type === "memo") setActiveMemo({ id: item.id, title: item.title, content: item.memoContent ?? "" });
                     else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
     else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
                     else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
@@ -2256,7 +2401,10 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
 
       {/* 메모 추가 button */}
       <div className="px-4 py-3 shrink-0 flex justify-center">
-        <button className="flex items-center gap-2 px-6 py-2.5 bg-[#1f2937] text-white text-sm font-medium rounded-full hover:bg-[#374151] transition-colors shadow-sm">
+        <button
+          onClick={() => setActiveMemo({ id: null, title: "", content: "" })}
+          className="flex items-center gap-2 px-6 py-2.5 bg-[#1f2937] text-white text-sm font-medium rounded-full hover:bg-[#374151] transition-colors shadow-sm"
+        >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
             <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
           </svg>
