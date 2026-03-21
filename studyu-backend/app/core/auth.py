@@ -47,6 +47,7 @@ async def get_current_user(
             "email": user.email,
             "display_name": user.user_metadata.get("full_name", ""),
             "avatar_url": user.user_metadata.get("avatar_url", ""),
+            "role": user.user_metadata.get("role", "student"),
         }
 
     except Exception as e:

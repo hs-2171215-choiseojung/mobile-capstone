@@ -3,18 +3,20 @@
 // ============================================
 // app/login/page.tsx
 // ============================================
-// Google 로그인 페이지
-// "Google로 계속하기" 버튼을 누르면 → Google 로그인 팝업 → 
-// 성공 시 /auth/callback → /dashboard로 이동
+// Google 로그인 & 이메일/비밀번호 로그인
 // ============================================
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 
 export default function LoginPage() {
+  const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
 
   const handleGoogleLogin = async () => {
     setLoading(true)
@@ -37,6 +39,45 @@ export default function LoginPage() {
       }
       // 성공하면 Google 로그인 페이지로 리다이렉트되므로
       // 여기서 setLoading(false)를 할 필요 없음
+    } catch (err) {
+      setError('로그인 중 오류가 발생했습니다.')
+      setLoading(false)
+    }
+  }
+
+  const handleEmailLogin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+    setError(null)
+
+    if (!email || !password) {
+      setError('이메일과 비밀번호를 입력해주세요.')
+      setLoading(false)
+      return
+    }
+
+    try {
+      const supabase = createClient()
+
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      })
+
+      if (error) {
+        setError(error.message)
+        setLoading(false)
+      } else {
+        // 로그인 성공 → 사용자 정보 확인
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user?.user_metadata?.role) {
+          // 역할이 있으면 → 대시보드로 이동
+          router.push('/dashboard')
+        } else {
+          // 역할이 없으면 → 온보딩으로 이동
+          router.push('/onboarding')
+        }
+      }
     } catch (err) {
       setError('로그인 중 오류가 발생했습니다.')
       setLoading(false)
@@ -74,8 +115,8 @@ export default function LoginPage() {
           <button
             onClick={handleGoogleLogin}
             disabled={loading}
-            className="w-full flex items-center justify-center gap-3 
-                       px-4 py-3 bg-white border-2 border-surface-200 
+            className="w-full flex items-center justify-center gap-3
+                       px-4 py-3 bg-white border-2 border-surface-200
                        rounded-xl font-medium text-sm text-surface-700
                        hover:border-surface-300 hover:bg-surface-50
                        disabled:opacity-50 disabled:cursor-not-allowed
@@ -106,16 +147,73 @@ export default function LoginPage() {
             </div>
             <div className="relative flex justify-center">
               <span className="px-3 bg-white text-xs text-surface-400">
-                안내사항
+                또는
               </span>
             </div>
           </div>
 
+          {/* 이메일/비밀번호 로그인 폼 */}
+          <form onSubmit={handleEmailLogin} className="space-y-4">
+            <div>
+              <label htmlFor="email" className="block text-xs font-medium text-surface-700 mb-2">
+                이메일
+              </label>
+              <input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={loading}
+                placeholder="example@email.com"
+                className="w-full px-4 py-2.5 border border-surface-200 rounded-lg text-sm
+                           focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent
+                           disabled:bg-surface-50 disabled:cursor-not-allowed
+                           transition-all duration-200"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="password" className="block text-xs font-medium text-surface-700 mb-2">
+                비밀번호
+              </label>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={loading}
+                placeholder="••••••••"
+                className="w-full px-4 py-2.5 border border-surface-200 rounded-lg text-sm
+                           focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent
+                           disabled:bg-surface-50 disabled:cursor-not-allowed
+                           transition-all duration-200"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full px-4 py-2.5 bg-brand-600 text-white rounded-lg font-medium text-sm
+                         hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed
+                         transition-all duration-200"
+            >
+              {loading ? '로그인 중...' : '로그인'}
+            </button>
+          </form>
+
+          {/* 회원가입 링크 */}
+          <p className="mt-4 text-center text-sm text-surface-600">
+            계정이 없으신가요?{' '}
+            <Link href="/signup" className="text-brand-600 font-medium hover:text-brand-700 transition-colors">
+              회원가입
+            </Link>
+          </p>
+
           {/* 안내 */}
-          <div className="space-y-2">
+          <div className="mt-6 pt-6 border-t border-surface-200 space-y-2">
             <div className="flex items-start gap-2 text-xs text-surface-500">
               <span className="text-brand-500 mt-0.5">✓</span>
-              <span>Google 계정으로 간편하게 시작할 수 있습니다</span>
+              <span>Google 계정 또는 이메일로 로그인할 수 있습니다</span>
             </div>
             <div className="flex items-start gap-2 text-xs text-surface-500">
               <span className="text-brand-500 mt-0.5">✓</span>
