@@ -45,6 +45,7 @@ export async function middleware(request: NextRequest) {
   if (
     !user &&
     !request.nextUrl.pathname.startsWith('/login') &&
+    !request.nextUrl.pathname.startsWith('/signup') &&
     !request.nextUrl.pathname.startsWith('/auth') &&
     request.nextUrl.pathname !== '/'
   ) {
@@ -53,10 +54,18 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  // 이미 로그인한 사용자가 /login에 접근하면 → 대시보드로
-  if (user && request.nextUrl.pathname === '/login') {
+  // 이미 로그인한 사용자가 /login이나 /signup에 접근하면 → 온보딩 또는 대시보드로
+  if (user && (request.nextUrl.pathname === '/login' || request.nextUrl.pathname.startsWith('/signup'))) {
     const url = request.nextUrl.clone()
-    url.pathname = '/dashboard'
+    // 역할이 없으면 온보딩으로, 있으면 대시보드로
+    url.pathname = user.user_metadata?.role ? '/dashboard' : '/onboarding'
+    return NextResponse.redirect(url)
+  }
+
+  // 역할이 없는 사용자가 /onboarding이 아닌 다른 페이지에 접근하면 → 온보딩으로
+  if (user && !user.user_metadata?.role && request.nextUrl.pathname !== '/onboarding') {
+    const url = request.nextUrl.clone()
+    url.pathname = '/onboarding'
     return NextResponse.redirect(url)
   }
 

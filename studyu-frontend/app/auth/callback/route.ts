@@ -18,8 +18,16 @@ export async function GET(request: Request) {
     const { error } = await supabase.auth.exchangeCodeForSession(code)
 
     if (!error) {
-      // 로그인 성공 → 대시보드로 이동
-      return NextResponse.redirect(`${origin}${next}`)
+      // 로그인 성공 → 사용자 역할 확인
+      const { data: { user } } = await supabase.auth.getUser()
+
+      if (user?.user_metadata?.role) {
+        // 역할이 있으면 → 대시보드로 이동
+        return NextResponse.redirect(`${origin}${next}`)
+      } else {
+        // 역할이 없으면 → 온보딩으로 이동
+        return NextResponse.redirect(`${origin}/onboarding`)
+      }
     }
   }
 
