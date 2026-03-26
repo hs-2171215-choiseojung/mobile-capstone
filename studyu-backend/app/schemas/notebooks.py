@@ -23,6 +23,7 @@ class NotebookCreate(BaseModel):
     description: str | None = Field(None, max_length=1000, examples=["OS 강의자료 정리"])
     default_model: str = Field("openai", examples=["openai", "claude"])
     difficulty: str = Field("intermediate", examples=["beginner", "intermediate", "advanced"])
+    notebook_type: str = Field("student", examples=["student", "instructor"])
 
 
 class NotebookUpdate(BaseModel):
@@ -31,6 +32,7 @@ class NotebookUpdate(BaseModel):
     description: str | None = Field(None, max_length=1000)
     default_model: str | None = None
     difficulty: str | None = None
+    is_starred: bool | None = None
 
 
 # ── 응답 스키마 ──
@@ -43,6 +45,9 @@ class NotebookResponse(BaseModel):
     description: str | None = None
     default_model: str
     difficulty: str
+    notebook_type: str = "student"
+    invite_code: str | None = None
+    is_starred: bool = False
     created_at: datetime
     updated_at: datetime
 

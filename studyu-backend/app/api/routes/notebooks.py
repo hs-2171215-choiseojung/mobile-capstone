@@ -5,12 +5,18 @@
 NotebookLM의 "노트북"과 같은 개념.
 
 엔드포인트:
-    GET    /api/notebooks          → 내 노트북 목록
-    POST   /api/notebooks          → 노트북 생성
-    GET    /api/notebooks/{id}     → 노트북 상세 (문서 목록 포함)
-    PATCH  /api/notebooks/{id}     → 노트북 수정
-    DELETE /api/notebooks/{id}     → 노트북 삭제
+    GET    /api/notebooks            → 내 노트북 목록
+    POST   /api/notebooks            → 노트북 생성
+    GET    /api/notebooks/enrolled   → 참여 중인 노트북 목록
+    POST   /api/notebooks/join       → 초대 코드로 참여
+    GET    /api/notebooks/{id}       → 노트북 상세 (문서 목록 포함)
+    PATCH  /api/notebooks/{id}       → 노트북 수정
+    DELETE /api/notebooks/{id}       → 노트북 삭제
+    POST   /api/notebooks/{id}/invite → 초대 코드 생성
 """
+
+import secrets
+import string
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.auth import get_current_user
@@ -27,15 +33,19 @@ router = APIRouter()
 
 # ── 노트북 목록 조회 ──
 @router.get("/notebooks", response_model=list[NotebookResponse])
-async def get_notebooks(user: dict = Depends(get_current_user)):
-    """현재 사용자의 노트북 목록을 반환합니다."""
-    result = (
+async def get_notebooks(
+    notebook_type: str | None = None,
+    user: dict = Depends(get_current_user),
+):
+    """현재 사용자의 노트북 목록을 반환합니다. notebook_type으로 필터링 가능."""
+    query = (
         supabase_admin.table("notebooks")
         .select("*")
         .eq("user_id", user["id"])
-        .order("updated_at", desc=True)
-        .execute()
     )
+    if notebook_type:
+        query = query.eq("notebook_type", notebook_type)
+    result = query.order("updated_at", desc=True).execute()
     return result.data
 
 
@@ -50,13 +60,11 @@ async def create_notebook(
     user: dict = Depends(get_current_user),
 ):
     """새 노트북을 생성합니다."""
-    # 중복된 이름이 있으면 번호를 붙임
     base_title = body.title
     title = base_title
     counter = 1
 
     while True:
-        # 같은 이름의 노트북이 있는지 확인
         check = (
             supabase_admin.table("notebooks")
             .select("id")
@@ -64,12 +72,8 @@ async def create_notebook(
             .eq("title", title)
             .execute()
         )
-
         if not check.data:
-            # 같은 이름이 없으면 이 이름 사용
             break
-
-        # 있으면 번호 증가
         title = f"{base_title} {counter}"
         counter += 1
 
@@ -81,6 +85,7 @@ async def create_notebook(
             "description": body.description,
             "default_model": body.default_model,
             "difficulty": body.difficulty,
+            "notebook_type": body.notebook_type,
         })
         .execute()
     )
@@ -91,6 +96,103 @@ async def create_notebook(
             detail="노트북 생성에 실패했습니다.",
         )
     return result.data[0]
+
+
+# ── 참여 중인 노트북 목록 (고정 경로 → /{id} 보다 먼저 등록) ──
+@router.get("/notebooks/enrolled", response_model=list[NotebookResponse])
+async def get_enrolled_notebooks(
+    user: dict = Depends(get_current_user),
+):
+    """학생이 초대 코드로 참여한 강사 노트북 목록을 반환합니다."""
+    result = (
+        supabase_admin.table("notebook_enrollments")
+        .select("notebook_id, notebooks(*)")
+        .eq("student_id", user["id"])
+        .execute()
+    )
+    return [row["notebooks"] for row in result.data if row.get("notebooks")]
+
+
+# ── 초대 코드로 참여 (고정 경로 → /{id} 보다 먼저 등록) ──
+@router.post("/notebooks/join", response_model=NotebookResponse)
+async def join_notebook(
+    body: dict,
+    user: dict = Depends(get_current_user),
+):
+    """학생이 초대 코드로 강사 노트북에 참여합니다."""
+    invite_code = (body.get("invite_code") or "").strip().upper()
+    if not invite_code:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="초대 코드를 입력해주세요.")
+
+    result = (
+        supabase_admin.table("notebooks")
+        .select("*")
+        .eq("invite_code", invite_code)
+        .single()
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="유효하지 않은 초대 코드입니다.")
+
+    notebook = result.data
+    notebook_id = notebook["id"]
+
+    existing = (
+        supabase_admin.table("notebook_enrollments")
+        .select("id")
+        .eq("notebook_id", notebook_id)
+        .eq("student_id", user["id"])
+        .execute()
+    )
+    if existing.data:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="이미 참여한 노트북입니다.")
+
+    supabase_admin.table("notebook_enrollments").insert({
+        "notebook_id": notebook_id,
+        "student_id": user["id"],
+    }).execute()
+
+    return notebook
+
+
+# ── 노트북 수강 학생 목록 (고정 경로 → /{id} 보다 먼저 등록) ──
+@router.get("/notebooks/{notebook_id}/students")
+async def get_notebook_students(
+    notebook_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """강사 노트북에 참여 중인 학생 목록을 반환합니다."""
+    # 본인 노트북인지 확인
+    nb = (
+        supabase_admin.table("notebooks")
+        .select("id, title")
+        .eq("id", notebook_id)
+        .eq("user_id", user["id"])
+        .single()
+        .execute()
+    )
+    if not nb.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="노트북을 찾을 수 없습니다.")
+
+    result = (
+        supabase_admin.table("notebook_enrollments")
+        .select("id, created_at, users(id, display_name, email, avatar_url)")
+        .eq("notebook_id", notebook_id)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    students = []
+    for row in result.data:
+        u = row.get("users") or {}
+        students.append({
+            "enrollment_id": row["id"],
+            "joined_at": row["created_at"],
+            "id": u.get("id"),
+            "display_name": u.get("display_name"),
+            "email": u.get("email"),
+            "avatar_url": u.get("avatar_url"),
+        })
+    return {"notebook_id": notebook_id, "title": nb.data["title"], "students": students}
 
 
 # ── 노트북 상세 조회 (문서 목록 포함) ──
@@ -125,7 +227,6 @@ async def update_notebook(
     user: dict = Depends(get_current_user),
 ):
     """노트북 정보를 수정합니다."""
-    # 변경된 필드만 업데이트 (None이 아닌 것만)
     update_data = body.model_dump(exclude_none=True)
 
     if not update_data:
@@ -148,6 +249,73 @@ async def update_notebook(
             detail="노트북을 찾을 수 없습니다.",
         )
     return result.data[0]
+
+
+# ── 초대 코드 생성 ──
+@router.post("/notebooks/{notebook_id}/invite")
+async def generate_invite_code(
+    notebook_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """강사가 노트북의 초대 코드를 생성하거나 기존 코드를 반환합니다."""
+    result = (
+        supabase_admin.table("notebooks")
+        .select("id, invite_code, notebook_type")
+        .eq("id", notebook_id)
+        .eq("user_id", user["id"])
+        .single()
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="노트북을 찾을 수 없습니다.")
+
+    if result.data.get("notebook_type") != "instructor":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="강사 노트북에만 초대 코드를 생성할 수 있습니다.")
+
+    existing_code = result.data.get("invite_code")
+    if existing_code:
+        return {"invite_code": existing_code}
+
+    alphabet = string.ascii_uppercase + string.digits
+    while True:
+        code = "".join(secrets.choice(alphabet) for _ in range(6))
+        check = supabase_admin.table("notebooks").select("id").eq("invite_code", code).execute()
+        if not check.data:
+            break
+
+    supabase_admin.table("notebooks").update({"invite_code": code}).eq("id", notebook_id).execute()
+    return {"invite_code": code}
+
+
+# ── 수강 학생 삭제 ──
+@router.delete("/notebooks/{notebook_id}/students/{student_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_student(
+    notebook_id: str,
+    student_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """강사가 노트북에서 학생을 내보냅니다."""
+    # 본인 노트북인지 확인
+    nb = (
+        supabase_admin.table("notebooks")
+        .select("id")
+        .eq("id", notebook_id)
+        .eq("user_id", user["id"])
+        .single()
+        .execute()
+    )
+    if not nb.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="노트북을 찾을 수 없습니다.")
+
+    result = (
+        supabase_admin.table("notebook_enrollments")
+        .delete()
+        .eq("notebook_id", notebook_id)
+        .eq("student_id", student_id)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="해당 학생을 찾을 수 없습니다.")
 
 
 # ── 노트북 삭제 ──
