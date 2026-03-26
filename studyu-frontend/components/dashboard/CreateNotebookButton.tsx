@@ -8,6 +8,7 @@ const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 interface Props {
   size?: "default" | "large";
+  from?: string;
 }
 
 const TEMPLATES = [
@@ -18,7 +19,7 @@ const TEMPLATES = [
   { emoji: "📝", title: "자격증 준비", desc: "자격증 시험 대비" },
 ];
 
-export default function CreateNotebookButton({ size = "default" }: Props) {
+export default function CreateNotebookButton({ size = "default", from }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -73,7 +74,7 @@ export default function CreateNotebookButton({ size = "default" }: Props) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "노트북 생성 실패");
 
-      router.push(`/workspace/${data.id}`);
+      router.push(`/workspace/${data.id}${from ? `?from=${encodeURIComponent(from)}` : ""}`);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "오류가 발생했습니다.");
       setLoading(false);

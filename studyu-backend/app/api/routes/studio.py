@@ -18,17 +18,20 @@ AUDIO_BUCKET = "studio-audio"
 
 
 @router.get("/studio")
-async def list_studio_items(user: dict = Depends(get_current_user)):
-    """사용자의 모든 스튜디오 아이템을 최신순으로 반환."""
-    rows = (
+async def list_studio_items(
+    notebook_id: str | None = None,
+    user: dict = Depends(get_current_user),
+):
+    """사용자의 스튜디오 아이템을 최신순으로 반환. notebook_id로 필터링."""
+    query = (
         supabase_admin
         .table("studio_items")
         .select("*")
         .eq("user_id", user["id"])
-        .order("created_at", desc=True)
-        .execute()
-        .data or []
     )
+    if notebook_id:
+        query = query.eq("notebook_id", notebook_id)
+    rows = query.order("created_at", desc=True).execute().data or []
     # 오디오 파일이 있는 항목은 1시간짜리 서명 URL 생성
     for item in rows:
         if item.get("audio_path"):
@@ -106,20 +109,24 @@ async def delete_studio_item(item_id: str, user: dict = Depends(get_current_user
 class MemoRequest(BaseModel):
     title: str
     content: str
+    notebook_id: str | None = None
 
 
 @router.post("/studio/memo")
 async def create_memo(req: MemoRequest, user: dict = Depends(get_current_user)):
     """메모 생성 후 저장된 item_id 반환."""
     item_id = str(uuid.uuid4())
-    supabase_admin.table("studio_items").insert({
+    row = {
         "id": item_id,
         "user_id": user["id"],
         "type": "memo",
         "title": req.title or "제목 없음",
         "subtitle": "메모",
         "content": {"text": req.content},
-    }).execute()
+    }
+    if req.notebook_id:
+        row["notebook_id"] = req.notebook_id
+    supabase_admin.table("studio_items").insert(row).execute()
     return {"item_id": item_id}
 
 

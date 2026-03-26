@@ -110,6 +110,7 @@ interface SavedItem {
 }
 
 interface Props {
+  notebookId: string;
   activeDocIds: string[];
   docs: Doc[];
   getToken: () => Promise<string>;
@@ -1726,7 +1727,7 @@ function ReportView({
 }
 
 // ── Main StudioPanel ───────────────────────────────────────────────────────
-export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  const [loadingType, setLoadingType] = useState<string | null>(null);
+export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }: Props) {  const [loadingType, setLoadingType] = useState<string | null>(null);
   const [showQuizModal, setShowQuizModal] = useState(false);
   const [showAudioModal, setShowAudioModal] = useState(false);
   const [showMindmapModal, setShowMindmapModal] = useState(false);
@@ -1754,7 +1755,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
     async function loadItems() {
       try {
         const token = await getToken();
-        const res = await fetch(`${API}/api/studio`, {
+        const res = await fetch(`${API}/api/studio?notebook_id=${notebookId}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) return;
@@ -1835,7 +1836,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
       const res = await fetch(`${API}/api/studio/memo`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ title, content }),
+        body: JSON.stringify({ title, content, notebook_id: notebookId }),
       });
       const data = await res.json();
       const newId = data.item_id;
@@ -1883,7 +1884,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
       const res = await fetch(`${API}/api/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ doc_ids: activeDocIds, type: "summary" }),
+        body: JSON.stringify({ doc_ids: activeDocIds, type: "summary", notebook_id: notebookId }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "생성 실패");
@@ -1919,6 +1920,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
           difficulty: cfg.difficulty,
           topic: cfg.topic,
           item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "퀴즈",
+          notebook_id: notebookId,
         }),
       });
       const data = await res.json();
@@ -1984,6 +1986,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
           length: cfg.length,
           focus: cfg.focus,
           item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "오디오 오버뷰",
+          notebook_id: notebookId,
         }),
       });
       const data = await res.json();
@@ -2018,6 +2021,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
           doc_ids: activeDocIds,
           language: cfg.language,
           focus: cfg.focus,
+          notebook_id: notebookId,
         }),
       });
       const data = await res.json();
@@ -2055,6 +2059,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
           topic: cfg.topic,
           language: cfg.language,
           item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "플래시카드",
+          notebook_id: notebookId,
         }),
       });
       const data = await res.json();
@@ -2091,6 +2096,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
           language: cfg.language,
           prompt: cfg.prompt,
           item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "슬라이드 자료",
+          notebook_id: notebookId,
         }),
       });
       const data = await res.json();
@@ -2129,6 +2135,7 @@ export default function StudioPanel({ activeDocIds, docs, getToken }: Props) {  
           tone: cfg.tone,
           instructions: cfg.instructions,
           item_title: docNames || "보고서",
+          notebook_id: notebookId,
         }),
       });
       const data = await res.json();

@@ -24,6 +24,7 @@ interface InitialDoc {
 interface Props {
   notebook: Notebook;
   initialDocs: InitialDoc[];
+  backUrl: string;
 }
 
 function Divider({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
@@ -41,7 +42,7 @@ async function getToken(): Promise<string> {
   return data.session?.access_token ?? "";
 }
 
-export default function WorkspaceClient({ notebook, initialDocs }: Props) {
+export default function WorkspaceClient({ notebook, initialDocs, backUrl }: Props) {
   const router = useRouter();
   const [docs, setDocs] = useState<Doc[]>(
     initialDocs.map((d) => ({
@@ -90,7 +91,7 @@ export default function WorkspaceClient({ notebook, initialDocs }: Props) {
       <header className="h-12 shrink-0 flex items-center justify-between px-4 border-b border-gray-200 bg-white z-10">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => router.push("/dashboard")}
+            onClick={() => { router.push(backUrl); router.refresh(); }}
             className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-blue-600 transition-colors"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
@@ -148,6 +149,7 @@ export default function WorkspaceClient({ notebook, initialDocs }: Props) {
         {/* 우측: 스튜디오 패널 */}
         <div style={{ width: studioWidth, flexShrink: 0 }} className="h-full overflow-hidden">
           <StudioPanel
+            notebookId={notebook.id}
             activeDocIds={activeDocIds}
             docs={docs}
             getToken={getToken}

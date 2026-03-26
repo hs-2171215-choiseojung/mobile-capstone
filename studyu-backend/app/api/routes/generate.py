@@ -27,6 +27,7 @@ def _save_studio_item(
     subtitle: str,
     content: dict,
     audio_bytes: Optional[bytes] = None,
+    notebook_id: Optional[str] = None,
 ) -> str:
     """Supabase에 스튜디오 아이템 저장. 실패해도 예외를 전파하지 않음."""
     try:
@@ -38,14 +39,17 @@ def _save_studio_item(
                 audio_bytes,
                 {"content-type": "audio/mpeg"},
             )
-        result = supabase_admin.table("studio_items").insert({
+        row = {
             "user_id": user_id,
             "type": item_type,
             "title": title,
             "subtitle": subtitle,
             "content": content,
             "audio_path": audio_path,
-        }).execute()
+        }
+        if notebook_id:
+            row["notebook_id"] = notebook_id
+        result = supabase_admin.table("studio_items").insert(row).execute()
         return result.data[0]["id"] if result.data else ""
     except Exception as e:
         print(f"[studio] save failed: {e}")
@@ -62,6 +66,7 @@ class GenerateRequest(BaseModel):
     topic: Optional[str] = None
     difficulty: Optional[str] = "intermediate"
     item_title: Optional[str] = None  # 스튜디오 저장 시 표시 제목
+    notebook_id: Optional[str] = None
 
 
 @router.post("/generate")
@@ -106,6 +111,7 @@ async def generate(
                 "questions": parsed.get("questions", []),
                 "difficulty": req.difficulty or "intermediate",
             },
+            notebook_id=req.notebook_id,
         )
         return {"result": parsed, "type": req.type, "item_id": item_id}
 
@@ -116,6 +122,7 @@ async def generate(
         title=req.item_title or "요약",
         subtitle=f"요약 · 소스 {len(doc_ids)}개",
         content={"text": result},
+        notebook_id=req.notebook_id,
     )
     return {"result": result, "type": req.type, "item_id": item_id}
 
@@ -128,6 +135,7 @@ class AudioGenerateRequest(BaseModel):
     focus: str = ""
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None  # 스튜디오 저장 시 표시 제목
+    notebook_id: Optional[str] = None
 
 
 @router.post("/generate/audio")
@@ -159,6 +167,7 @@ async def generate_audio(
         subtitle=f"오디오 · 소스 {len(req.doc_ids)}개",
         content={"script": script},
         audio_bytes=audio_bytes,
+        notebook_id=req.notebook_id,
     )
     return {
         "audio_base64": base64.b64encode(audio_bytes).decode(),
@@ -173,6 +182,7 @@ class MindmapGenerateRequest(BaseModel):
     language: str = "ko"       # ko | en | ja | zh
     focus: str = ""
     model: Optional[str] = "gpt-4o-mini"
+    notebook_id: Optional[str] = None
 
 
 @router.post("/generate/mindmap")
@@ -201,6 +211,7 @@ async def generate_mindmap_route(
         title=title,
         subtitle=f"마인드맵 · 소스 {len(req.doc_ids)}개",
         content={"nodes": nodes},
+        notebook_id=req.notebook_id,
     )
     return {
         "nodes": nodes,
@@ -217,6 +228,7 @@ class FlashcardGenerateRequest(BaseModel):
     language: str = "ko"           # ko | en | ja | zh
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None
+    notebook_id: Optional[str] = None
 
 
 @router.post("/generate/flashcard")
@@ -247,6 +259,7 @@ async def generate_flashcard(
         title=req.item_title or title,
         subtitle=f"플래시카드 · 소스 {len(req.doc_ids)}개",
         content={"cards": cards, "difficulty": req.difficulty},
+        notebook_id=req.notebook_id,
     )
     return {
         "cards": cards,
@@ -263,6 +276,7 @@ class SlideGenerateRequest(BaseModel):
     prompt: str = ""               # 사용자 커스텀 프롬프트
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None
+    notebook_id: Optional[str] = None
 
 
 @router.post("/generate/slides")
@@ -293,6 +307,7 @@ async def generate_slides_route(
         title=req.item_title or title,
         subtitle=f"슬라이드 · 소스 {len(req.doc_ids)}개",
         content={"slides": slides, "format": req.format, "cover_image_b64": cover_image_b64},
+        notebook_id=req.notebook_id,
     )
     return {
         "slides": slides,
@@ -311,6 +326,7 @@ class ReportGenerateRequest(BaseModel):
     instructions: str = ""         # 사용자 커스텀 지시사항
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None
+    notebook_id: Optional[str] = None
 
 
 @router.post("/generate/report")
@@ -342,6 +358,7 @@ async def generate_report_route(
         title=req.item_title or title,
         subtitle=f"보고서 · 소스 {len(req.doc_ids)}개",
         content={"sections": sections, "format": req.format},
+        notebook_id=req.notebook_id,
     )
     return {
         "sections": sections,

@@ -7,10 +7,12 @@ import WorkspaceClient from "./WorkspaceClient";
 
 interface Props {
   params: Promise<{ notebookId: string }>;
+  searchParams: Promise<{ from?: string }>;
 }
 
-export default async function WorkspacePage({ params }: Props) {
+export default async function WorkspacePage({ params, searchParams }: Props) {
   const { notebookId } = await params;
+  const { from } = await searchParams;
   const supabase = await createClient();
 
   const {
@@ -36,5 +38,5 @@ export default async function WorkspacePage({ params }: Props) {
     .eq("status", "ready")
     .order("created_at", { ascending: true });
 
-  return <WorkspaceClient notebook={notebook} initialDocs={initialDocs ?? []} />;
+  return <WorkspaceClient notebook={notebook} initialDocs={initialDocs ?? []} backUrl={from || "/dashboard"} />;
 }
