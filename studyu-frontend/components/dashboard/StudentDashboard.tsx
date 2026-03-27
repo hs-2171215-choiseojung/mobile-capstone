@@ -187,7 +187,7 @@ export default function StudentDashboard({ notebooks: initial, enrolledNotebooks
             {enrolledNotebooks.map((nb) => (
               <Link
                 key={nb.id}
-                href={`/workspace/${nb.id}?from=/dashboard/student`}
+                href={`/student/workspace/${nb.id}?from=/dashboard/student`}
                 className="p-4 bg-gradient-to-br from-purple-50 to-purple-100 border border-purple-200 rounded-xl hover:shadow-md hover:border-purple-300 transition-all"
               >
                 <h3 className="font-semibold text-purple-900 truncate">{nb.title}</h3>

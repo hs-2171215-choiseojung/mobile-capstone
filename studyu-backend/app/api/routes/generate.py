@@ -104,7 +104,7 @@ async def generate(
         item_id = _save_studio_item(
             user_id=user["id"],
             item_type="quiz",
-            title=req.item_title or quiz_title,
+            title=quiz_title,
             subtitle=f"퀴즈 · 소스 {len(doc_ids)}개",
             content={
                 "title": quiz_title,
@@ -256,7 +256,7 @@ async def generate_flashcard(
     item_id = _save_studio_item(
         user_id=user["id"],
         item_type="flashcard",
-        title=req.item_title or title,
+        title=title,
         subtitle=f"플래시카드 · 소스 {len(req.doc_ids)}개",
         content={"cards": cards, "difficulty": req.difficulty},
         notebook_id=req.notebook_id,
@@ -304,7 +304,7 @@ async def generate_slides_route(
     item_id = _save_studio_item(
         user_id=user["id"],
         item_type="slides",
-        title=req.item_title or title,
+        title=title,
         subtitle=f"슬라이드 · 소스 {len(req.doc_ids)}개",
         content={"slides": slides, "format": req.format, "cover_image_b64": cover_image_b64},
         notebook_id=req.notebook_id,
@@ -355,7 +355,7 @@ async def generate_report_route(
     item_id = _save_studio_item(
         user_id=user["id"],
         item_type="report",
-        title=req.item_title or title,
+        title=title,
         subtitle=f"보고서 · 소스 {len(req.doc_ids)}개",
         content={"sections": sections, "format": req.format},
         notebook_id=req.notebook_id,
