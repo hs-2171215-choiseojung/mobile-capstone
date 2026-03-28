@@ -45,7 +45,7 @@ export default function SignupPage() {
     try {
       const supabase = createClient()
       console.log('Supabase 클라이언트:', supabase)
-      console.log('회원가입 시도:', { email, fullName })
+      console.log('회원가입 시도:', { email })
 
       const { error } = await supabase.auth.signUp({
         email,
