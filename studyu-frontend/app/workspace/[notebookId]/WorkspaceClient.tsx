@@ -88,27 +88,51 @@ export default function WorkspaceClient({ notebook, initialDocs, backUrl }: Prop
   return (
     <div className="flex flex-col h-screen bg-white">
       {/* 상단 네비게이션 바 */}
-      <header className="h-12 shrink-0 flex items-center justify-between px-4 border-b border-gray-200 bg-white z-10">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => { router.push(backUrl); router.refresh(); }}
-            className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-blue-600 transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
-              <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            대시보드
-          </button>
-          <span className="text-gray-300">›</span>
-          <span className="text-sm font-semibold text-gray-800 truncate max-w-[200px]">{notebook.title}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center">
-            <span className="text-white font-bold text-xs">S</span>
+      <header className="shrink-0 border-b border-gray-200 bg-white z-10">
+        {/* 메인 헤더 */}
+        <div className="h-12 flex items-center justify-between px-4 border-b border-gray-100">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => { router.push(backUrl); router.refresh(); }}
+              className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-blue-600 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
+                <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              대시보드
+            </button>
+            <span className="text-gray-300">›</span>
+            <span className="text-sm font-semibold text-gray-800 truncate max-w-[200px]">{notebook.title}</span>
           </div>
-          <span className="text-sm font-bold text-gray-800">
-            STUDY<span className="text-blue-600">:U</span>
-          </span>
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center">
+              <span className="text-white font-bold text-xs">S</span>
+            </div>
+            <span className="text-sm font-bold text-gray-800">
+              STUDY<span className="text-blue-600">:U</span>
+            </span>
+          </div>
+        </div>
+
+        {/* 탭 바 */}
+        <div className="flex items-center gap-1 px-4 h-10 bg-gray-50">
+          <button
+            className="px-4 py-2 text-sm font-medium text-blue-600 border-b-2 border-blue-600 transition-colors"
+          >
+            📁 소스
+          </button>
+          <button
+            onClick={() => router.push(`/dashboard/students?notebook=${notebook.id}`)}
+            className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-blue-600 border-b-2 border-transparent hover:border-blue-300 transition-colors"
+          >
+            👥 학생관리
+          </button>
+          <button
+            className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-blue-600 border-b-2 border-transparent hover:border-blue-300 transition-colors cursor-not-allowed"
+            disabled
+          >
+            ⚙️ 설정
+          </button>
         </div>
       </header>
 
