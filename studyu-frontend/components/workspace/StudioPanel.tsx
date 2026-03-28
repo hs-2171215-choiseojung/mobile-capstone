@@ -33,7 +33,7 @@ interface QuizConfig {
 }
 
 interface AudioConfig {
-  format: "deep_analysis" | "summary" | "critique" | "debate";
+  format: "lecture_summary" | "concept_explanation" | "qa" | "storytelling" | "debate" | "interview";
   language: "ko" | "en" | "ja" | "zh";
   length: "short" | "default";
   focus: string;
@@ -109,11 +109,40 @@ interface SavedItem {
   report?: { sections: ReportSection[]; format: string };
 }
 
+interface WeekSource {
+  id: number;
+  name: string;
+  icon: string;
+  iconBg: string;
+  docId?: string;
+}
+
+interface WeekTask {
+  id: number;
+  icon: string;
+  iconBg: string;
+  title: string;
+  subtitle: string;
+  itemId?: string;
+}
+
+interface Week {
+  id: number;
+  title: string;
+  status: string;
+  sources: WeekSource[];
+  tasks: WeekTask[];
+}
+
 interface Props {
   notebookId: string;
   activeDocIds: string[];
   docs: Doc[];
   getToken: () => Promise<string>;
+  weeks?: Week[];
+  onAddWeekTask?: (weekId: number, task: WeekTask) => void;
+  openItemId?: string | null;
+  onOpenItemHandled?: () => void;
 }
 
 const COUNT_MAP: Record<string, number> = { fewer: 3, standard: 5, more: 10 };
@@ -121,69 +150,15 @@ const OPTION_ALPHA = ["A", "B", "C", "D"];
 
 // ── Content type definitions ───────────────────────────────────────────────
 const CONTENT_TYPES = [
-  {
-    id: "audio",
-    label: "AI 오디오 오버뷰",
-    cardBg: "#d0f5f1",
-    iconBg: "#a1ece4",
-    iconColor: "#0d9488",
-  },
-  {
-    id: "slides",
-    label: "슬라이드 자료",
-    cardBg: "#fef0da",
-    iconBg: "#fdd89a",
-    iconColor: "#d97706",
-  },
-  {
-    id: "video",
-    label: "동영상 개요",
-    cardBg: "#dcf5dc",
-    iconBg: "#a8e8a8",
-    iconColor: "#15803d",
-  },
-  {
-    id: "mindmap",
-    label: "마인드맵",
-    cardBg: "#f0e6ff",
-    iconBg: "#d8b4fe",
-    iconColor: "#7c3aed",
-  },
-  {
-    id: "report",
-    label: "보고서",
-    cardBg: "#dcf2e8",
-    iconBg: "#a3e8c4",
-    iconColor: "#166534",
-  },
-  {
-    id: "flashcard",
-    label: "플래시카드",
-    cardBg: "#fde0ea",
-    iconBg: "#f9a8c0",
-    iconColor: "#be123c",
-  },
-  {
-    id: "quiz",
-    label: "퀴즈",
-    cardBg: "#dbeafe",
-    iconBg: "#bfdbfe",
-    iconColor: "#1d4ed8",
-  },
-  {
-    id: "infographic",
-    label: "인포그래픽",
-    cardBg: "#ede8ff",
-    iconBg: "#c4b5fd",
-    iconColor: "#6d28d9",
-  },
-  {
-    id: "table",
-    label: "데이터 표",
-    cardBg: "#f1f3f4",
-    iconBg: "#dadce0",
-    iconColor: "#3c4043",
-  },
+  { id: "audio",      label: "AI 오디오 오버뷰", shortLabel: "오디오",    cardBg: "#d0f5f1", iconBg: "#a1ece4", iconColor: "#0d9488" },
+  { id: "slides",     label: "슬라이드 자료",   shortLabel: "슬라이드",  cardBg: "#fef0da", iconBg: "#fdd89a", iconColor: "#d97706" },
+  { id: "video",      label: "동영상 개요",     shortLabel: "비디오",    cardBg: "#dcf5dc", iconBg: "#a8e8a8", iconColor: "#15803d" },
+  { id: "mindmap",    label: "마인드맵",        shortLabel: "마인드맵",  cardBg: "#f0e6ff", iconBg: "#d8b4fe", iconColor: "#7c3aed" },
+  { id: "report",     label: "보고서",          shortLabel: "문서",      cardBg: "#dcf2e8", iconBg: "#a3e8c4", iconColor: "#166534" },
+  { id: "flashcard",  label: "플래시카드",      shortLabel: "플래시카드",cardBg: "#fde0ea", iconBg: "#f9a8c0", iconColor: "#be123c" },
+  { id: "quiz",       label: "퀴즈",            shortLabel: "퀴즈",      cardBg: "#dbeafe", iconBg: "#bfdbfe", iconColor: "#1d4ed8" },
+  { id: "infographic",label: "인포그래픽",      shortLabel: "인포그릭",  cardBg: "#ede8ff", iconBg: "#c4b5fd", iconColor: "#6d28d9" },
+  { id: "table",      label: "데이터 표",       shortLabel: "데이터표",  cardBg: "#f1f3f4", iconBg: "#dadce0", iconColor: "#3c4043" },
 ];
 
 function timeAgo(date: Date): string {
@@ -218,29 +193,173 @@ function TypeIcon({ id, color, size = 16 }: { id: string; color: string; size?: 
   return <svg {...s}><path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M3 14h18M10 3v18M4 3h16a1 1 0 011 1v16a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" /></svg>;
 }
 
+// ── WeekPickerStep (공통 주차 선택 2단계) ────────────────────────────────────
+function WeekPickerStep({
+  weeks,
+  selectedWeekId,
+  onSelect,
+  onConfirm,
+  onClose,
+  loading,
+  chips,
+}: {
+  weeks: Week[];
+  selectedWeekId: number | null;
+  onSelect: (id: number) => void;
+  onConfirm: () => void;
+  onClose: () => void;
+  loading: boolean;
+  chips: string[]; // 하단에 표시할 선택 정보 칩
+}) {
+  return (
+    <div className="overflow-y-auto flex-1 px-6 py-5 flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-3">
+        {weeks.map((w) => {
+          const sel = selectedWeekId === w.id;
+          return (
+            <button
+              key={w.id}
+              onClick={() => onSelect(w.id)}
+              className="relative flex flex-col items-start p-4 rounded-2xl border-2 text-left transition-all"
+              style={sel
+                ? { background: "#EFF6FF", borderColor: "#2563EB" }
+                : { background: "white", borderColor: "#E5E7EB" }}
+            >
+              {sel && (
+                <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center">
+                  <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+              )}
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-2 text-xs font-bold text-white"
+                style={{ background: sel ? "#2563EB" : "#93C5FD" }}>
+                W{w.id}
+              </div>
+              <p className="text-sm font-semibold text-gray-800 leading-tight">{w.title}</p>
+              <p className="text-xs text-gray-400 mt-1">{w.tasks.length}개 태스크</p>
+            </button>
+          );
+        })}
+      </div>
+      {/* 하단 칩 + 버튼 */}
+      <div className="flex items-center justify-between mt-auto pt-2 border-t border-gray-100">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {chips.map((chip, i) => (
+            <span key={i} className="px-2.5 py-1 rounded-full text-xs font-medium"
+              style={{ background: "#EFF6FF", color: "#2563EB" }}>
+              {chip}
+            </span>
+          ))}
+        </div>
+        <button
+          onClick={onConfirm}
+          disabled={loading || selectedWeekId === null}
+          className="px-6 py-2 rounded-full text-sm font-semibold flex items-center gap-2 transition-all text-white"
+          style={{
+            background: selectedWeekId !== null ? "#2563EB" : "#93C5FD",
+            opacity: loading ? 0.75 : 1,
+            cursor: loading || selectedWeekId === null ? "not-allowed" : "pointer",
+          }}
+        >
+          {loading && <Spinner className="w-3.5 h-3.5" />}
+          {loading ? "생성 중..." : "추가하기"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// 2단계 모달 공통 헤더
+function TwoStepHeader({
+  step, title, subtitle, onClose,
+  step1Label, step2Label,
+}: {
+  step: 1 | 2;
+  title: string;
+  subtitle: string;
+  onClose: () => void;
+  step1Label: string;
+  step2Label: string;
+}) {
+  return (
+    <div className="shrink-0 px-6 pt-5 pb-4 border-b border-gray-100">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center">
+            <svg className="w-4 h-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-base font-bold text-gray-800 leading-tight">{title}</p>
+            <p className="text-xs text-gray-400 mt-0.5">{subtitle}</p>
+          </div>
+        </div>
+        <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 transition-colors">
+          <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24">
+            <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </button>
+      </div>
+      {/* Steps */}
+      <div className="flex items-center gap-1">
+        <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all ${step === 1 ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-400"}`}>
+          <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${step === 1 ? "bg-white/30 text-white" : "bg-gray-300 text-white"}`}>1</span>
+          {step1Label}
+        </div>
+        <svg className="w-3 h-3 text-gray-300 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+        <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all ${step === 2 ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-400"}`}>
+          <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${step === 2 ? "bg-white/30 text-white" : "bg-gray-300 text-white"}`}>2</span>
+          {step2Label}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── AudioModal ─────────────────────────────────────────────────────────────
 function AudioModal({
   loading,
   onClose,
   onGenerate,
+  weeks = [],
 }: {
   loading: boolean;
   onClose: () => void;
-  onGenerate: (cfg: AudioConfig) => void;
+  onGenerate: (cfg: AudioConfig, weekId: number | null) => void;
+  weeks?: Week[];
 }) {
   const [cfg, setCfg] = useState<AudioConfig>({
-    format: "deep_analysis",
+    format: "lecture_summary",
     language: "ko",
     length: "default",
     focus: "",
   });
+  const [step, setStep] = useState<1 | 2>(1);
+  const [selectedWeekId, setSelectedWeekId] = useState<number | null>(null);
 
   const formats: { id: AudioConfig["format"]; label: string; desc: string }[] = [
-    { id: "deep_analysis", label: "심층 분석", desc: "핵심 개념을 깊이 파헤치는 대화" },
-    { id: "summary", label: "요약", desc: "핵심 아이디어를 간결하게 정리" },
-    { id: "critique", label: "비평", desc: "장단점을 전문가 시각으로 분석" },
-    { id: "debate", label: "토론", desc: "다른 관점으로 주제를 논쟁" },
+    { id: "lecture_summary",      label: "강의 요약 오디오",   desc: "AI가 생성한 오디오 요약" },
+    { id: "concept_explanation",  label: "핵심 개념 설명",     desc: "AI가 생성한 오디오 요약" },
+    { id: "qa",                   label: "Q&A 형식",           desc: "AI가 생성한 오디오 요약" },
+    { id: "storytelling",         label: "스토리텔링 방식",    desc: "AI가 생성한 오디오 요약" },
+    { id: "debate",               label: "토론 형식",          desc: "AI가 생성한 오디오 요약" },
+    { id: "interview",            label: "인터뷰 형식",        desc: "AI가 생성한 오디오 요약" },
   ];
+
+  const selectedFormat = formats.find((f) => f.id === cfg.format);
+  const formatLabel = selectedFormat?.label ?? "오디오";
+
+  function handleNext() {
+    if (weeks.length === 0) {
+      onGenerate(cfg, null);
+    } else {
+      setStep(2);
+    }
+  }
 
   return (
     <div
@@ -248,95 +367,100 @@ function AudioModal({
       style={{ background: "rgba(0,0,0,0.45)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="w-full max-w-md rounded-2xl shadow-2xl bg-white">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <span className="font-semibold text-gray-800">AI 오디오 오버뷰 맞춤설정</span>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 transition-colors">
-            <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24">
-              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-        <div className="px-6 py-5 space-y-5">
-          {/* Format */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2.5">형식</p>
-            <div className="grid grid-cols-2 gap-2">
-              {formats.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => setCfg((p) => ({ ...p, format: f.id }))}
-                  className="flex flex-col items-start px-3 py-2.5 rounded-xl text-left border transition-all"
-                  style={
-                    cfg.format === f.id
-                      ? { background: "#e8f0fe", borderColor: "#1a73e8" }
-                      : { background: "white", borderColor: "#e0e0e0" }
-                  }
-                >
-                  <span className="text-sm font-medium" style={{ color: cfg.format === f.id ? "#1a73e8" : "#202124" }}>{f.label}</span>
-                  <span className="text-[11px] text-gray-400 mt-0.5 leading-tight">{f.desc}</span>
-                </button>
-              ))}
+      <div className="w-full max-w-md rounded-2xl shadow-2xl bg-white flex flex-col max-h-[90vh]">
+        <TwoStepHeader
+          step={step}
+          title={step === 1 ? "AI 오디오 오버뷰 생성" : "주차 선택"}
+          subtitle={step === 1 ? "원하는 형식을 선택하세요" : `"${formatLabel}" 형식 · 추가할 주차를 선택하세요`}
+          onClose={onClose}
+          step1Label="형식 선택"
+          step2Label="주차 선택"
+        />
+        {step === 1 ? (
+          <>
+            <div className="px-6 py-5 overflow-y-auto flex-1 space-y-4">
+              {/* 형식 카드 그리드 */}
+              <div className="grid grid-cols-2 gap-2.5">
+                {formats.map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => setCfg((p) => ({ ...p, format: f.id }))}
+                    className="flex flex-col items-start p-4 rounded-2xl border-2 text-left transition-all"
+                    style={cfg.format === f.id
+                      ? { background: "#EFF6FF", borderColor: "#2563EB" }
+                      : { background: "white", borderColor: "#E5E7EB" }}
+                  >
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-2.5"
+                      style={{ background: cfg.format === f.id ? "#DBEAFE" : "#F3F4F6" }}>
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke={cfg.format === f.id ? "#2563EB" : "#9CA3AF"} strokeWidth="1.5">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z" />
+                      </svg>
+                    </div>
+                    <p className="text-sm font-semibold leading-tight" style={{ color: cfg.format === f.id ? "#2563EB" : "#111827" }}>{f.label}</p>
+                    <p className="text-[11px] text-gray-400 mt-1">{f.desc}</p>
+                  </button>
+                ))}
+              </div>
+              {/* 언어 / 길이 (컴팩트) */}
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <p className="text-xs font-medium text-gray-500 mb-1.5">언어</p>
+                  <select
+                    value={cfg.language}
+                    onChange={(e) => setCfg((p) => ({ ...p, language: e.target.value as AudioConfig["language"] }))}
+                    className="w-full text-xs rounded-xl px-3 py-2 border border-gray-200 outline-none focus:border-blue-400 bg-white text-gray-700"
+                  >
+                    <option value="ko">한국어</option>
+                    <option value="en">English</option>
+                    <option value="ja">日本語</option>
+                    <option value="zh">中文</option>
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <p className="text-xs font-medium text-gray-500 mb-1.5">길이</p>
+                  <div className="flex gap-1.5">
+                    {(["short", "default"] as const).map((l) => (
+                      <button key={l} onClick={() => setCfg((p) => ({ ...p, length: l }))}
+                        className="flex-1 py-2 rounded-xl text-xs font-medium border-2 transition-all"
+                        style={cfg.length === l ? { background: "#EFF6FF", color: "#2563EB", borderColor: "#2563EB" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}>
+                        {l === "short" ? "짧게" : "기본값"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-          {/* Language */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">언어</p>
-            <select
-              value={cfg.language}
-              onChange={(e) => setCfg((p) => ({ ...p, language: e.target.value as AudioConfig["language"] }))}
-              className="w-full text-sm rounded-xl px-4 py-2.5 border border-gray-200 outline-none focus:border-blue-400 text-gray-800 bg-white"
-            >
-              <option value="ko">한국어</option>
-              <option value="en">English</option>
-              <option value="ja">日本語</option>
-              <option value="zh">中文</option>
-            </select>
-          </div>
-          {/* Length */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2.5">길이</p>
-            <div className="flex gap-2">
-              {(["short", "default"] as const).map((l) => (
-                <button
-                  key={l}
-                  onClick={() => setCfg((p) => ({ ...p, length: l }))}
-                  className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
-                  style={
-                    cfg.length === l
-                      ? { background: "#e8f0fe", color: "#1a73e8", borderColor: "#1a73e8" }
-                      : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }
-                  }
-                >
-                  {l === "short" ? "짧게" : "기본값"}
-                </button>
-              ))}
+            {/* 하단 버튼 */}
+            <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100 shrink-0">
+              <div className="flex items-center gap-1.5">
+                {selectedWeekId !== null && (
+                  <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-600">
+                    W{selectedWeekId}
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={handleNext}
+                disabled={loading}
+                className="px-6 py-2 rounded-full text-sm font-semibold flex items-center gap-2 transition-all bg-blue-600 text-white"
+                style={{ opacity: loading ? 0.75 : 1, cursor: loading ? "not-allowed" : "pointer" }}
+              >
+                {loading && <Spinner className="w-3.5 h-3.5" />}
+                {loading ? "생성 중..." : weeks.length > 0 ? "다음" : "만들기"}
+              </button>
             </div>
-          </div>
-          {/* Focus */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">AI 호스트가 이 에피소드의 어떤 부분에 집중해야 하나요?</p>
-            <textarea
-              value={cfg.focus}
-              onChange={(e) => setCfg((p) => ({ ...p, focus: e.target.value }))}
-              placeholder={"예시:\n• 2장의 핵심 이론에 집중해줘\n• 실생활 적용 사례 위주로 얘기해줘"}
-              rows={3}
-              className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-blue-400 text-gray-800"
-              style={{ lineHeight: 1.6 }}
-            />
-          </div>
-        </div>
-        <div className="flex justify-end px-6 pb-5">
-          <button
-            onClick={() => onGenerate(cfg)}
-            disabled={loading}
-            className="px-8 py-2.5 rounded-full text-sm font-semibold flex items-center gap-2 transition-all bg-blue-600 text-white"
-            style={{ opacity: loading ? 0.75 : 1, cursor: loading ? "not-allowed" : "pointer" }}
-          >
-            {loading && <Spinner className="w-3.5 h-3.5" />}
-            {loading ? "생성 중..." : "만들기"}
-          </button>
-        </div>
+          </>
+        ) : (
+          <WeekPickerStep
+            weeks={weeks}
+            selectedWeekId={selectedWeekId}
+            onSelect={setSelectedWeekId}
+            onConfirm={() => onGenerate(cfg, selectedWeekId)}
+            onClose={onClose}
+            loading={loading}
+            chips={[formatLabel, ...(selectedWeekId !== null ? [`W${selectedWeekId}`] : [])]}
+          />
+        )}
       </div>
     </div>
   );
@@ -423,94 +547,83 @@ function QuizModal({
   loading,
   onClose,
   onGenerate,
+  weeks = [],
 }: {
   loading: boolean;
   onClose: () => void;
-  onGenerate: (cfg: QuizConfig) => void;
+  onGenerate: (cfg: QuizConfig, weekId: number | null) => void;
+  weeks?: Week[];
 }) {
   const [cfg, setCfg] = useState<QuizConfig>({
     count: "standard",
     difficulty: "intermediate",
     topic: "",
   });
+  const [step, setStep] = useState<1 | 2>(1);
+  const [selectedWeekId, setSelectedWeekId] = useState<number | null>(null);
+
+  const diffLabel = cfg.difficulty === "easy" ? "쉬움" : cfg.difficulty === "intermediate" ? "중간" : "어려움";
+
+  function handleNext() {
+    if (weeks.length === 0) onGenerate(cfg, null);
+    else setStep(2);
+  }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.45)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="w-full max-w-md rounded-2xl shadow-2xl bg-white">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <span className="font-semibold text-gray-800">퀴즈 맞춤설정</span>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 transition-colors">
-            <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24">
-              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-        <div className="px-6 py-5 space-y-5">
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2.5">질문 수</p>
-            <div className="flex gap-2">
-              {(["fewer", "standard", "more"] as const).map((c) => (
-                <button
-                  key={c}
-                  onClick={() => setCfg((p) => ({ ...p, count: c }))}
-                  className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
-                  style={
-                    cfg.count === c
-                      ? { background: "#e8f0fe", color: "#1a73e8", borderColor: "#1a73e8" }
-                      : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }
-                  }
-                >
-                  {c === "fewer" ? "더 적게" : c === "standard" ? "표준(기본값)" : "더 많이"}
-                </button>
-              ))}
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.45)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full max-w-md rounded-2xl shadow-2xl bg-white flex flex-col max-h-[90vh]">
+        <TwoStepHeader step={step} title={step === 1 ? "퀴즈 만들기" : "주차 선택"}
+          subtitle={step === 1 ? "퀴즈 옵션을 설정하세요" : `퀴즈 · ${diffLabel} · 추가할 주차를 선택하세요`}
+          onClose={onClose} step1Label="설정" step2Label="주차 선택" />
+        {step === 1 ? (
+          <>
+            <div className="px-6 py-5 space-y-5 overflow-y-auto flex-1">
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2.5">질문 수</p>
+                <div className="flex gap-2">
+                  {(["fewer", "standard", "more"] as const).map((c) => (
+                    <button key={c} onClick={() => setCfg((p) => ({ ...p, count: c }))}
+                      className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
+                      style={cfg.count === c ? { background: "#e8f0fe", color: "#1a73e8", borderColor: "#1a73e8" } : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }}>
+                      {c === "fewer" ? "더 적게" : c === "standard" ? "표준(기본값)" : "더 많이"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2.5">난이도</p>
+                <div className="flex gap-2">
+                  {(["easy", "intermediate", "hard"] as const).map((d) => (
+                    <button key={d} onClick={() => setCfg((p) => ({ ...p, difficulty: d }))}
+                      className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
+                      style={cfg.difficulty === d ? { background: "#e8f0fe", color: "#1a73e8", borderColor: "#1a73e8" } : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }}>
+                      {d === "easy" ? "쉬움" : d === "intermediate" ? "중간(기본값)" : "어려움"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">주제 (선택)</p>
+                <textarea value={cfg.topic} onChange={(e) => setCfg((p) => ({ ...p, topic: e.target.value }))}
+                  placeholder={"예시:\n• 핵심 개념만 포함해줘\n• 시험 대비용 퀴즈 만들어줘"} rows={3}
+                  className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-blue-400 text-gray-800" style={{ lineHeight: 1.6 }} />
+              </div>
             </div>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2.5">난이도</p>
-            <div className="flex gap-2">
-              {(["easy", "intermediate", "hard"] as const).map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setCfg((p) => ({ ...p, difficulty: d }))}
-                  className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
-                  style={
-                    cfg.difficulty === d
-                      ? { background: "#e8f0fe", color: "#1a73e8", borderColor: "#1a73e8" }
-                      : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }
-                  }
-                >
-                  {d === "easy" ? "쉬움" : d === "intermediate" ? "중간(기본값)" : "어려움"}
-                </button>
-              ))}
+            <div className="flex justify-end px-6 py-4 border-t border-gray-100 shrink-0">
+              <button onClick={handleNext} disabled={loading}
+                className="px-6 py-2 rounded-full text-sm font-semibold flex items-center gap-2 transition-all bg-blue-600 text-white"
+                style={{ opacity: loading ? 0.75 : 1 }}>
+                {loading && <Spinner className="w-3.5 h-3.5" />}
+                {loading ? "생성 중..." : weeks.length > 0 ? "다음" : "만들기"}
+              </button>
             </div>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">주제 (선택)</p>
-            <textarea
-              value={cfg.topic}
-              onChange={(e) => setCfg((p) => ({ ...p, topic: e.target.value }))}
-              placeholder={"예시:\n• 핵심 개념만 포함해줘\n• 시험 대비용 퀴즈 만들어줘"}
-              rows={3}
-              className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-blue-400 text-gray-800"
-              style={{ lineHeight: 1.6 }}
-            />
-          </div>
-        </div>
-        <div className="flex justify-end px-6 pb-5">
-          <button
-            onClick={() => onGenerate(cfg)}
-            disabled={loading}
-            className="px-8 py-2.5 rounded-full text-sm font-semibold flex items-center gap-2 transition-all bg-blue-600 text-white"
-            style={{ opacity: loading ? 0.75 : 1, cursor: loading ? "not-allowed" : "pointer" }}
-          >
-            {loading && <Spinner className="w-3.5 h-3.5" />}
-            {loading ? "생성 중..." : "만들기"}
-          </button>
-        </div>
+          </>
+        ) : (
+          <WeekPickerStep weeks={weeks} selectedWeekId={selectedWeekId} onSelect={setSelectedWeekId}
+            onConfirm={() => onGenerate(cfg, selectedWeekId)} onClose={onClose} loading={loading}
+            chips={["퀴즈", diffLabel, ...(selectedWeekId !== null ? [`W${selectedWeekId}`] : [])]} />
+        )}
       </div>
     </div>
   );
@@ -750,65 +863,64 @@ function MindmapModal({
   loading,
   onClose,
   onGenerate,
+  weeks = [],
 }: {
   loading: boolean;
   onClose: () => void;
-  onGenerate: (cfg: MindmapConfig) => void;
+  onGenerate: (cfg: MindmapConfig, weekId: number | null) => void;
+  weeks?: Week[];
 }) {
   const [cfg, setCfg] = useState<MindmapConfig>({ language: "ko", focus: "" });
+  const [step, setStep] = useState<1 | 2>(1);
+  const [selectedWeekId, setSelectedWeekId] = useState<number | null>(null);
+
+  const langLabel = cfg.language === "ko" ? "한국어" : cfg.language === "en" ? "English" : cfg.language === "ja" ? "日本語" : "中文";
+
+  function handleNext() {
+    if (weeks.length === 0) onGenerate(cfg, null);
+    else setStep(2);
+  }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.45)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="w-full max-w-md rounded-2xl shadow-2xl bg-white">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <span className="font-semibold text-gray-800">마인드맵 맞춤설정</span>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 transition-colors">
-            <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24">
-              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-        <div className="px-6 py-5 space-y-5">
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">언어</p>
-            <select
-              value={cfg.language}
-              onChange={(e) => setCfg((p) => ({ ...p, language: e.target.value as MindmapConfig["language"] }))}
-              className="w-full text-sm rounded-xl px-4 py-2.5 border border-gray-200 outline-none focus:border-purple-400 text-gray-800 bg-white"
-            >
-              <option value="ko">한국어</option>
-              <option value="en">English</option>
-              <option value="ja">日本語</option>
-              <option value="zh">中文</option>
-            </select>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">집중할 주제 (선택)</p>
-            <textarea
-              value={cfg.focus}
-              onChange={(e) => setCfg((p) => ({ ...p, focus: e.target.value }))}
-              placeholder={"예시:\n• 2장의 핵심 개념만 포함해줘\n• 실생활 응용 사례 위주로 정리해줘"}
-              rows={3}
-              className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-purple-400 text-gray-800"
-              style={{ lineHeight: 1.6 }}
-            />
-          </div>
-        </div>
-        <div className="flex justify-end px-6 pb-5">
-          <button
-            onClick={() => onGenerate(cfg)}
-            disabled={loading}
-            className="px-8 py-2.5 rounded-full text-sm font-semibold flex items-center gap-2 transition-all bg-purple-600 text-white"
-            style={{ opacity: loading ? 0.75 : 1, cursor: loading ? "not-allowed" : "pointer" }}
-          >
-            {loading && <Spinner className="w-3.5 h-3.5" />}
-            {loading ? "생성 중..." : "만들기"}
-          </button>
-        </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.45)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full max-w-md rounded-2xl shadow-2xl bg-white flex flex-col max-h-[90vh]">
+        <TwoStepHeader step={step} title={step === 1 ? "마인드맵 만들기" : "주차 선택"}
+          subtitle={step === 1 ? "마인드맵 옵션을 설정하세요" : `마인드맵 · ${langLabel} · 추가할 주차를 선택하세요`}
+          onClose={onClose} step1Label="설정" step2Label="주차 선택" />
+        {step === 1 ? (
+          <>
+            <div className="px-6 py-5 space-y-5 overflow-y-auto flex-1">
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">언어</p>
+                <select value={cfg.language}
+                  onChange={(e) => setCfg((p) => ({ ...p, language: e.target.value as MindmapConfig["language"] }))}
+                  className="w-full text-sm rounded-xl px-4 py-2.5 border border-gray-200 outline-none focus:border-purple-400 text-gray-800 bg-white">
+                  <option value="ko">한국어</option><option value="en">English</option>
+                  <option value="ja">日本語</option><option value="zh">中文</option>
+                </select>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">집중할 주제 (선택)</p>
+                <textarea value={cfg.focus} onChange={(e) => setCfg((p) => ({ ...p, focus: e.target.value }))}
+                  placeholder={"예시:\n• 2장의 핵심 개념만 포함해줘\n• 실생활 응용 사례 위주로 정리해줘"} rows={3}
+                  className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-purple-400 text-gray-800" style={{ lineHeight: 1.6 }} />
+              </div>
+            </div>
+            <div className="flex justify-end px-6 py-4 border-t border-gray-100 shrink-0">
+              <button onClick={handleNext} disabled={loading}
+                className="px-6 py-2 rounded-full text-sm font-semibold flex items-center gap-2 transition-all bg-purple-600 text-white"
+                style={{ opacity: loading ? 0.75 : 1 }}>
+                {loading && <Spinner className="w-3.5 h-3.5" />}
+                {loading ? "생성 중..." : weeks.length > 0 ? "다음" : "만들기"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <WeekPickerStep weeks={weeks} selectedWeekId={selectedWeekId} onSelect={setSelectedWeekId}
+            onConfirm={() => onGenerate(cfg, selectedWeekId)} onClose={onClose} loading={loading}
+            chips={["마인드맵", langLabel, ...(selectedWeekId !== null ? [`W${selectedWeekId}`] : [])]} />
+        )}
       </div>
     </div>
   );
@@ -819,10 +931,12 @@ function SlideModal({
   loading,
   onClose,
   onGenerate,
+  weeks = [],
 }: {
   loading: boolean;
   onClose: () => void;
-  onGenerate: (cfg: SlideConfig) => void;
+  onGenerate: (cfg: SlideConfig, weekId: number | null) => void;
+  weeks?: Week[];
 }) {
   const [cfg, setCfg] = useState<SlideConfig>({
     format: "presenter",
@@ -830,91 +944,86 @@ function SlideModal({
     language: "ko",
     prompt: "",
   });
+  const [step, setStep] = useState<1 | 2>(1);
+  const [selectedWeekId, setSelectedWeekId] = useState<number | null>(null);
+
+  const formatLabel = cfg.format === "presenter" ? "발표자 슬라이드" : "자세한 자료";
+
+  function handleNext() {
+    if (weeks.length === 0) onGenerate(cfg, null);
+    else setStep(2);
+  }
+
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100">
-          <h2 className="text-base font-bold text-gray-800">슬라이드 자료 만들기</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M6 18L18 6M6 6l12 12" strokeLinecap="round" /></svg>
-          </button>
-        </div>
-        <div className="px-6 py-5 flex flex-col gap-5">
-          {/* 형식 */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">형식</p>
-            <div className="flex gap-2">
-              {(["presenter", "detailed"] as const).map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setCfg((p) => ({ ...p, format: f }))}
-                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
-                  style={cfg.format === f ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
-                >
-                  {f === "presenter" ? "발표자 슬라이드" : "자세한 자료"}
-                </button>
-              ))}
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden flex flex-col max-h-[90vh]">
+        <TwoStepHeader step={step} title={step === 1 ? "슬라이드 자료 만들기" : "주차 선택"}
+          subtitle={step === 1 ? "슬라이드 옵션을 설정하세요" : `슬라이드 · ${formatLabel} · 추가할 주차를 선택하세요`}
+          onClose={onClose} step1Label="설정" step2Label="주차 선택" />
+        {step === 1 ? (
+          <>
+            <div className="px-6 py-5 flex flex-col gap-5 overflow-y-auto flex-1">
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">형식</p>
+                <div className="flex gap-2">
+                  {(["presenter", "detailed"] as const).map((f) => (
+                    <button key={f} onClick={() => setCfg((p) => ({ ...p, format: f }))}
+                      className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                      style={cfg.format === f ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}>
+                      {f === "presenter" ? "발표자 슬라이드" : "자세한 자료"}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400 mt-1.5">
+                  {cfg.format === "presenter" ? "핵심 키워드 위주의 깔끔한 발표용 슬라이드" : "전체 텍스트와 세부정보가 담긴 자료형 슬라이드"}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">길이</p>
+                <div className="flex gap-2">
+                  {(["short", "default", "long"] as const).map((l) => (
+                    <button key={l} onClick={() => setCfg((p) => ({ ...p, length: l }))}
+                      className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                      style={cfg.length === l ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}>
+                      {l === "short" ? "짧게" : l === "default" ? "기본" : "길게"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">언어</p>
+                <div className="flex gap-2">
+                  {(["ko", "en", "ja", "zh"] as const).map((lang) => (
+                    <button key={lang} onClick={() => setCfg((p) => ({ ...p, language: lang }))}
+                      className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                      style={cfg.language === lang ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}>
+                      {lang === "ko" ? "한국어" : lang === "en" ? "English" : lang === "ja" ? "日本語" : "中文"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">추가 지시사항 (선택)</p>
+                <textarea value={cfg.prompt} onChange={(e) => setCfg((p) => ({ ...p, prompt: e.target.value }))}
+                  placeholder={"예:\n• 초보자를 위한 단계별 안내식으로 만들어줘\n• 논문 발표용으로 학술적인 톤으로"} rows={3}
+                  className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-amber-400 text-gray-800" style={{ lineHeight: 1.6 }} />
+              </div>
             </div>
-            <p className="text-xs text-gray-400 mt-1.5">
-              {cfg.format === "presenter" ? "핵심 키워드 위주의 깔끔한 발표용 슬라이드" : "전체 텍스트와 세부정보가 담긴 자료형 슬라이드"}
-            </p>
-          </div>
-          {/* 길이 */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">길이</p>
-            <div className="flex gap-2">
-              {(["short", "default", "long"] as const).map((l) => (
-                <button
-                  key={l}
-                  onClick={() => setCfg((p) => ({ ...p, length: l }))}
-                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
-                  style={cfg.length === l ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
-                >
-                  {l === "short" ? "짧게" : l === "default" ? "기본" : "길게"}
-                </button>
-              ))}
+            <div className="flex justify-end px-6 py-4 border-t border-gray-100 shrink-0">
+              <button onClick={handleNext} disabled={loading}
+                className="px-6 py-2 rounded-full text-sm font-semibold flex items-center gap-2 transition-all"
+                style={{ background: "#d97706", color: "white", opacity: loading ? 0.75 : 1 }}>
+                {loading && <Spinner />}
+                {loading ? "생성 중..." : weeks.length > 0 ? "다음" : "만들기"}
+              </button>
             </div>
-          </div>
-          {/* 언어 */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">언어</p>
-            <div className="flex gap-2">
-              {(["ko", "en", "ja", "zh"] as const).map((lang) => (
-                <button
-                  key={lang}
-                  onClick={() => setCfg((p) => ({ ...p, language: lang }))}
-                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
-                  style={cfg.language === lang ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
-                >
-                  {lang === "ko" ? "한국어" : lang === "en" ? "English" : lang === "ja" ? "日本語" : "中文"}
-                </button>
-              ))}
-            </div>
-          </div>
-          {/* 커스텀 프롬프트 */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">추가 지시사항 (선택)</p>
-            <textarea
-              value={cfg.prompt}
-              onChange={(e) => setCfg((p) => ({ ...p, prompt: e.target.value }))}
-              placeholder={"예:\n• 초보자를 위한 단계별 안내식으로 만들어줘\n• 논문 발표용으로 학술적인 톤으로"}
-              rows={3}
-              className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-amber-400 text-gray-800"
-              style={{ lineHeight: 1.6 }}
-            />
-          </div>
-        </div>
-        <div className="flex justify-end px-6 pb-5">
-          <button
-            onClick={() => onGenerate(cfg)}
-            disabled={loading}
-            className="px-8 py-2.5 rounded-full text-sm font-semibold flex items-center gap-2 transition-all"
-            style={{ background: "#d97706", color: "white", opacity: loading ? 0.75 : 1, cursor: loading ? "not-allowed" : "pointer" }}
-          >
-            {loading && <Spinner />}
-            {loading ? "생성 중..." : "만들기"}
-          </button>
-        </div>
+          </>
+        ) : (
+          <WeekPickerStep weeks={weeks} selectedWeekId={selectedWeekId} onSelect={setSelectedWeekId}
+            onConfirm={() => onGenerate(cfg, selectedWeekId)} onClose={onClose} loading={loading}
+            chips={["슬라이드", formatLabel, ...(selectedWeekId !== null ? [`W${selectedWeekId}`] : [])]} />
+        )}
       </div>
     </div>
   );
@@ -1131,10 +1240,12 @@ function FlashcardModal({
   loading,
   onClose,
   onGenerate,
+  weeks = [],
 }: {
   loading: boolean;
   onClose: () => void;
-  onGenerate: (cfg: FlashcardConfig) => void;
+  onGenerate: (cfg: FlashcardConfig, weekId: number | null) => void;
+  weeks?: Week[];
 }) {
   const [cfg, setCfg] = useState<FlashcardConfig>({
     count: "standard",
@@ -1142,94 +1253,72 @@ function FlashcardModal({
     topic: "",
     language: "ko",
   });
+  const [step, setStep] = useState<1 | 2>(1);
+  const [selectedWeekId, setSelectedWeekId] = useState<number | null>(null);
+
+  const diffLabel = cfg.difficulty === "easy" ? "쉬움" : cfg.difficulty === "intermediate" ? "보통" : "어려움";
+
+  function handleNext() {
+    if (weeks.length === 0) onGenerate(cfg, null);
+    else setStep(2);
+  }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.45)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="w-full max-w-md rounded-2xl shadow-2xl bg-white">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: "#f9a8c0" }}>
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="#be123c" strokeWidth="1.5">
-                <rect x="2" y="6" width="20" height="13" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M16 2l-2 4M12 2v4M8 2l2 4" />
-              </svg>
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden flex flex-col max-h-[90vh]">
+        <TwoStepHeader step={step} title={step === 1 ? "플래시카드 맞춤설정" : "주차 선택"}
+          subtitle={step === 1 ? "플래시카드 옵션을 설정하세요" : `플래시카드 · ${diffLabel} · 추가할 주차를 선택하세요`}
+          onClose={onClose} step1Label="설정" step2Label="주차 선택" />
+        {step === 1 ? (
+          <>
+            <div className="px-6 py-5 space-y-5 overflow-y-auto flex-1">
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2.5">카드 수</p>
+                <div className="flex gap-2">
+                  {(["fewer", "standard", "more"] as const).map((c) => (
+                    <button key={c} onClick={() => setCfg((p) => ({ ...p, count: c }))}
+                      className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
+                      style={cfg.count === c ? { background: "#fde0ea", color: "#be123c", borderColor: "#f9a8c0" } : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }}>
+                      {c === "fewer" ? "간략히 보기" : c === "standard" ? "표준(기본)" : "더보기"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2.5">난이도</p>
+                <div className="flex gap-2">
+                  {(["easy", "intermediate", "hard"] as const).map((d) => (
+                    <button key={d} onClick={() => setCfg((p) => ({ ...p, difficulty: d }))}
+                      className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
+                      style={cfg.difficulty === d ? { background: "#fde0ea", color: "#be123c", borderColor: "#f9a8c0" } : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }}>
+                      {d === "easy" ? "쉬움" : d === "intermediate" ? "보통(기본)" : "어려움"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">주제는 무엇인가요?</p>
+                <textarea value={cfg.topic} onChange={(e) => setCfg((p) => ({ ...p, topic: e.target.value }))}
+                  placeholder={"다음과 같이 시도해 보세요.\n  • 플래시카드는 특정 소스로 제한해 줘 (예: '이탈리아에 대한 기사만')\n  • 플래시카드는 특정 주제 위주로 해 줘 (예: '뉴턴의 제2법칙')\n  • 기억하기 쉽도록 카드 앞면은 짧게 작성해 줘"}
+                  rows={4} className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-pink-300 text-gray-800"
+                  style={{ lineHeight: 1.6 }} />
+              </div>
             </div>
-            <span className="font-semibold text-gray-800">플래시카드 맞춤설정</span>
-          </div>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 transition-colors">
-            <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24">
-              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-        <div className="px-6 py-5 space-y-5">
-          {/* 카드 수 */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2.5">카드 수</p>
-            <div className="flex gap-2">
-              {(["fewer", "standard", "more"] as const).map((c) => (
-                <button
-                  key={c}
-                  onClick={() => setCfg((p) => ({ ...p, count: c }))}
-                  className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
-                  style={
-                    cfg.count === c
-                      ? { background: "#fde0ea", color: "#be123c", borderColor: "#f9a8c0" }
-                      : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }
-                  }
-                >
-                  {c === "fewer" ? "간략히 보기" : c === "standard" ? "표준(기본)" : "더보기"}
-                </button>
-              ))}
+            <div className="flex justify-end px-6 py-4 border-t border-gray-100 shrink-0">
+              <button onClick={handleNext} disabled={loading}
+                className="px-6 py-2 rounded-full text-sm font-semibold flex items-center gap-2 transition-all"
+                style={{ background: "#be123c", color: "white", opacity: loading ? 0.75 : 1 }}>
+                {loading && <Spinner className="w-3.5 h-3.5" />}
+                {loading ? "생성 중..." : weeks.length > 0 ? "다음" : "만들기"}
+              </button>
             </div>
-          </div>
-          {/* 난이도 */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2.5">난이도</p>
-            <div className="flex gap-2">
-              {(["easy", "intermediate", "hard"] as const).map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setCfg((p) => ({ ...p, difficulty: d }))}
-                  className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
-                  style={
-                    cfg.difficulty === d
-                      ? { background: "#fde0ea", color: "#be123c", borderColor: "#f9a8c0" }
-                      : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }
-                  }
-                >
-                  {d === "easy" ? "쉬움" : d === "intermediate" ? "보통(기본)" : "어려움"}
-                </button>
-              ))}
-            </div>
-          </div>
-          {/* 주제 */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">주제는 무엇인가요?</p>
-            <textarea
-              value={cfg.topic}
-              onChange={(e) => setCfg((p) => ({ ...p, topic: e.target.value }))}
-              placeholder={"다음과 같이 시도해 보세요.\n  • 플래시카드는 특정 소스로 제한해 줘 (예: '이탈리아에 대한 기사만')\n  • 플래시카드는 특정 주제 위주로 해 줘 (예: '뉴턴의 제2법칙')\n  • 기억하기 쉽도록 카드 앞면은 짧게 작성해 줘 (영문 기준 1~3단어)"}
-              rows={5}
-              className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 border-pink-300 text-gray-800"
-              style={{ lineHeight: 1.6 }}
-            />
-          </div>
-        </div>
-        <div className="flex justify-end px-6 pb-5">
-          <button
-            onClick={() => onGenerate(cfg)}
-            disabled={loading}
-            className="px-8 py-2.5 rounded-full text-sm font-semibold flex items-center gap-2 transition-all"
-            style={{ background: "#be123c", color: "white", opacity: loading ? 0.75 : 1, cursor: loading ? "not-allowed" : "pointer" }}
-          >
-            {loading && <Spinner className="w-3.5 h-3.5" />}
-            {loading ? "생성 중..." : "만들기"}
-          </button>
-        </div>
+          </>
+        ) : (
+          <WeekPickerStep weeks={weeks} selectedWeekId={selectedWeekId} onSelect={setSelectedWeekId}
+            onConfirm={() => onGenerate(cfg, selectedWeekId)} onClose={onClose} loading={loading}
+            chips={["플래시카드", diffLabel, ...(selectedWeekId !== null ? [`W${selectedWeekId}`] : [])]} />
+        )}
       </div>
     </div>
   );
@@ -1445,10 +1534,12 @@ function ReportModal({
   loading,
   onClose,
   onGenerate,
+  weeks = [],
 }: {
   loading: boolean;
   onClose: () => void;
-  onGenerate: (cfg: ReportConfig) => void;
+  onGenerate: (cfg: ReportConfig, weekId: number | null) => void;
+  weeks?: Week[];
 }) {
   const [cfg, setCfg] = useState<ReportConfig>({
     format: "briefing",
@@ -1457,161 +1548,129 @@ function ReportModal({
     tone: "formal",
     instructions: "",
   });
+  const [step, setStep] = useState<1 | 2>(1);
+  const [selectedWeekId, setSelectedWeekId] = useState<number | null>(null);
 
   const formats: { id: ReportConfig["format"]; label: string; desc: string; recommended?: boolean }[] = [
     { id: "custom", label: "직접 만들기", desc: "구조, 스타일, 어조 등을 지정하여 원하는 방식으로 보고서를 작성하세요." },
     { id: "briefing", label: "브리핑 문서", desc: "주요 인사이트와 인용문을 포함한 소스 개요" },
     { id: "study_guide", label: "학습 가이드", desc: "단답형 퀴즈, 추천 에세이 질문, 핵심 용어집", recommended: true },
     { id: "blog", label: "블로그 게시물", desc: "읽기 쉬운 기사 형식으로 요약된 유용한 정보", recommended: true },
-    { id: "prd", label: "제품 요구사항 정의서", desc: "STUDY U 서비스의 핵심 기능 요구사항과 기술적 제약을 상세히 정의하여 개발 방향을 제시하는 문서", recommended: true },
-    { id: "architecture", label: "시스템 아키텍처 설계서", desc: "Next.js, FastAPI, RAG 기술 스택을 활용한 서비스의 데이터 흐름과 시스템 구조를 설계하는 문서", recommended: true },
-    { id: "tech_explainer", label: "기술 개념 설명서", desc: "AI가 사용자의 문서를 이해하고 답변을 생성하는 핵심 원리인 RAG 시스템을 쉽게 설명합니다.", recommended: true },
-    { id: "learning_guide", label: "학습 활용 가이드", desc: "STUDY U의 주요 기능을 활용하여 자기주도 학습 효율을 높이는 방법을 안내하는 입문용 자료입니다.", recommended: true },
+    { id: "prd", label: "제품 요구사항 정의서", desc: "핵심 기능 요구사항과 기술적 제약을 상세히 정의", recommended: true },
+    { id: "architecture", label: "시스템 아키텍처 설계서", desc: "데이터 흐름과 시스템 구조를 설계하는 문서", recommended: true },
+    { id: "tech_explainer", label: "기술 개념 설명서", desc: "핵심 기술 원리를 쉽게 설명합니다.", recommended: true },
+    { id: "learning_guide", label: "학습 활용 가이드", desc: "자기주도 학습 효율을 높이는 방법을 안내합니다.", recommended: true },
   ];
 
   const recommendedFormats = formats.filter((f) => f.recommended);
   const isCustom = cfg.format === "custom";
 
+  const formatLabelMap: Record<string, string> = {
+    briefing: "브리핑 문서", study_guide: "학습 가이드", blog: "블로그 게시물",
+    prd: "제품 요구사항 정의서", architecture: "시스템 아키텍처 설계서",
+    tech_explainer: "기술 개념 설명서", learning_guide: "학습 활용 가이드", custom: "보고서",
+  };
+
+  function handleNext() {
+    if (weeks.length === 0) onGenerate(cfg, null);
+    else setStep(2);
+  }
+
   return (
-    <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100 shrink-0">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: "#a3e8c4" }}>
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="#166534" strokeWidth="1.5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-              </svg>
-            </div>
-            <h2 className="text-base font-bold text-gray-800">보고서 생성</h2>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M6 18L18 6M6 6l12 12" strokeLinecap="round" /></svg>
-          </button>
-        </div>
-
-        <div className="overflow-y-auto flex-1 px-6 py-5 flex flex-col gap-5">
-          {/* 형식 */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-3">형식</p>
-            {/* 직접 만들기 */}
-            <button
-              onClick={() => setCfg((p) => ({ ...p, format: "custom" }))}
-              className="w-full flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-left mb-3 transition-all"
-              style={cfg.format === "custom" ? { background: "#f0fdf4", borderColor: "#166534" } : { background: "white", borderColor: "#e5e7eb" }}
-            >
-              <svg className="w-4 h-4 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke={cfg.format === "custom" ? "#166534" : "#9ca3af"} strokeWidth="1.5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" />
-              </svg>
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden flex flex-col max-h-[90vh]">
+        <TwoStepHeader step={step} title={step === 1 ? "보고서 생성" : "주차 선택"}
+          subtitle={step === 1 ? "보고서 옵션을 설정하세요" : `${formatLabelMap[cfg.format]} · 추가할 주차를 선택하세요`}
+          onClose={onClose} step1Label="설정" step2Label="주차 선택" />
+        {step === 1 ? (
+          <>
+            <div className="overflow-y-auto flex-1 px-6 py-5 flex flex-col gap-5">
               <div>
-                <p className="text-sm font-semibold" style={{ color: cfg.format === "custom" ? "#166534" : "#374151" }}>직접 만들기</p>
-                <p className="text-xs text-gray-400 mt-0.5">구조, 스타일, 어조 등을 지정하여 원하는 방식으로 보고서를 작성하세요.</p>
+                <p className="text-sm font-medium text-gray-700 mb-3">형식</p>
+                <button onClick={() => setCfg((p) => ({ ...p, format: "custom" }))}
+                  className="w-full flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-left mb-3 transition-all"
+                  style={cfg.format === "custom" ? { background: "#f0fdf4", borderColor: "#166534" } : { background: "white", borderColor: "#e5e7eb" }}>
+                  <svg className="w-4 h-4 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke={cfg.format === "custom" ? "#166534" : "#9ca3af"} strokeWidth="1.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" />
+                  </svg>
+                  <div>
+                    <p className="text-sm font-semibold" style={{ color: cfg.format === "custom" ? "#166534" : "#374151" }}>직접 만들기</p>
+                    <p className="text-xs text-gray-400 mt-0.5">구조, 스타일, 어조 등을 지정하여 원하는 방식으로 보고서를 작성하세요.</p>
+                  </div>
+                </button>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">추천 형식</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {recommendedFormats.map((f) => (
+                    <button key={f.id} onClick={() => setCfg((p) => ({ ...p, format: f.id }))}
+                      className="flex flex-col items-start px-3 py-2.5 rounded-xl border-2 text-left transition-all"
+                      style={cfg.format === f.id ? { background: "#f0fdf4", borderColor: "#166534" } : { background: "white", borderColor: "#e5e7eb" }}>
+                      <span className="text-sm font-medium leading-tight" style={{ color: cfg.format === f.id ? "#166534" : "#374151" }}>{f.label}</span>
+                      <span className="text-[11px] text-gray-400 mt-0.5 leading-snug line-clamp-2">{f.desc}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </button>
-
-            {/* 추천 형식 */}
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2 flex items-center gap-1.5">
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              추천 형식
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              {recommendedFormats.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => setCfg((p) => ({ ...p, format: f.id }))}
-                  className="flex flex-col items-start px-3 py-2.5 rounded-xl border-2 text-left transition-all"
-                  style={cfg.format === f.id ? { background: "#f0fdf4", borderColor: "#166534" } : { background: "white", borderColor: "#e5e7eb" }}
-                >
-                  <span className="text-sm font-medium leading-tight" style={{ color: cfg.format === f.id ? "#166534" : "#374151" }}>{f.label}</span>
-                  <span className="text-[11px] text-gray-400 mt-0.5 leading-snug line-clamp-2">{f.desc}</span>
-                </button>
-              ))}
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">
+                  {isCustom ? "원하는 형식을 직접 설명해주세요" : "추가 지시사항 (선택)"}
+                </p>
+                <textarea value={cfg.instructions} onChange={(e) => setCfg((p) => ({ ...p, instructions: e.target.value }))}
+                  placeholder={isCustom ? "예시:\n• 서론, 본론 3개 섹션, 결론 구조로 만들어줘\n• SWOT 분석 형식으로 작성해줘" : "예시:\n• 2장의 핵심 내용에 집중해줘\n• 예시와 비유를 많이 포함해줘"}
+                  rows={isCustom ? 4 : 3} className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 text-gray-800 transition-colors"
+                  style={{ lineHeight: 1.6, borderColor: "#86efac" }} />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">길이</p>
+                <div className="flex gap-2">
+                  {(["short", "default", "long"] as const).map((l) => (
+                    <button key={l} onClick={() => setCfg((p) => ({ ...p, length: l }))}
+                      className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                      style={cfg.length === l ? { background: "#f0fdf4", color: "#166534", borderColor: "#166534" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}>
+                      {l === "short" ? "간결하게" : l === "default" ? "기본값" : "상세하게"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">언어</p>
+                <div className="flex gap-2">
+                  {(["ko", "en", "ja", "zh"] as const).map((lang) => (
+                    <button key={lang} onClick={() => setCfg((p) => ({ ...p, language: lang }))}
+                      className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                      style={cfg.language === lang ? { background: "#f0fdf4", color: "#166534", borderColor: "#166534" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}>
+                      {lang === "ko" ? "한국어" : lang === "en" ? "English" : lang === "ja" ? "日本語" : "中文"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">문체</p>
+                <div className="flex gap-2">
+                  {(["formal", "casual", "academic"] as const).map((t) => (
+                    <button key={t} onClick={() => setCfg((p) => ({ ...p, tone: t }))}
+                      className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
+                      style={cfg.tone === t ? { background: "#f0fdf4", color: "#166534", borderColor: "#166534" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}>
+                      {t === "formal" ? "격식체" : t === "casual" ? "구어체" : "학술체"}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
-          </div>
-
-          {/* 커스텀 지시사항 (직접 만들기 선택 시 or 추가 설명) */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">
-              {isCustom ? "원하는 형식을 직접 설명해주세요" : "추가 지시사항 (선택)"}
-            </p>
-            <textarea
-              value={cfg.instructions}
-              onChange={(e) => setCfg((p) => ({ ...p, instructions: e.target.value }))}
-              placeholder={isCustom
-                ? "예시:\n• 서론, 본론 3개 섹션, 결론 구조로 만들어줘\n• SWOT 분석 형식으로 작성해줘\n• 경영진을 위한 1페이지 보고서로 만들어줘"
-                : "예시:\n• 2장의 핵심 내용에 집중해줘\n• 예시와 비유를 많이 포함해줘"}
-              rows={isCustom ? 4 : 3}
-              className="w-full text-sm rounded-xl px-4 py-3 outline-none resize-none border-2 text-gray-800 transition-colors"
-              style={{ lineHeight: 1.6, borderColor: "#86efac" }}
-            />
-          </div>
-
-          {/* 길이 */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">길이</p>
-            <div className="flex gap-2">
-              {(["short", "default", "long"] as const).map((l) => (
-                <button
-                  key={l}
-                  onClick={() => setCfg((p) => ({ ...p, length: l }))}
-                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
-                  style={cfg.length === l ? { background: "#f0fdf4", color: "#166534", borderColor: "#166534" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
-                >
-                  {l === "short" ? "간결하게" : l === "default" ? "기본값" : "상세하게"}
-                </button>
-              ))}
+            <div className="flex justify-end px-6 py-4 border-t border-gray-100 shrink-0">
+              <button onClick={handleNext} disabled={loading || (isCustom && !cfg.instructions.trim())}
+                className="px-6 py-2 rounded-full text-sm font-semibold flex items-center gap-2 transition-all text-white"
+                style={{ background: "#166534", opacity: (loading || (isCustom && !cfg.instructions.trim())) ? 0.6 : 1 }}>
+                {loading && <Spinner className="w-3.5 h-3.5" />}
+                {loading ? "생성 중..." : weeks.length > 0 ? "다음" : "만들기"}
+              </button>
             </div>
-          </div>
-
-          {/* 언어 */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">언어</p>
-            <div className="flex gap-2">
-              {(["ko", "en", "ja", "zh"] as const).map((lang) => (
-                <button
-                  key={lang}
-                  onClick={() => setCfg((p) => ({ ...p, language: lang }))}
-                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
-                  style={cfg.language === lang ? { background: "#f0fdf4", color: "#166534", borderColor: "#166534" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
-                >
-                  {lang === "ko" ? "한국어" : lang === "en" ? "English" : lang === "ja" ? "日本語" : "中文"}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* 문체 */}
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">문체</p>
-            <div className="flex gap-2">
-              {(["formal", "casual", "academic"] as const).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setCfg((p) => ({ ...p, tone: t }))}
-                  className="flex-1 py-2 rounded-xl text-sm font-medium border-2 transition-all"
-                  style={cfg.tone === t ? { background: "#f0fdf4", color: "#166534", borderColor: "#166534" } : { background: "white", color: "#6b7280", borderColor: "#e5e7eb" }}
-                >
-                  {t === "formal" ? "격식체" : t === "casual" ? "구어체" : "학술체"}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex justify-end px-6 py-4 border-t border-gray-100 shrink-0">
-          <button
-            onClick={() => onGenerate(cfg)}
-            disabled={loading || (isCustom && !cfg.instructions.trim())}
-            className="px-8 py-2.5 rounded-full text-sm font-semibold flex items-center gap-2 transition-all text-white"
-            style={{ background: "#166534", opacity: (loading || (isCustom && !cfg.instructions.trim())) ? 0.6 : 1, cursor: (loading || (isCustom && !cfg.instructions.trim())) ? "not-allowed" : "pointer" }}
-          >
-            {loading && <Spinner className="w-3.5 h-3.5" />}
-            {loading ? "생성 중..." : "만들기"}
-          </button>
-        </div>
+          </>
+        ) : (
+          <WeekPickerStep weeks={weeks} selectedWeekId={selectedWeekId} onSelect={setSelectedWeekId}
+            onConfirm={() => onGenerate(cfg, selectedWeekId)} onClose={onClose} loading={loading}
+            chips={[formatLabelMap[cfg.format], ...(selectedWeekId !== null ? [`W${selectedWeekId}`] : [])]} />
+        )}
       </div>
     </div>
   );
@@ -1727,7 +1786,8 @@ function ReportView({
 }
 
 // ── Main StudioPanel ───────────────────────────────────────────────────────
-export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }: Props) {  const [loadingType, setLoadingType] = useState<string | null>(null);
+export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, weeks = [], onAddWeekTask, openItemId, onOpenItemHandled }: Props) {
+  const [loadingType, setLoadingType] = useState<string | null>(null);
   const [showQuizModal, setShowQuizModal] = useState(false);
   const [showAudioModal, setShowAudioModal] = useState(false);
   const [showMindmapModal, setShowMindmapModal] = useState(false);
@@ -1745,8 +1805,54 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
   const [savedItems, setSavedItems] = useState<SavedItem[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
+
+  // openItemId: 외부에서 특정 아이템을 전체화면으로 열도록 요청
+  useEffect(() => {
+    if (!openItemId) return;
+    const item = savedItems.find((s) => s.id === openItemId);
+    if (!item) return;
+    if (item.type === "quiz" && item.quiz) setActiveQuiz(item.quiz);
+    else if (item.type === "audio") setActiveAudio({ base64: item.audio?.base64, audioUrl: item.audioUrl, script: item.audio?.script || "", title: item.title });
+    else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });
+    else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
+    else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
+    else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
+    else if (item.summaryContent) setSummaryContent(item.summaryContent);
+    setIsExpanded(true);
+    onOpenItemHandled?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openItemId]);
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [collapsedWeeks, setCollapsedWeeks] = useState<number[]>([]);
+  const toggleWeekCollapse = (id: number) =>
+    setCollapsedWeeks((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  const [weekGeneratingFor, setWeekGeneratingFor] = useState<number | null>(null);
+  const [showWeekTypePickerForId, setShowWeekTypePickerForId] = useState<number | null>(null);
+
+  function getEffectiveDocIds(): string[] {
+    if (weekGeneratingFor !== null) {
+      const week = weeks.find((w) => w.id === weekGeneratingFor);
+      if (week) return week.sources.filter((s) => s.docId).map((s) => s.docId!);
+    }
+    return activeDocIds;
+  }
+
+  function buildWeekTask(type: string, title: string, subtitle: string, weekId?: number, itemId?: string): WeekTask {
+    const icons: Record<string, { icon: string; iconBg: string }> = {
+      audio: { icon: "🎧", iconBg: "#d0f5f1" },
+      slides: { icon: "📊", iconBg: "#fef0da" },
+      mindmap: { icon: "🗺️", iconBg: "#f0e6ff" },
+      quiz: { icon: "❓", iconBg: "#dbeafe" },
+      flashcard: { icon: "🃏", iconBg: "#fde0ea" },
+      report: { icon: "📝", iconBg: "#dcf2e8" },
+    };
+    const { icon, iconBg } = icons[type] || { icon: "📄", iconBg: "#f1f3f4" };
+    const resolvedWeekId = weekId !== undefined ? weekId : weekGeneratingFor!;
+    const week = weeks.find((w) => w.id === resolvedWeekId);
+    const maxId = week && week.tasks.length > 0 ? Math.max(...week.tasks.map((t) => t.id)) : 0;
+    return { id: maxId + 1, icon, iconBg, title, subtitle, itemId };
+  }
 
   const hasDoc = activeDocIds.length > 0;
 
@@ -1906,7 +2012,8 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
     }
   }
 
-  async function handleQuizGenerate(cfg: QuizConfig) {
+  async function handleQuizGenerate(cfg: QuizConfig, saveToWeekId: number | null) {
+    const docIds = getEffectiveDocIds();
     setLoadingType("quiz");
     try {
       const token = await getToken();
@@ -1914,12 +2021,12 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          doc_ids: activeDocIds,
+          doc_ids: docIds,
           type: "quiz",
           quiz_count: COUNT_MAP[cfg.count],
           difficulty: cfg.difficulty,
           topic: cfg.topic,
-          item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "퀴즈",
+          item_title: docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ") || "퀴즈",
           notebook_id: notebookId,
         }),
       });
@@ -1958,12 +2065,18 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
         id: data.item_id || Date.now().toString(),
         type: "quiz",
         title: quizData.title || "퀴즈",
-        subtitle: `퀴즈 · 소스 ${activeDocIds.length}개`,
+        subtitle: `퀴즈 · 소스 ${docIds.length}개`,
         createdAt: new Date(),
         quiz,
       };
       setSavedItems((prev) => [newItem, ...prev]);
-      setActiveQuiz(quiz);
+      const saveWeekIdQ = weekGeneratingFor ?? saveToWeekId;
+      if (saveWeekIdQ !== null) {
+        onAddWeekTask?.(saveWeekIdQ, buildWeekTask("quiz", quizData.title || "퀴즈", `퀴즈 · 소스 ${docIds.length}개`, saveWeekIdQ, data.item_id));
+        setWeekGeneratingFor(null);
+      } else {
+        setActiveQuiz(quiz);
+      }
       setShowQuizModal(false);
     } catch (e: unknown) {
       alert(`퀴즈 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
@@ -1972,7 +2085,8 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
     }
   }
 
-  async function handleAudioGenerate(cfg: AudioConfig) {
+  async function handleAudioGenerate(cfg: AudioConfig, saveToWeekId: number | null) {
+    const docIds = getEffectiveDocIds();
     setLoadingType("audio");
     try {
       const token = await getToken();
@@ -1980,28 +2094,35 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          doc_ids: activeDocIds,
+          doc_ids: docIds,
           format: cfg.format,
           language: cfg.language,
           length: cfg.length,
           focus: cfg.focus,
-          item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "오디오 오버뷰",
+          item_title: docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ") || "오디오 오버뷰",
           notebook_id: notebookId,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "생성 실패");
-      const docNames = docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ");
+      const docNames = docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ");
+      const audioTitle = data.title || docNames || "오디오 오버뷰";
       const newItem: SavedItem = {
         id: data.item_id || Date.now().toString(),
         type: "audio",
-        title: data.title || docNames || "오디오 오버뷰",
-        subtitle: `오디오 · 소스 ${activeDocIds.length}개`,
+        title: audioTitle,
+        subtitle: `오디오 · 소스 ${docIds.length}개`,
         createdAt: new Date(),
         audio: { base64: data.audio_base64, script: data.script },
       };
       setSavedItems((prev) => [newItem, ...prev]);
-      setActiveAudio({ base64: data.audio_base64, script: data.script, title: data.title || "오디오 오버뷰" });
+      const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+      if (resolvedWeekId !== null) {
+        onAddWeekTask?.(resolvedWeekId, buildWeekTask("audio", audioTitle, `오디오 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id));
+        setWeekGeneratingFor(null);
+      } else {
+        setActiveAudio({ base64: data.audio_base64, script: data.script, title: audioTitle });
+      }
       setShowAudioModal(false);
     } catch (e: unknown) {
       alert(`오디오 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
@@ -2010,7 +2131,8 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
     }
   }
 
-  async function handleMindmapGenerate(cfg: MindmapConfig) {
+  async function handleMindmapGenerate(cfg: MindmapConfig, saveToWeekId: number | null) {
+    const docIds = getEffectiveDocIds();
     setLoadingType("mindmap");
     try {
       const token = await getToken();
@@ -2018,7 +2140,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          doc_ids: activeDocIds,
+          doc_ids: docIds,
           language: cfg.language,
           focus: cfg.focus,
           notebook_id: notebookId,
@@ -2027,16 +2149,23 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "생성 실패");
 
+      const mindmapTitle = data.title || "마인드맵";
       const newItem: SavedItem = {
         id: data.item_id || Date.now().toString(),
         type: "mindmap",
-        title: data.title || "마인드맵",
-        subtitle: `마인드맵 · 소스 ${activeDocIds.length}개`,
+        title: mindmapTitle,
+        subtitle: `마인드맵 · 소스 ${docIds.length}개`,
         createdAt: new Date(),
         mindmap: { nodes: data.nodes || [] },
       };
       setSavedItems((prev) => [newItem, ...prev]);
-      setActiveMindmap({ nodes: data.nodes || [], title: data.title || "마인드맵" });
+      const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+      if (resolvedWeekId !== null) {
+        onAddWeekTask?.(resolvedWeekId, buildWeekTask("mindmap", mindmapTitle, `마인드맵 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id));
+        setWeekGeneratingFor(null);
+      } else {
+        setActiveMindmap({ nodes: data.nodes || [], title: mindmapTitle });
+      }
       setShowMindmapModal(false);
     } catch (e: unknown) {
       alert(`마인드맵 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
@@ -2045,7 +2174,8 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
     }
   }
 
-  async function handleFlashcardGenerate(cfg: FlashcardConfig) {
+  async function handleFlashcardGenerate(cfg: FlashcardConfig, saveToWeekId: number | null) {
+    const docIds = getEffectiveDocIds();
     setLoadingType("flashcard");
     try {
       const token = await getToken();
@@ -2053,27 +2183,34 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          doc_ids: activeDocIds,
+          doc_ids: docIds,
           count: cfg.count,
           difficulty: cfg.difficulty,
           topic: cfg.topic,
           language: cfg.language,
-          item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "플래시카드",
+          item_title: docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ") || "플래시카드",
           notebook_id: notebookId,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      const flashcardTitle = data.title || "플래시카드";
       const newItem: SavedItem = {
         id: data.item_id || Date.now().toString(),
         type: "flashcard",
-        title: data.title || "플래시카드",
-        subtitle: `플래시카드 · 소스 ${activeDocIds.length}개`,
+        title: flashcardTitle,
+        subtitle: `플래시카드 · 소스 ${docIds.length}개`,
         createdAt: new Date(),
         flashcard: { cards: data.cards || [], difficulty: cfg.difficulty },
       };
       setSavedItems((prev) => [newItem, ...prev]);
-      setActiveFlashcard({ cards: data.cards || [], title: data.title || "플래시카드" });
+      const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+      if (resolvedWeekId !== null) {
+        onAddWeekTask?.(resolvedWeekId, buildWeekTask("flashcard", flashcardTitle, `플래시카드 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id));
+        setWeekGeneratingFor(null);
+      } else {
+        setActiveFlashcard({ cards: data.cards || [], title: flashcardTitle });
+      }
       setShowFlashcardModal(false);
     } catch (e: unknown) {
       alert(`플래시카드 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
@@ -2082,7 +2219,8 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
     }
   }
 
-  async function handleSlideGenerate(cfg: SlideConfig) {
+  async function handleSlideGenerate(cfg: SlideConfig, saveToWeekId: number | null) {
+    const docIds = getEffectiveDocIds();
     setLoadingType("slides");
     try {
       const token = await getToken();
@@ -2090,27 +2228,34 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          doc_ids: activeDocIds,
+          doc_ids: docIds,
           format: cfg.format,
           length: cfg.length,
           language: cfg.language,
           prompt: cfg.prompt,
-          item_title: docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ") || "슬라이드 자료",
+          item_title: docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ") || "슬라이드 자료",
           notebook_id: notebookId,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      const slidesTitle = data.title || "슬라이드 자료";
       const newItem: SavedItem = {
         id: data.item_id || Date.now().toString(),
         type: "slides",
-        title: data.title || "슬라이드 자료",
-        subtitle: `슬라이드 · 소스 ${activeDocIds.length}개`,
+        title: slidesTitle,
+        subtitle: `슬라이드 · 소스 ${docIds.length}개`,
         createdAt: new Date(),
         slides: { slides: data.slides || [], format: cfg.format, cover_image_b64: data.cover_image_b64 || "" },
       };
       setSavedItems((prev) => [newItem, ...prev]);
-      setActiveSlides({ slides: data.slides || [], title: data.title || "슬라이드 자료", cover_image_b64: data.cover_image_b64 || "" });
+      const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+      if (resolvedWeekId !== null) {
+        onAddWeekTask?.(resolvedWeekId, buildWeekTask("slides", slidesTitle, `슬라이드 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id));
+        setWeekGeneratingFor(null);
+      } else {
+        setActiveSlides({ slides: data.slides || [], title: slidesTitle, cover_image_b64: data.cover_image_b64 || "" });
+      }
       setShowSlideModal(false);
     } catch (e: unknown) {
       alert(`슬라이드 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
@@ -2119,16 +2264,17 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
     }
   }
 
-  async function handleReportGenerate(cfg: ReportConfig) {
+  async function handleReportGenerate(cfg: ReportConfig, saveToWeekId: number | null) {
+    const docIds = getEffectiveDocIds();
     setLoadingType("report");
     try {
       const token = await getToken();
-      const docNames = docs.filter((d) => activeDocIds.includes(d.id)).map((d) => d.name).join(", ");
+      const docNames = docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ");
       const res = await fetch(`${API}/api/generate/report`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          doc_ids: activeDocIds,
+          doc_ids: docIds,
           format: cfg.format,
           language: cfg.language,
           length: cfg.length,
@@ -2140,16 +2286,23 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      const reportTitle = data.title || docNames || "보고서";
       const newItem: SavedItem = {
         id: data.item_id || Date.now().toString(),
         type: "report",
-        title: data.title || docNames || "보고서",
-        subtitle: `보고서 · 소스 ${activeDocIds.length}개`,
+        title: reportTitle,
+        subtitle: `보고서 · 소스 ${docIds.length}개`,
         createdAt: new Date(),
         report: { sections: data.sections || [], format: cfg.format },
       };
       setSavedItems((prev) => [newItem, ...prev]);
-      setActiveReport({ sections: data.sections || [], title: data.title || "보고서", format: cfg.format });
+      const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+      if (resolvedWeekId !== null) {
+        onAddWeekTask?.(resolvedWeekId, buildWeekTask("report", reportTitle, `보고서 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id));
+        setWeekGeneratingFor(null);
+      } else {
+        setActiveReport({ sections: data.sections || [], title: reportTitle, format: cfg.format });
+      }
       setShowReportModal(false);
     } catch (e: unknown) {
       alert(`보고서 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
@@ -2158,15 +2311,28 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
     }
   }
 
-  function handleCardClick(typeId: string) {
-    if (!hasDoc) { alert("소스를 먼저 선택해주세요."); return; }
+  function handleCardClick(typeId: string, forWeekId?: number) {
+    const effectiveDocIds = forWeekId !== undefined
+      ? (weeks.find((w) => w.id === forWeekId)?.sources.filter((s) => s.docId).map((s) => s.docId!) ?? [])
+      : activeDocIds;
+    if (effectiveDocIds.length === 0) {
+      alert(forWeekId !== undefined ? "이 주차에 소스를 먼저 추가해주세요." : "소스를 먼저 선택해주세요.");
+      return;
+    }
+    if (forWeekId !== undefined) {
+      setWeekGeneratingFor(forWeekId);
+    }
+    setShowWeekTypePickerForId(null);
     if (typeId === "report") setShowReportModal(true);
     else if (typeId === "quiz") setShowQuizModal(true);
     else if (typeId === "audio") setShowAudioModal(true);
     else if (typeId === "mindmap") setShowMindmapModal(true);
     else if (typeId === "flashcard") setShowFlashcardModal(true);
     else if (typeId === "slides") setShowSlideModal(true);
-    else alert("곧 지원 예정인 기능입니다 ✨");
+    else {
+      if (forWeekId !== undefined) setWeekGeneratingFor(null);
+      alert("곧 지원 예정인 기능입니다 ✨");
+    }
   }
 
   const expandToggleBtn = (
@@ -2217,40 +2383,40 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
   }
 
   return (
-    <aside className={`flex flex-col bg-[#f8f9fa] overflow-hidden ${isExpanded ? "fixed inset-0 z-50" : "w-full h-full"}`}>
+    <aside className={`flex flex-col bg-white overflow-hidden ${isExpanded ? "fixed inset-0 z-50" : "w-full h-full"}`}>
       {showQuizModal && (
-        <QuizModal loading={loadingType === "quiz"} onClose={() => setShowQuizModal(false)} onGenerate={handleQuizGenerate} />
+        <QuizModal loading={loadingType === "quiz"} onClose={() => { setShowQuizModal(false); setWeekGeneratingFor(null); }} onGenerate={handleQuizGenerate} weeks={weeks} />
       )}
       {showAudioModal && (
-        <AudioModal loading={loadingType === "audio"} onClose={() => setShowAudioModal(false)} onGenerate={handleAudioGenerate} />
+        <AudioModal loading={loadingType === "audio"} onClose={() => { setShowAudioModal(false); setWeekGeneratingFor(null); }} onGenerate={handleAudioGenerate} weeks={weeks} />
       )}
       {showMindmapModal && (
-        <MindmapModal loading={loadingType === "mindmap"} onClose={() => setShowMindmapModal(false)} onGenerate={handleMindmapGenerate} />
+        <MindmapModal loading={loadingType === "mindmap"} onClose={() => { setShowMindmapModal(false); setWeekGeneratingFor(null); }} onGenerate={handleMindmapGenerate} weeks={weeks} />
       )}
       {showFlashcardModal && (
-        <FlashcardModal loading={loadingType === "flashcard"} onClose={() => setShowFlashcardModal(false)} onGenerate={handleFlashcardGenerate} />
+        <FlashcardModal loading={loadingType === "flashcard"} onClose={() => { setShowFlashcardModal(false); setWeekGeneratingFor(null); }} onGenerate={handleFlashcardGenerate} weeks={weeks} />
       )}
       {showSlideModal && (
-        <SlideModal loading={loadingType === "slides"} onClose={() => setShowSlideModal(false)} onGenerate={handleSlideGenerate} />
+        <SlideModal loading={loadingType === "slides"} onClose={() => { setShowSlideModal(false); setWeekGeneratingFor(null); }} onGenerate={handleSlideGenerate} weeks={weeks} />
       )}
       {showReportModal && (
-        <ReportModal loading={loadingType === "report"} onClose={() => setShowReportModal(false)} onGenerate={handleReportGenerate} />
+        <ReportModal loading={loadingType === "report"} onClose={() => { setShowReportModal(false); setWeekGeneratingFor(null); }} onGenerate={handleReportGenerate} weeks={weeks} />
       )}
 
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 shrink-0">
-        <span className="text-[15px] font-semibold text-[#1f2937]">스튜디오</span>
+      <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-gray-100" style={{ minHeight: 44 }}>
+        <span className="text-gray-800 whitespace-nowrap" style={{ fontSize: "0.92rem", fontWeight: 700 }}>스튜디오</span>
         <button
           onClick={() => setIsExpanded((v) => !v)}
           title={isExpanded ? "축소" : "전체화면"}
-          className="p-1.5 rounded-lg hover:bg-black/5 text-[#5f6368] hover:text-blue-600 transition-colors"
+          className="w-6 h-6 rounded-md bg-gray-100 hover:bg-blue-100 flex items-center justify-center text-gray-400 hover:text-blue-500 transition-colors shrink-0"
         >
           {isExpanded ? (
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9V4.5M15 9h4.5M15 9l5.25-5.25M15 15v4.5M15 15h4.5M15 15l5.25 5.25" />
             </svg>
           ) : (
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 20.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
             </svg>
           )}
@@ -2260,76 +2426,52 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto">
         {/* Content type grid */}
-        <div className="px-3 pb-3 grid grid-cols-2 gap-2">
+        <div className="shrink-0 grid grid-cols-3 gap-1.5 p-3 border-b border-gray-100">
           {CONTENT_TYPES.map((ct) => (
             <button
               key={ct.id}
               onClick={() => handleCardClick(ct.id)}
               disabled={loadingType !== null}
-              className="relative rounded-xl p-2 text-left transition-all hover:brightness-[0.96] active:scale-[0.98]"
-              style={{ background: ct.cardBg }}
+              className={`flex flex-col items-center gap-1 py-2.5 rounded-xl transition-colors group ${
+                loadingType === ct.id
+                  ? "bg-blue-500 ring-2 ring-blue-300"
+                  : "hover:bg-blue-100"
+              }`}
+              style={{ background: loadingType === ct.id ? undefined : "#EFF6FF" }}
             >
-              {/* Pencil icon — top right */}
-              <span className="absolute top-2 right-2 opacity-70 hover:opacity-100 transition-opacity" style={{ color: ct.iconColor }}>
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                </svg>
-              </span>
-              {/* Type icon */}
-              <div className="w-6 h-6 rounded-lg flex items-center justify-center mb-1.5" style={{ background: ct.iconBg }}>
-                {loadingType === ct.id ? <Spinner className="w-3 h-3" /> : <TypeIcon id={ct.id} color={ct.iconColor} size={12} />}
+              <div className={`transition-colors ${
+                loadingType === ct.id ? "text-white" : "text-blue-600 group-hover:text-blue-700"
+              }`}>
+                {loadingType === ct.id
+                  ? <Spinner className="w-[18px] h-[18px]" />
+                  : <TypeIcon id={ct.id} color={loadingType === ct.id ? "#fff" : "#2563eb"} size={18} />}
               </div>
-              {/* Label */}
-              <span className="text-[10px] font-medium text-[#3c4043] leading-tight">{ct.label}</span>
+              <span
+                className={`transition-colors text-center leading-tight ${
+                  loadingType === ct.id ? "text-white" : "text-blue-600 group-hover:text-blue-700"
+                }`}
+                style={{ fontSize: "0.62rem", fontWeight: 500 }}
+              >
+                {ct.shortLabel}
+              </span>
             </button>
           ))}
         </div>
 
         {/* Saved items list */}
         {savedItems.length > 0 && (
-          <div className="px-2 pb-2">
+          <div className="pb-1">
+            <div className="px-4 pt-2 pb-1">
+              <span className="text-gray-400" style={{ fontSize: "0.65rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>생성된 자료</span>
+            </div>
             {savedItems.map((item) => (
-              <div key={item.id} className="relative flex items-center gap-2.5 px-2 py-2.5 rounded-xl hover:bg-black/5 transition-colors">
-                {/* Type icon */}
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-                  style={{
-                    background: item.type === "quiz" ? "#dbeafe" : item.type === "audio" ? "#d0f5f1" : item.type === "mindmap" ? "#f0e6ff" : item.type === "memo" ? "#fef9c3" : item.type === "flashcard" ? "#fde0ea" : item.type === "slides" ? "#fef0da" : "#dcf2e8",
-                    color: item.type === "quiz" ? "#1d4ed8" : item.type === "audio" ? "#0d9488" : item.type === "mindmap" ? "#7c3aed" : item.type === "memo" ? "#854d0e" : item.type === "flashcard" ? "#be123c" : item.type === "slides" ? "#d97706" : "#166534",
-                  }}>
-                  {item.type === "quiz" ? (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                      <circle cx="12" cy="12" r="10" /><path strokeLinecap="round" strokeLinejoin="round" d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3M12 17h.01" />
-                    </svg>
-                  ) : item.type === "audio" ? (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z" />
-                    </svg>
-                  ) : item.type === "mindmap" ? (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                      <circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none" />
-                      <circle cx="5" cy="5" r="1.5" fill="currentColor" stroke="none" />
-                      <circle cx="19" cy="5" r="1.5" fill="currentColor" stroke="none" />
-                      <circle cx="5" cy="19" r="1.5" fill="currentColor" stroke="none" />
-                      <circle cx="19" cy="19" r="1.5" fill="currentColor" stroke="none" />
-                      <path strokeLinecap="round" d="M10.5 10.5L6.5 6.5M13.5 10.5L17.5 6.5M10.5 13.5L6.5 17.5M13.5 13.5L17.5 17.5" />
-                    </svg>
-                  ) : item.type === "memo" ? (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                    </svg>
-                  ) : item.type === "flashcard" ? (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                      <rect x="2" y="6" width="20" height="13" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M16 2l-2 4M12 2v4M8 2l2 4" />
-                    </svg>
-                  ) : item.type === "slides" ? (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                      <rect x="2" y="3" width="20" height="15" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M8 21h8M12 18v3" />
-                    </svg>
-                  ) : (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-                    </svg>
-                  )}
+              <div key={item.id} className="flex items-center gap-2 px-4 py-1.5 hover:bg-gray-50 transition-colors cursor-pointer group">
+                {/* Type icon — week4 style: small blue square */}
+                <div
+                  className="w-5 h-5 rounded flex items-center justify-center shrink-0 text-blue-500"
+                  style={{ background: "#EFF6FF" }}
+                >
+                  <TypeIcon id={item.type} color="#2563eb" size={11} />
                 </div>
                 {/* Text */}
                 <div className="flex-1 min-w-0">
@@ -2344,12 +2486,12 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
                         if (e.key === "Escape") setRenamingItemId(null);
                       }}
                       onClick={(e) => e.stopPropagation()}
-                      className="w-full text-sm font-semibold text-[#202124] bg-transparent border-b-2 border-[#1a73e8] outline-none truncate"
+                      className="w-full bg-transparent border-b border-blue-400 outline-none truncate"
+                      style={{ fontSize: "0.72rem", fontWeight: 500 }}
                     />
                   ) : (
-                    <p className="text-sm font-semibold text-[#202124] truncate">{item.title}</p>
+                    <p className="text-gray-700 truncate" style={{ fontSize: "0.72rem", fontWeight: 500 }}>{item.title}</p>
                   )}
-                  <p className="text-[11px] text-[#80868b] mt-0.5">{item.subtitle} · {timeAgo(item.createdAt)}</p>
                 </div>
                 {/* Play button */}
                 <button
@@ -2359,13 +2501,13 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
                     else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });
                     else if (item.type === "memo") setActiveMemo({ id: item.id, title: item.title, content: item.memoContent ?? "" });
                     else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
-    else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
+                    else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
                     else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
                     else if (item.summaryContent) setSummaryContent(item.summaryContent);
                   }}
-                  className="w-7 h-7 rounded-full bg-[#1a73e8] flex items-center justify-center shrink-0 hover:bg-[#1557b0] transition-colors"
+                  className="w-5 h-5 rounded-md bg-blue-500 flex items-center justify-center shrink-0 hover:bg-blue-600 transition-colors opacity-0 group-hover:opacity-100"
                 >
-                  <svg className="w-3.5 h-3.5 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-2.5 h-2.5 text-white ml-px" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M8 5v14l11-7z" />
                   </svg>
                 </button>
@@ -2373,19 +2515,19 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
                 <div className="relative">
                   <button
                     onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === item.id ? null : item.id); }}
-                    className="p-1 rounded-lg hover:bg-black/10 text-[#80868b] transition-colors"
+                    className="p-0.5 rounded hover:bg-gray-200 text-gray-400 transition-colors opacity-0 group-hover:opacity-100"
                   >
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
                       <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
                     </svg>
                   </button>
                   {openMenuId === item.id && (
-                    <div className="absolute right-0 top-7 z-20 bg-white rounded-xl shadow-lg border border-gray-200 py-1 w-32">
+                    <div className="absolute right-0 top-6 z-20 bg-white rounded-xl shadow-lg border border-gray-200 py-1 w-32">
                       <button
                         onClick={(e) => { e.stopPropagation(); startRename(item); }}
                         className="w-full px-3 py-2 text-xs text-gray-700 hover:bg-gray-50 text-left flex items-center gap-2"
                       >
-                        <svg className="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                        <svg className="w-3 h-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
                         </svg>
                         이름 변경
@@ -2394,7 +2536,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
                         onClick={() => handleDeleteItem(item.id)}
                         className="w-full px-3 py-2 text-xs text-red-600 hover:bg-red-50 text-left flex items-center gap-2"
                       >
-                        <svg className="w-3.5 h-3.5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                        <svg className="w-3 h-3 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
                         </svg>
                         삭제
@@ -2406,15 +2548,115 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken }
             ))}
           </div>
         )}
+
+        {/* Week list */}
+        {weeks.length > 0 && (
+          <div className="border-t border-gray-100">
+            <div className="px-4 pt-2 pb-1">
+              <span className="text-gray-400" style={{ fontSize: "0.65rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>주차별 자료</span>
+            </div>
+            {weeks.map((week, index) => {
+              const isCollapsed = collapsedWeeks.includes(week.id);
+              const allItems = [...(week.sources || []), ...(week.tasks || [])];
+              return (
+                <div key={week.id} className="border-b border-gray-100 last:border-0">
+                  {/* Week header */}
+                  <div
+                    className="flex items-center gap-1.5 px-3 py-2 cursor-pointer hover:bg-gray-50 transition-colors"
+                    onClick={() => toggleWeekCollapse(week.id)}
+                  >
+                    <svg
+                      className="w-3 h-3 text-gray-400 shrink-0 transition-transform"
+                      style={{ transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}
+                      fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-gray-800 truncate" style={{ fontSize: "0.78rem", fontWeight: 600 }}>
+                        {week.title || `W${index + 1} 제목`}
+                      </p>
+                      <p className="text-gray-400" style={{ fontSize: "0.63rem" }}>{allItems.length}개</p>
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setShowWeekTypePickerForId((prev) => prev === week.id ? null : week.id); }}
+                      className="w-5 h-5 rounded flex items-center justify-center shrink-0 hover:bg-blue-200 transition-colors"
+                      style={{ background: showWeekTypePickerForId === week.id ? "#BFDBFE" : "#EFF6FF" }}
+                      title="스튜디오 자료 생성"
+                    >
+                      <svg className="w-3 h-3 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                      </svg>
+                    </button>
+                  </div>
+                  {/* Content type mini picker */}
+                  {showWeekTypePickerForId === week.id && (
+                    <div className="px-2 pb-2">
+                      <div className="grid grid-cols-3 gap-1 rounded-xl p-1.5" style={{ background: "#EFF6FF" }}>
+                        {CONTENT_TYPES.filter((ct) => !["video", "infographic", "table"].includes(ct.id)).map((ct) => (
+                          <button
+                            key={ct.id}
+                            onClick={() => handleCardClick(ct.id, week.id)}
+                            disabled={loadingType !== null}
+                            className="flex flex-col items-center gap-0.5 py-1.5 rounded-lg hover:bg-white transition-colors disabled:opacity-50"
+                          >
+                            {loadingType === ct.id && weekGeneratingFor === week.id
+                              ? <Spinner className="w-3.5 h-3.5 text-blue-500" />
+                              : <TypeIcon id={ct.id} color="#2563eb" size={14} />}
+                            <span className="text-blue-600 text-center leading-tight" style={{ fontSize: "0.58rem", fontWeight: 500 }}>{ct.shortLabel}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* Items */}
+                  {!isCollapsed && (
+                    <div className="pb-1">
+                      {allItems.length === 0 ? (
+                        <div className="px-4 py-1.5">
+                          <p className="text-gray-300" style={{ fontSize: "0.7rem" }}>항목 없음</p>
+                        </div>
+                      ) : (
+                        allItems.map((item: any, i: number) => (
+                          <div
+                            key={`week-${week.id}-item-${i}`}
+                            className="flex items-center gap-2 px-4 py-1.5 hover:bg-gray-50 transition-colors cursor-pointer"
+                          >
+                            <div
+                              className="w-5 h-5 rounded flex items-center justify-center shrink-0"
+                              style={{ background: "#EFF6FF" }}
+                            >
+                              {item.icon ? (
+                                <span style={{ fontSize: "0.7rem" }}>{item.icon}</span>
+                              ) : (
+                                <svg className="w-2.5 h-2.5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                              )}
+                            </div>
+                            <p className="text-gray-700 truncate flex-1" style={{ fontSize: "0.72rem", fontWeight: 500 }}>
+                              {item.name ?? item.title ?? `항목 ${i + 1}`}
+                            </p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* 메모 추가 button */}
-      <div className="px-4 py-3 shrink-0 flex justify-center">
+      <div className="px-3 py-3 shrink-0 border-t border-gray-100">
         <button
           onClick={() => setActiveMemo({ id: null, title: "", content: "" })}
-          className="flex items-center gap-2 px-6 py-2.5 bg-[#1f2937] text-white text-sm font-medium rounded-full hover:bg-[#374151] transition-colors shadow-sm"
+          className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl text-blue-600 hover:bg-blue-50 transition-colors"
+          style={{ fontSize: "0.75rem", fontWeight: 500, background: "#EFF6FF" }}
         >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8">
             <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
           </svg>
           메모 추가

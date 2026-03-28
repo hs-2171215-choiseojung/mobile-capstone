@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/client";
 import SourcePanel, { type Doc } from "@/components/workspace/SourcePanel";
 import ChatPanel from "@/components/workspace/ChatPanel";
 import StudioPanel from "@/components/workspace/StudioPanel";
+import InstructorWorkspace from "@/components/workspace/InstructorWorkspace";
 
 interface Notebook {
   id: string;
@@ -25,6 +26,7 @@ interface Props {
   notebook: Notebook;
   initialDocs: InitialDoc[];
   backUrl: string;
+  role?: "instructor" | "student";
 }
 
 function Divider({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
@@ -42,7 +44,10 @@ async function getToken(): Promise<string> {
   return data.session?.access_token ?? "";
 }
 
-export default function WorkspaceClient({ notebook, initialDocs, backUrl }: Props) {
+export default function WorkspaceClient({ notebook, initialDocs, backUrl, role = "student" }: Props) {
+  if (role === "instructor") {
+    return <InstructorWorkspace notebook={notebook} initialDocs={initialDocs} backUrl={backUrl} />;
+  }
   const router = useRouter();
   const [docs, setDocs] = useState<Doc[]>(
     initialDocs.map((d) => ({

@@ -38,5 +38,12 @@ export default async function WorkspacePage({ params, searchParams }: Props) {
     .eq("status", "ready")
     .order("created_at", { ascending: true });
 
-  return <WorkspaceClient notebook={notebook} initialDocs={initialDocs ?? []} backUrl={from || "/dashboard"} />;
+  const { data: profile } = await supabase
+    .from("users")
+    .select("role")
+    .eq("id", user.id)
+    .single();
+  const userRole = (profile?.role || user.user_metadata?.role || "student") as "instructor" | "student";
+
+  return <WorkspaceClient notebook={notebook} initialDocs={initialDocs ?? []} backUrl={from || "/dashboard"} role={userRole} />;
 }

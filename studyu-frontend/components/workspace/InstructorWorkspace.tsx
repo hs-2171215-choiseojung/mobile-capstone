@@ -1,0 +1,1553 @@
+﻿"use client";
+
+import { useState, useRef, useCallback, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
+import StudioPanel from "@/components/workspace/StudioPanel";
+import type { Doc } from "@/components/workspace/SourcePanel";
+
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// ── Types ─────────────────────────────────────────────────────────────
+interface Notebook {
+  id: string;
+  title: string;
+  description?: string;
+}
+
+interface InitialDoc {
+  id: string;
+  filename: string;
+  chunk_count: number | null;
+  file_type?: string | null;
+  storage_path?: string | null;
+}
+
+export interface WeekSource {
+  id: number;
+  name: string;
+  icon: string;
+  iconBg: string;
+  docId?: string;
+}
+
+export interface WeekTask {
+  id: number;
+  icon: string;
+  iconBg: string;
+  title: string;
+  subtitle: string;
+  itemId?: string;
+}
+
+export interface Week {
+  id: number;
+  title: string;
+  status: string;
+  sources: WeekSource[];
+  tasks: WeekTask[];
+}
+
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+}
+
+interface StudioTaskItem {
+  id: string;
+  label: string;
+  icon: string;
+  iconBg: string;
+  subtitle: string;
+  presets: string[];
+}
+
+interface SourceType {
+  id: string;
+  label: string;
+  icon: string;
+  iconBg: string;
+  subtitle: string;
+  hasUrl: boolean;
+  hasText: boolean;
+}
+
+interface Props {
+  notebook: Notebook;
+  initialDocs: InitialDoc[];
+  backUrl: string;
+}
+
+// ── Constants ─────────────────────────────────────────────────────────
+const SUPPORTED_EXTENSIONS = new Set([
+  "pdf","docx","pptx","ppt","hwp","hwpx",
+  "jpg","jpeg","png","gif","webp",
+  "mp4","mov","avi","mkv","webm","mp3","m4a",
+]);
+
+const studioTaskItems: StudioTaskItem[] = [
+  { id:"audio",      label:"AI 오디오 오버뷰", icon:"🎧", iconBg:"bg-purple-50",  subtitle:"AI가 생성한 오디오 요약",
+    presets:["강의 요약 오디오","핵심 개념 설명","Q&A 형식","스토리텔링 방식","토론 형식","인터뷰 형식"] },
+  { id:"slides",     label:"슬라이드 자료",   icon:"📊", iconBg:"bg-blue-50",    subtitle:"프레젠테이션 슬라이드 생성",
+    presets:["강의 슬라이드","요약 슬라이드","발표 자료","학습 정리 슬라이드","비교 분석 슬라이드","사례 연구 슬라이드"] },
+  { id:"video",      label:"동영상 개요",     icon:"🎬", iconBg:"bg-red-50",     subtitle:"동영상 학습 자료 개요",
+    presets:["강의 개요","실습 영상 개요","애니메이션 시나리오","튜토리얼 개요","다큐멘터리 형식","인터뷰 개요"] },
+  { id:"mindmap",    label:"마인드맵",        icon:"🧠", iconBg:"bg-green-50",   subtitle:"개념 연결 마인드맵",
+    presets:["개념 구조도","인과관계 맵","비교 분석 맵","학습 흐름도","키워드 맵","프로세스 맵"] },
+  { id:"report",     label:"보고서",          icon:"📝", iconBg:"bg-amber-50",   subtitle:"학습 내용 보고서 작성",
+    presets:["학습 가이드","블로그 게시물","제품 요구사항 정의서","시스템 아키텍처 설계서","기술 개념 설명서","학습 활용 가이드"] },
+  { id:"flashcard",  label:"플래시카드",      icon:"🃏", iconBg:"bg-pink-50",    subtitle:"핵심 개념 플래시카드",
+    presets:["단어·정의 카드","Q&A 카드","빈칸 채우기 카드","이미지 연상 카드","공식 암기 카드","사례 카드"] },
+  { id:"quiz",       label:"퀴즈",            icon:"✅", iconBg:"bg-emerald-50", subtitle:"이해도 확인 퀴즈",
+    presets:["객관식 퀴즈","O/X 퀴즈","단답형 퀴즈","빈칸 채우기","서술형 퀴즈","사례 분석 퀴즈"] },
+  { id:"infographic",label:"인포그래픽",     icon:"📈", iconBg:"bg-orange-50",  subtitle:"시각화 인포그래픽",
+    presets:["프로세스 인포그래픽","비교 인포그래픽","타임라인 인포그래픽","통계 시각화","지도 인포그래픽","목록형 인포그래픽"] },
+  { id:"table",      label:"데이터 표",       icon:"📋", iconBg:"bg-slate-50",   subtitle:"정형화된 데이터 표",
+    presets:["비교 분석 표","일정 계획 표","평가 기준 표","개념 정리 표","통계 데이터 표","체크리스트 표"] },
+];
+
+const sourceTypes: SourceType[] = [
+  { id:"pdf",         label:"PDF 파일",       icon:"📄", iconBg:"bg-red-50",    subtitle:"PDF 문서 업로드",    hasUrl:false, hasText:false },
+  { id:"url",         label:"URL 링크",       icon:"🔗", iconBg:"bg-blue-50",   subtitle:"웹페이지 링크 추가", hasUrl:true,  hasText:false },
+  { id:"youtube",     label:"YouTube",        icon:"🎬", iconBg:"bg-red-50",    subtitle:"유튜브 영상 링크",   hasUrl:true,  hasText:false },
+  { id:"text",        label:"텍스트 입력",    icon:"📝", iconBg:"bg-amber-50",  subtitle:"직접 텍스트 작성",   hasUrl:false, hasText:true },
+  { id:"image",       label:"이미지",         icon:"🖼️", iconBg:"bg-purple-50", subtitle:"이미지 파일 첨부",   hasUrl:false, hasText:false },
+  { id:"spreadsheet", label:"스프레드시트",   icon:"📊", iconBg:"bg-green-50",  subtitle:"엑셀·구글 시트",     hasUrl:true,  hasText:false },
+];
+
+async function getToken(): Promise<string> {
+  const supabase = createClient();
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token ?? "";
+}
+
+// ── Main Component ─────────────────────────────────────────────────────
+export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: Props) {
+  const router = useRouter();
+
+  // Docs (backend)
+  const [docs, setDocs] = useState<Doc[]>(
+    initialDocs.map((d) => ({
+      id: d.id,
+      name: d.filename,
+      chunks: d.chunk_count ?? 0,
+      type: (d.file_type === "url" || d.storage_path?.startsWith("http")) ? "url" : "pdf",
+    }))
+  );
+  const [activeDocIds, setActiveDocIds] = useState<string[]>(initialDocs.map((d) => d.id));
+
+  // Study plan (localStorage)
+  const [weeks, setWeeks] = useState<Week[]>([]);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(`study_plan_${notebook.id}`);
+      if (saved) setWeeks(JSON.parse(saved));
+    } catch {}
+  }, [notebook.id]);
+  useEffect(() => {
+    try { localStorage.setItem(`study_plan_${notebook.id}`, JSON.stringify(weeks)); } catch {}
+  }, [weeks, notebook.id]);
+
+  // Sidebar widths
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(272);
+  const [activeView, setActiveView] = useState("sources");
+  const [studioSidebarOpen, setStudioSidebarOpen] = useState(true);
+  const [studioWidth, setStudioWidth] = useState(304);
+  const [studioOpenItemId, setStudioOpenItemId] = useState<string | null>(null);
+  const isResizingLeft = useRef(false);
+  const isResizingRight = useRef(false);
+  const startX = useRef(0);
+  const startW = useRef(0);
+
+  // Chunk expansion (left sidebar)
+  const [expandedDocIds, setExpandedDocIds] = useState<Set<string>>(new Set());
+  const [activeChunkDocIds, setActiveChunkDocIds] = useState<Set<string>>(new Set(initialDocs.map((d) => d.id)));
+
+  // Upload
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [showUrlInput, setShowUrlInput] = useState(false);
+  const [urlValue, setUrlValue] = useState("");
+  const [urlLoading, setUrlLoading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const sourceFileInputRef = useRef<HTMLInputElement>(null);
+  const [sourceSubmitting, setSourceSubmitting] = useState(false);
+
+  // Chat
+  const [chatOpen, setChatOpen] = useState(false);
+  const [messages, setMessages] = useState<Message[]>([{
+    role: "assistant",
+    content: "안녕하세요! 강의 설계를 도와드릴 AI 어시스턴트입니다. 퀴즈 생성, 콘텐츠 요약, 학습 계획 개선 등 무엇이든 물어보세요.",
+  }]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  // Add Task modal
+  const [openPickerWeekId, setOpenPickerWeekId] = useState<number | null>(null);
+  const [selectedPickerItem, setSelectedPickerItem] = useState<StudioTaskItem | null>(null);
+  const [detailConfig, setDetailConfig] = useState({
+    format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체",
+    selectedSources: [] as number[],
+  });
+
+  // Add Source modal
+  const [openSourcePickerWeekId, setOpenSourcePickerWeekId] = useState<number | null>(null);
+  const [selectedSourceType, setSelectedSourceType] = useState<SourceType | null>(null);
+  const [sourceForm, setSourceForm] = useState({ title: "", url: "", text: "" });
+  const [pickedDocIds, setPickedDocIds] = useState<string[]>([]);
+
+  // Week editing
+  const [editingWeekId, setEditingWeekId] = useState<number | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+
+  // Share modal
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
+  const [linkCopied, setLinkCopied] = useState(false);
+
+
+  // ── Resize handlers ───────────────────────────────────────────────
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (isResizingLeft.current) {
+        const delta = e.clientX - startX.current;
+        setLeftSidebarWidth(Math.max(180, Math.min(480, startW.current + delta)));
+      }
+      if (isResizingRight.current) {
+        const delta = startX.current - e.clientX;
+        setStudioWidth(Math.max(160, Math.min(480, startW.current + delta)));
+      }
+    };
+    const onUp = () => {
+      isResizingLeft.current = false;
+      isResizingRight.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, []);
+
+  const startLeftResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingLeft.current = true;
+    startX.current = e.clientX;
+    startW.current = leftSidebarWidth;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, [leftSidebarWidth]);
+
+  const startRightResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingRight.current = true;
+    startX.current = e.clientX;
+    startW.current = studioWidth;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, [studioWidth]);
+
+  useEffect(() => {
+    if (chatOpen) chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, chatLoading, chatOpen]);
+
+  // ── Upload handlers ───────────────────────────────────────────────
+  async function handleUpload(file: File) {
+    const ext = file.name.toLowerCase().split(".").pop() ?? "";
+    if (!SUPPORTED_EXTENSIONS.has(ext)) {
+      alert(`지원하지 않는 파일 형식입니다.\n지원 형식: PDF, PPTX, DOCX, HWP, 이미지(JPG/PNG/GIF/WEBP), 비디오(MP4/MOV/AVI/MKV), 오디오(MP3/M4A)`);
+      return;
+    }
+    setUploading(true);
+    try {
+      const token = await getToken();
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("notebook_id", notebook.id);
+      const res = await fetch(`${API}/api/documents/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "업로드 실패");
+      const newDoc: Doc = { id: data.doc_id, name: data.filename, chunks: data.chunk_count, type: data.file_type ?? ext };
+      setDocs((prev) => [...prev, newDoc]);
+      setActiveDocIds((prev) => [...prev, newDoc.id]);
+      setActiveChunkDocIds((prev) => { const n = new Set(prev); n.add(newDoc.id); return n; });
+    } catch (e) {
+      alert(`업로드 실패: ${e instanceof Error ? e.message : "알 수 없는 오류"}`);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleIngestUrl() {
+    const trimmed = urlValue.trim();
+    if (!trimmed) return;
+    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+      alert("올바른 URL을 입력해주세요");
+      return;
+    }
+    setUrlLoading(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API}/api/documents/ingest_url`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ notebook_id: notebook.id, url: trimmed }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "URL 추가 실패");
+      const newDoc: Doc = { id: data.doc_id, name: data.filename, chunks: data.chunk_count, type: "url" };
+      setDocs((prev) => [...prev, newDoc]);
+      setActiveDocIds((prev) => [...prev, newDoc.id]);
+      setActiveChunkDocIds((prev) => { const n = new Set(prev); n.add(newDoc.id); return n; });
+      setUrlValue("");
+      setShowUrlInput(false);
+    } catch (e) {
+      alert(`URL 추가 실패: ${e instanceof Error ? e.message : "알 수 없는 오류"}`);
+    } finally {
+      setUrlLoading(false);
+    }
+  }
+
+  async function handleDeleteDoc(docId: string) {
+    if (!window.confirm("정말 삭제하시겠습니까?")) return;
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API}/api/documents/${docId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail ?? "삭제 실패"); }
+      setDocs((prev) => prev.filter((d) => d.id !== docId));
+      setActiveDocIds((prev) => prev.filter((id) => id !== docId));
+      setActiveChunkDocIds((prev) => { const n = new Set(prev); n.delete(docId); return n; });
+    } catch (e) {
+      alert(`삭제 실패: ${e instanceof Error ? e.message : "알 수 없는 오류"}`);
+    }
+  }
+
+  // ── Add Source modal handlers ─────────────────────────────────────
+  async function handleSourceFileUpload(file: File) {
+    const ext = file.name.toLowerCase().split(".").pop() ?? "";
+    if (!SUPPORTED_EXTENSIONS.has(ext)) {
+      alert("지원하지 않는 파일 형식입니다.");
+      return;
+    }
+    setSourceSubmitting(true);
+    try {
+      const token = await getToken();
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("notebook_id", notebook.id);
+      const res = await fetch(`${API}/api/documents/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "업로드 실패");
+      const newDoc: Doc = { id: data.doc_id, name: data.filename, chunks: data.chunk_count, type: data.file_type ?? ext };
+      setDocs((prev) => [...prev, newDoc]);
+      setActiveDocIds((prev) => [...prev, newDoc.id]);
+      setActiveChunkDocIds((prev) => { const n = new Set(prev); n.add(newDoc.id); return n; });
+      // Add to week sources if a specific week was selected
+      const weekId = openSourcePickerWeekId;
+      if (weekId && weekId > 0) {
+        setWeeks((prev) => prev.map((w) => {
+          if (w.id !== weekId) return w;
+          const maxId = w.sources.length > 0 ? Math.max(...w.sources.map((s) => s.id)) : 0;
+          return { ...w, sources: [...w.sources, { id: maxId + 1, name: data.filename, icon: "📄", iconBg: "bg-red-50", docId: data.doc_id }] };
+        }));
+      }
+      closeSourceModal();
+    } catch (e) {
+      alert(`업로드 실패: ${e instanceof Error ? e.message : "알 수 없는 오류"}`);
+    } finally {
+      setSourceSubmitting(false);
+    }
+  }
+
+  async function handleAddSource(weekId: number) {
+    if (!selectedSourceType || !sourceForm.title.trim()) return;
+    setSourceSubmitting(true);
+    try {
+      const isLinkType = ["url","youtube","spreadsheet"].includes(selectedSourceType.id);
+      if (selectedSourceType.hasUrl && sourceForm.url.trim()) {
+        const token = await getToken();
+        const res = await fetch(`${API}/api/documents/ingest_url`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ notebook_id: notebook.id, url: sourceForm.url.trim(), filename: sourceForm.title.trim() }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "URL 추가 실패");
+        const newDoc: Doc = { id: data.doc_id, name: data.filename, chunks: data.chunk_count, type: "url" };
+        setDocs((prev) => [...prev, newDoc]);
+        setActiveDocIds((prev) => [...prev, newDoc.id]);
+        setActiveChunkDocIds((prev) => { const n = new Set(prev); n.add(newDoc.id); return n; });
+        if (weekId > 0) {
+          setWeeks((prev) => prev.map((w) => {
+            if (w.id !== weekId) return w;
+            const maxId = w.sources.length > 0 ? Math.max(...w.sources.map((s) => s.id)) : 0;
+            return { ...w, sources: [...w.sources, { id: maxId + 1, name: data.filename, icon: selectedSourceType.icon, iconBg: selectedSourceType.iconBg, docId: data.doc_id }] };
+          }));
+        }
+      } else if (selectedSourceType.hasText && sourceForm.text.trim()) {
+        // Text source — add locally to sidebar only (no backend for raw text yet)
+        if (weekId === -1 || weekId > 0) {
+          // Just add as week source without doc
+          if (weekId > 0) {
+            setWeeks((prev) => prev.map((w) => {
+              if (w.id !== weekId) return w;
+              const maxId = w.sources.length > 0 ? Math.max(...w.sources.map((s) => s.id)) : 0;
+              return { ...w, sources: [...w.sources, { id: maxId + 1, name: sourceForm.title.trim(), icon: selectedSourceType.icon, iconBg: selectedSourceType.iconBg }] };
+            }));
+          }
+        }
+      } else {
+        // File-based source without URL - trigger file input
+        sourceFileInputRef.current?.click();
+        setSourceSubmitting(false);
+        return;
+      }
+    } catch (e) {
+      alert(`소스 추가 실패: ${e instanceof Error ? e.message : "알 수 없는 오류"}`);
+    } finally {
+      setSourceSubmitting(false);
+    }
+    closeSourceModal();
+  }
+
+  function closeSourceModal() {
+    setOpenSourcePickerWeekId(null);
+    setSelectedSourceType(null);
+    setSourceForm({ title: "", url: "", text: "" });
+    setPickedDocIds([]);
+  }
+
+  function handleConfirmDocPick(weekId: number) {
+    if (pickedDocIds.length === 0) return;
+    setWeeks((prev) => prev.map((w) => {
+      if (w.id !== weekId) return w;
+      const existingDocIds = new Set(w.sources.map((s) => s.docId).filter(Boolean));
+      const toAdd = pickedDocIds.filter((id) => !existingDocIds.has(id));
+      if (toAdd.length === 0) return w;
+      let maxId = w.sources.length > 0 ? Math.max(...w.sources.map((s) => s.id)) : 0;
+      const newSources = toAdd.map((docId) => {
+        const doc = docs.find((d) => d.id === docId);
+        const ext = (doc?.type ?? "").toLowerCase();
+        const icon = ext === "pdf" ? "📜" : ext === "url" ? "🔗" : ["jpg","jpeg","png","gif","webp"].includes(ext) ? "🖼️" : ["mp4","mov","avi","mkv","webm"].includes(ext) ? "🎥" : ["🎧","m4a"].includes(ext) ? "🎧" : "📄";
+        const iconBg = ext === "pdf" ? "bg-red-50" : ext === "url" ? "bg-purple-50" : "bg-blue-50";
+        return { id: ++maxId, name: doc?.name ?? docId, icon, iconBg, docId };
+      });
+      return { ...w, sources: [...w.sources, ...newSources] };
+    }));
+    closeSourceModal();
+  }
+
+  // ── Week handlers ─────────────────────────────────────────────────
+  function handleAddWeek() {
+    const newId = weeks.length > 0 ? Math.max(...weeks.map((w) => w.id)) + 1 : 1;
+    const newWeek: Week = { id: newId, title: `Week ${newId}: New Topic`, status: "UPCOMING", sources: [], tasks: [] };
+    setWeeks((prev) => [...prev, newWeek]);
+    setEditingWeekId(newId);
+    setEditingTitle(`Week ${newId}: New Topic`);
+  }
+
+  function handleRenameConfirm(id: number) {
+    if (editingTitle.trim()) {
+      setWeeks((prev) => prev.map((w) => w.id === id ? { ...w, title: editingTitle.trim() } : w));
+    }
+    setEditingWeekId(null);
+    setEditingTitle("");
+  }
+
+  function handleDeleteWeek(id: number) {
+    setWeeks((prev) => prev.filter((w) => w.id !== id));
+  }
+
+  function handleDeleteTask(weekId: number, taskId: number) {
+    setWeeks((prev) => prev.map((w) => w.id !== weekId ? w : { ...w, tasks: w.tasks.filter((t) => t.id !== taskId) }));
+  }
+
+  function handleToggleWeekStatus(weekId: number) {
+    setWeeks((prev) => prev.map((w) => w.id !== weekId ? w : { ...w, status: w.status === "ACTIVE" ? "UPCOMING" : "ACTIVE" }));
+  }
+
+  function handleAddWeekTask(weekId: number, task: WeekTask) {
+    setWeeks((prev) => prev.map((w) => {
+      if (w.id !== weekId) return w;
+      const maxId = w.tasks.length > 0 ? Math.max(...w.tasks.map((t) => t.id)) : 0;
+      return { ...w, tasks: [...w.tasks, { ...task, id: maxId + 1 }] };
+    }));
+  }
+
+  function handleAddTask(weekId: number, item: StudioTaskItem) {
+    setWeeks((prev) => prev.map((w) => {
+      if (w.id !== weekId) return w;
+      const formatNote = detailConfig.format ? ` • ${detailConfig.format}` : "";
+      const maxId = w.tasks.length > 0 ? Math.max(...w.tasks.map((t) => t.id)) : 0;
+      const newTask: WeekTask = {
+        id: maxId + 1, icon: item.icon, iconBg: item.iconBg,
+        title: item.label, subtitle: `${item.subtitle}${formatNote} • ${detailConfig.length} • ${detailConfig.language}`,
+      };
+      return { ...w, tasks: [...w.tasks, newTask] };
+    }));
+    setOpenPickerWeekId(null);
+    setSelectedPickerItem(null);
+    setDetailConfig({ format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체", selectedSources: [] });
+  }
+
+  // ── Chat ──────────────────────────────────────────────────────────
+  async function handleSendChat() {
+    const q = chatInput.trim();
+    if (!q) return;
+    setChatInput("");
+    setMessages((prev) => [...prev, { role: "user", content: q }]);
+    setChatLoading(true);
+    try {
+      const token = await getToken();
+      const activeDocs = docs.filter((d) => activeDocIds.includes(d.id));
+      const docNames = Object.fromEntries(activeDocs.map((d) => [d.id, d.name]));
+      const res = await fetch(`${API}/api/chat`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ doc_ids: activeDocIds, doc_names: docNames, question: q, model: "gpt-4o-mini", level: "intermediate" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "오류");
+      setMessages((prev) => [...prev, { role: "assistant", content: data.answer }]);
+    } catch (e) {
+      setMessages((prev) => [...prev, { role: "assistant", content: `오류가 발생했습니다: ${e instanceof Error ? e.message : "알 수 없는 오류"}` }]);
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────
+  function getIconBg(iconBg: string) {
+    if (iconBg.includes("blue")) return "rgba(0,93,167,0.1)";
+    if (iconBg.includes("amber") || iconBg.includes("yellow")) return "rgba(160,105,0,0.1)";
+    if (iconBg.includes("green")) return "rgba(0,120,60,0.1)";
+    if (iconBg.includes("red")) return "rgba(220,38,38,0.1)";
+    if (iconBg.includes("purple")) return "rgba(109,40,217,0.1)";
+    if (iconBg.includes("pink")) return "rgba(219,39,119,0.1)";
+    if (iconBg.includes("emerald")) return "rgba(4,120,87,0.1)";
+    if (iconBg.includes("orange")) return "rgba(194,65,12,0.1)";
+    return "rgba(100,100,100,0.1)";
+  }
+
+  // ── Render ────────────────────────────────────────────────────────
+  return (
+    <div className="flex flex-col h-screen bg-[#f0f4f9] overflow-hidden">
+      {/* Top Header */}
+      <header className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-5 shrink-0 shadow-sm z-10">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => { router.push(backUrl); router.refresh(); }}
+            className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-blue-600 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
+              <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <span className="text-blue-600 font-bold" style={{ fontSize: "1.05rem", letterSpacing: "-0.5px" }}>STUDY:U</span>
+          <span className="text-gray-300 text-lg">|</span>
+          <span className="text-blue-500 font-semibold truncate max-w-[240px]" style={{ fontSize: "0.9rem" }}>
+            {notebook.title}
+          </span>
+          <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-600">강사</span>
+        </div>
+        <div className="flex items-center gap-3">
+          {/* Public Link Share */}
+          <button
+            onClick={() => {
+              const shareId = Math.random().toString(36).substring(2, 10);
+              setShareUrl(`${window.location.origin}/share/${shareId}`);
+              setShowShareModal(true);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100 transition-colors"
+            style={{ fontSize: "0.78rem" }}
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+              <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            공유
+          </button>
+          <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white font-bold text-xs">I</div>
+        </div>
+      </header>
+
+      {/* Body */}
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* ─── Left Sidebar (Sources) ─── */}
+        <aside
+          className="bg-white border-gray-200 flex shrink-0 shadow-sm overflow-hidden"
+          style={{ width: leftSidebarOpen ? leftSidebarWidth : 36, minWidth: leftSidebarOpen ? leftSidebarWidth : 36, transition: "none" }}
+        >
+          <div className="flex flex-row flex-1 min-w-0 overflow-hidden border-r border-gray-200">
+            {/* Collapsed strip */}
+            {!leftSidebarOpen && (
+              <div className="flex flex-col items-center pt-2 w-full">
+                <button
+                  onClick={() => setLeftSidebarOpen(true)}
+                  className="w-7 h-7 rounded-md bg-gray-100 hover:bg-blue-100 flex items-center justify-center text-gray-400 hover:text-blue-500 transition-colors"
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M5 3L9 7L5 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                </button>
+              </div>
+            )}
+
+            {/* Full sidebar content */}
+            {leftSidebarOpen && (
+              <div className="flex flex-col flex-1 min-w-0 overflow-hidden"
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault(); setDragOver(false);
+                  const file = e.dataTransfer.files[0];
+                  if (file) handleUpload(file);
+                }}
+              >
+                {/* Sidebar Header */}
+                <div className="px-4 pt-4 pb-2 flex items-start justify-between shrink-0">
+                  <div>
+                    <p className="text-[#99a1af] uppercase tracking-wider" style={{ fontSize: "11px", fontWeight: 700 }}>SOURCES</p>
+                    <p className="text-[#99a1af]" style={{ fontSize: "11.5px" }}>Knowledge Base</p>
+                  </div>
+                  <button
+                    onClick={() => setLeftSidebarOpen(false)}
+                    className="w-6 h-6 rounded-md bg-gray-100 hover:bg-blue-100 flex items-center justify-center text-gray-400 hover:text-blue-500 transition-colors"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  </button>
+                </div>
+
+                {/* Nav tabs */}
+                <nav className="flex flex-col gap-[4px] px-2 shrink-0">
+                  <button
+                    onClick={() => setActiveView("sources")}
+                    className={`h-[41px] flex items-center gap-2.5 pl-3 rounded-[14px] transition-all ${
+                      activeView === "sources" ? "bg-[#eff6ff] shadow-sm" : "hover:bg-gray-50"
+                    }`}
+                  >
+                    <span className="shrink-0 w-4 h-4 flex items-center justify-center">
+                      <svg width="12" height="14" viewBox="0 0 12 14" fill="none">
+                        <path d="M7 1H2a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V5L7 1z" stroke={activeView === "sources" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M7 1v4h4" stroke={activeView === "sources" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M2 7h8M2 9h8" stroke={activeView === "sources" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </span>
+                    <span className={activeView === "sources" ? "text-[#155dfc]" : "text-[#4a5565]"} style={{ fontSize: "13.92px", fontWeight: activeView === "sources" ? 600 : 400 }}>Sources</span>
+                  </button>
+
+                  <button
+                    onClick={() => setActiveView("students")}
+                    className={`h-[41px] flex items-center gap-2.5 pl-3 rounded-[14px] transition-all ${
+                      activeView === "students" ? "bg-[#eff6ff] shadow-sm" : "hover:bg-gray-50"
+                    }`}
+                  >
+                    <span className="shrink-0 w-4 h-4 flex items-center justify-center">
+                      <svg width="14" height="12" viewBox="0 0 14 12" fill="none">
+                        <circle cx="5" cy="3" r="2" stroke={activeView === "students" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round"/>
+                        <path d="M1 10.5C1 8.6 2.8 7 5 7s4 1.6 4 3.5" stroke={activeView === "students" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round"/>
+                        <circle cx="10" cy="3.5" r="1.5" stroke={activeView === "students" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round"/>
+                        <path d="M11.5 7.5C12.4 7.8 13 8.6 13 9.6" stroke={activeView === "students" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round"/>
+                      </svg>
+                    </span>
+                    <span className={activeView === "students" ? "text-[#155dfc]" : "text-[#4a5565]"} style={{ fontSize: "13.92px", fontWeight: activeView === "students" ? 600 : 400 }}>학생 관리</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveView("link");
+                      const shareId = Math.random().toString(36).substring(2, 10);
+                      setShareUrl(`${window.location.origin}/share/${shareId}`);
+                      setShowShareModal(true);
+                    }}
+                    className={`h-[41px] flex items-center gap-2.5 pl-3 rounded-[14px] transition-all ${
+                      activeView === "link" ? "bg-[#eff6ff] shadow-sm" : "hover:bg-gray-50"
+                    }`}
+                  >
+                    <span className="shrink-0 w-4 h-4 flex items-center justify-center">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <path d="M5.5 8.5l3-3M8 5.5l1.5-1.5a2.1 2.1 0 113 3L11 8.5" stroke={activeView === "link" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round"/>
+                        <path d="M6 8.5l-1.5 1.5a2.1 2.1 0 11-3-3L3 5.5" stroke={activeView === "link" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round"/>
+                      </svg>
+                    </span>
+                    <span className={activeView === "link" ? "text-[#155dfc]" : "text-[#4a5565]"} style={{ fontSize: "13.92px", fontWeight: activeView === "link" ? 600 : 400 }}>Link URL</span>
+                  </button>
+
+                  <button
+                    onClick={() => setActiveView("library")}
+                    className={`h-[41px] flex items-center gap-2.5 pl-3 rounded-[14px] transition-all ${
+                      activeView === "library" ? "bg-[#eff6ff] shadow-sm" : "hover:bg-gray-50"
+                    }`}
+                  >
+                    <span className="shrink-0 w-4 h-4 flex items-center justify-center">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <rect x="1" y="2" width="12" height="10" rx="1" stroke={activeView === "library" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2"/>
+                        <path d="M5 2v10M7.5 4v8M10 5v7" stroke={activeView === "library" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round"/>
+                      </svg>
+                    </span>
+                    <span className={activeView === "library" ? "text-[#155dfc]" : "text-[#4a5565]"} style={{ fontSize: "13.92px", fontWeight: activeView === "library" ? 600 : 400 }}>Library</span>
+                  </button>
+                </nav>
+
+                {/* Sources view */}
+                {activeView === "sources" && (
+                  <div className="mt-4 flex-1 flex flex-col min-h-0 overflow-hidden">
+                    {/* 소스 X/X + 소스 추가 */}
+                    <div className="flex items-center justify-between mb-2 px-4 shrink-0">
+                      <span className="text-[#99a1af]" style={{ fontSize: "11.52px" }}>소스 {docs.length}/{docs.length}</span>
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="h-[24px] rounded-[10px] flex items-center gap-1 px-2.5 text-white shrink-0"
+                        style={{ fontSize: "10.88px", fontWeight: 500, background: "linear-gradient(135deg, #2b7fff, #1d6eee)" }}
+                      >
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                          <path d="M5 1.5V8.5" stroke="white" strokeWidth="1.3" strokeLinecap="round" />
+                          <path d="M1.5 5H8.5" stroke="white" strokeWidth="1.3" strokeLinecap="round" />
+                        </svg>
+                        소스 추가
+                      </button>
+                    </div>
+
+                    {/* hidden file input for drag-drop */}
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      accept=".pdf,.docx,.pptx,.ppt,.hwp,.hwpx,.jpg,.jpeg,.png,.gif,.webp,.mp4,.mov,.avi,.mkv,.webm,.mp3,.m4a"
+                      multiple
+                      onChange={(e) => {
+                        const files = Array.from(e.target.files ?? []);
+                        files.forEach((f) => handleUpload(f));
+                        e.target.value = "";
+                      }}
+                    />
+
+                    {/* Uploading indicator */}
+                    {uploading && (
+                      <div className="mx-3 mb-2 px-3 py-1.5 bg-blue-50 border border-blue-100 rounded-lg flex items-center gap-2 shrink-0">
+                        <svg className="w-3 h-3 text-blue-500 animate-spin shrink-0" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40" strokeDashoffset="10"/></svg>
+                        <span className="text-xs text-blue-600">분석 중...</span>
+                      </div>
+                    )}
+
+                    {/* Drag zone hint */}
+                    {dragOver && (
+                      <div className="mx-3 mb-2 h-12 border-2 border-dashed border-blue-400 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
+                        <span className="text-xs text-blue-500 font-medium">여기에 놓으세요</span>
+                      </div>
+                    )}
+
+                    {/* Doc list */}
+                    <div className="flex-1 overflow-y-auto px-3 space-y-0.5">
+                      {docs.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-8 text-center">
+                          <svg className="w-8 h-8 text-gray-300 mb-2" viewBox="0 0 24 24" fill="none">
+                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                            <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                          </svg>
+                          <p className="text-xs text-gray-400">소스 추가 버튼으로<br/>파일이나 URL을 추가하세요</p>
+                        </div>
+                      ) : (
+                        docs.map((doc) => {
+                          const isExpanded = expandedDocIds.has(doc.id);
+                          const isActive = activeChunkDocIds.has(doc.id);
+                          return (
+                            <div key={doc.id} className="rounded-[10px] overflow-hidden">
+                              <div
+                                className="flex items-center gap-2 pl-2 pr-2 py-2 rounded-[10px] hover:bg-gray-50 cursor-pointer group"
+                                onClick={() => setExpandedDocIds((prev) => {
+                                  const next = new Set(prev);
+                                  next.has(doc.id) ? next.delete(doc.id) : next.add(doc.id);
+                                  return next;
+                                })}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isActive}
+                                  className="shrink-0 w-[13px] h-[13px] accent-[#2b7fff] cursor-pointer"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveChunkDocIds((prev) => {
+                                      const next = new Set(prev);
+                                      next.has(doc.id) ? next.delete(doc.id) : next.add(doc.id);
+                                      return next;
+                                    });
+                                    setActiveDocIds((prev) =>
+                                      prev.includes(doc.id) ? prev.filter((id) => id !== doc.id) : [...prev, doc.id]
+                                    );
+                                  }}
+                                  onChange={() => {}}
+                                />
+                                <span className="shrink-0 flex items-center justify-center w-3 h-3">
+                                  {doc.type === "url" ? (
+                                    <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                                      <path d="M5.5 8.5l3-3M8 5.5l1.5-1.5a2.1 2.1 0 113 3L11 8.5" stroke="#51A2FF" strokeWidth="1.2" strokeLinecap="round"/>
+                                      <path d="M6 8.5l-1.5 1.5a2.1 2.1 0 11-3-3L3 5.5" stroke="#51A2FF" strokeWidth="1.2" strokeLinecap="round"/>
+                                    </svg>
+                                  ) : (
+                                    <svg width="9" height="11" viewBox="0 0 9 11" fill="none">
+                                      <path d="M5.5 1H1.5a1 1 0 00-1 1v7a1 1 0 001 1h6a1 1 0 001-1V4L5.5 1z" stroke="#51A2FF" strokeLinecap="round" strokeLinejoin="round" strokeWidth="0.9"/>
+                                      <path d="M5.5 1v3h3" stroke="#51A2FF" strokeLinecap="round" strokeLinejoin="round" strokeWidth="0.9"/>
+                                      <path d="M1.5 5.5H4.5M1.5 7H6.5" stroke="#51A2FF" strokeLinecap="round" strokeLinejoin="round" strokeWidth="0.9"/>
+                                    </svg>
+                                  )}
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-[#364153] truncate" style={{ fontSize: "12.8px", fontWeight: 500 }}>{doc.name}</p>
+                                  <p className="text-[#99a1af]" style={{ fontSize: "11.2px" }}>
+                                    {isActive ? `전체 ${doc.chunks}개 청크` : `0/${doc.chunks}개 청크 선택`}
+                                  </p>
+                                </div>
+                                <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
+                                    className="w-4 h-4 rounded flex items-center justify-center text-gray-300 hover:text-red-400 hover:bg-red-50 transition-colors"
+                                  >
+                                    <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M1.5 1.5L8.5 8.5M8.5 1.5L1.5 8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                                  </button>
+                                </div>
+                                <span className="shrink-0 flex items-center justify-center w-4 h-4 transition-transform duration-200" style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)" }}>
+                                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                                    <path d="M2 3.5L5 6.5L8 3.5" stroke="#99A1AF" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                                  </svg>
+                                </span>
+                              </div>
+                              {isExpanded && (
+                                <div className="ml-5 mb-1 border-l-2 border-blue-100 pl-2 flex flex-col gap-0.5">
+                                  <div className={`px-2 py-1.5 rounded-lg ${isActive ? "bg-blue-50/60" : "bg-gray-50"}`}>
+                                    <p className={`leading-snug ${isActive ? "text-[#2b7fff]" : "text-[#99a1af]"}`} style={{ fontSize: "11.5px" }}>
+                                      전체 {doc.chunks}개 청크 {isActive ? "선택됨" : "(비활성)"}
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Other views placeholder */}
+                {activeView !== "sources" && (
+                  <div className="flex-1 flex items-center justify-center">
+                    <p className="text-gray-300" style={{ fontSize: "0.82rem" }}>준비 중</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Left resize handle */}
+            {leftSidebarOpen && (
+              <div
+                onMouseDown={startLeftResize}
+                className="w-1 shrink-0 cursor-col-resize relative group z-10"
+                style={{ background: "transparent" }}
+              >
+                <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-[3px] bg-gray-200 group-hover:bg-blue-400 transition-colors rounded-full" />
+              </div>
+            )}
+          </div>
+        </aside>
+
+        {/* ─── Main Content ─── */}
+        <main className="flex-1 flex overflow-hidden">
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* Sub header */}
+            <div className="h-11 bg-white border-b border-gray-200 flex items-center justify-between px-3 shrink-0">
+              <button
+                onClick={() => setLeftSidebarOpen((v) => !v)}
+                className="w-7 h-7 rounded-md bg-gray-100 hover:bg-blue-100 flex items-center justify-center text-gray-400 hover:text-blue-500 transition-colors"
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <rect x="1.5" y="1.5" width="13" height="13" rx="2.5" stroke="currentColor" strokeWidth="1.4"/>
+                  <line x1="5.5" y1="1.5" x2="5.5" y2="14.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                  {leftSidebarOpen
+                    ? <path d="M9 6L11 8L9 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                    : <path d="M7 6L5 8L7 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>}
+                </svg>
+              </button>
+
+              <span className="text-gray-500 font-medium" style={{ fontSize: "0.8rem" }}>Instructor Study Plan</span>
+
+              <button
+                onClick={() => setStudioSidebarOpen((v) => !v)}
+                className="w-7 h-7 rounded-md bg-gray-100 hover:bg-blue-100 flex items-center justify-center text-gray-400 hover:text-blue-500 transition-colors"
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <rect x="1.5" y="1.5" width="13" height="13" rx="2.5" stroke="currentColor" strokeWidth="1.4"/>
+                  <line x1="10.5" y1="1.5" x2="10.5" y2="14.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                  {studioSidebarOpen
+                    ? <path d="M7 6L5 8L7 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                    : <path d="M9 6L11 8L9 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>}
+                </svg>
+              </button>
+            </div>
+
+            {/* Scrollable Study Plan */}
+            <div className="flex-1 overflow-y-auto min-h-0">
+              <div className="px-8 py-7 bg-white min-h-full">
+                <h1 className="mb-7" style={{ fontFamily: "Manrope, sans-serif", fontSize: "1.3rem", fontWeight: 700, color: "#001c39" }}>
+                  Instructor Study Plan Sequence
+                </h1>
+
+                <div className="space-y-8">
+                  {weeks.map((week) => (
+                    <div key={week.id} id={`week-${week.id}`}>
+                      {/* Week Header */}
+                      <div className="flex items-center justify-between pb-2.5 mb-3 border-b group" style={{ borderColor: "#e7e8e9" }}>
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          {editingWeekId === week.id ? (
+                            <div className="flex items-center gap-2 flex-1">
+                              <input
+                                autoFocus
+                                type="text"
+                                value={editingTitle}
+                                onChange={(e) => setEditingTitle(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") handleRenameConfirm(week.id);
+                                  if (e.key === "Escape") { setEditingWeekId(null); setEditingTitle(""); }
+                                }}
+                                className="flex-1 px-3 py-1.5 border-2 border-blue-400 rounded-lg focus:outline-none bg-blue-50"
+                                style={{ fontSize: "1.05rem", fontWeight: 500 }}
+                              />
+                              <button onClick={() => handleRenameConfirm(week.id)} className="w-7 h-7 rounded-lg bg-blue-500 flex items-center justify-center text-white">
+                                <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                              </button>
+                              <button onClick={() => { setEditingWeekId(null); setEditingTitle(""); }} className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center text-gray-500">
+                                <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M5 7.5L10 12.5L15 7.5" stroke="#4A5565" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.667"/></svg>
+                              <h2 className="truncate" style={{ fontFamily:"Manrope,sans-serif", fontSize:"19px", fontWeight:500, color:"#001c39", letterSpacing:"-0.4px" }}>
+                                {week.title}
+                              </h2>
+                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-1 shrink-0">
+                                <button onClick={() => { setEditingWeekId(week.id); setEditingTitle(week.title); }} className="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:text-blue-500 hover:bg-blue-50">
+                                  <svg width="11" height="11" viewBox="0 0 14 14" fill="none"><path d="M9.5 2.5l2 2-8 8H1.5v-2l8-8z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                </button>
+                                <button onClick={() => handleDeleteWeek(week.id)} className="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50">
+                                  <svg width="11" height="11" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                        {editingWeekId !== week.id && (
+                          <div className="flex items-center gap-2 shrink-0 ml-3">
+                            <span style={{ fontSize:"12px", color:"#94a3b8", fontWeight:500 }}>
+                              {(week.sources.length + week.tasks.length)}개 항목
+                            </span>
+                            <button
+                              onClick={() => handleToggleWeekStatus(week.id)}
+                              className="px-2 py-0.5 rounded transition-all"
+                              style={{
+                                background: week.status === "ACTIVE" ? "#cfe2f9" : "#edeeef",
+                                fontSize:"10px", fontWeight:600, color:"#526478", letterSpacing:"0.05em",
+                              }}
+                            >
+                              {week.status === "ACTIVE" ? "ACTIVE" : "UPCOMING"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Cards */}
+                      <div className="space-y-3">
+                        {/* Source cards */}
+                        {week.sources.map((source) => (
+                          <div key={`src-${source.id}`} className="relative rounded-[8px] group/source" style={{ background: "#f3f4f5" }}>
+                            <div className="flex items-center px-4 gap-3" style={{ height: 72 }}>
+                              <div className="shrink-0 grid gap-[3px]" style={{ gridTemplateColumns: "repeat(2,4px)", opacity:0.4 }}>
+                                {[...Array(6)].map((_, i) => <div key={i} className="rounded-full" style={{ width:4, height:4, background:"#99A1AF" }}/>)}
+                              </div>
+                              <div className="shrink-0 flex items-center justify-center rounded-[4px] text-xl" style={{ width:38, height:38, background: getIconBg(source.iconBg) }}>
+                                {source.icon}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="truncate" style={{ fontFamily:"Inter,sans-serif", fontSize:"15px", fontWeight:600, color:"#191c1d" }}>{source.name}</p>
+                                <p style={{ fontFamily:"Inter,sans-serif", fontSize:"12px", color:"#414751" }}>학습 소스 자료</p>
+                              </div>
+                              <button
+                                onClick={() => setWeeks((prev) => prev.map((w) =>
+                                  w.id !== week.id ? w : { ...w, sources: w.sources.filter((s) => s.id !== source.id) }
+                                ))}
+                                className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover/source:opacity-100 transition-all"
+                              >
+                                <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+
+                        {/* Task cards */}
+                        {week.tasks.map((task) => (
+                          <div key={task.id} className="relative rounded-[8px] group/task" style={{ background: "#f3f4f5" }}>
+                            <div className="flex items-center px-4 gap-3" style={{ height: 72 }}>
+                              <div className="shrink-0 grid gap-[3px]" style={{ gridTemplateColumns: "repeat(2,4px)", opacity:0.4 }}>
+                                {[...Array(6)].map((_, i) => <div key={i} className="rounded-full" style={{ width:4, height:4, background:"#99A1AF" }}/>)}
+                              </div>
+                              <div className="shrink-0 flex items-center justify-center rounded-[4px] text-xl" style={{ width:38, height:38, background: getIconBg(task.iconBg) }}>
+                                {task.icon}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="truncate" style={{ fontFamily:"Inter,sans-serif", fontSize:"15px", fontWeight:600, color:"#191c1d" }}>{task.title}</p>
+                                <p style={{ fontFamily:"Inter,sans-serif", fontSize:"12px", color:"#414751" }}>{task.subtitle}</p>
+                              </div>
+                              {task.itemId && (
+                                <button
+                                  onClick={() => {
+                                    if (!studioSidebarOpen) setStudioSidebarOpen(true);
+                                    setStudioOpenItemId(task.itemId!);
+                                  }}
+                                  className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                                  style={{ background: "#1d4ed8", color: "white", fontSize: "12px" }}
+                                >
+                                  시작하기
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handleDeleteTask(week.id, task.id)}
+                                className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover/task:opacity-100 transition-all"
+                              >
+                                <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+
+                        {/* Add buttons */}
+                        <div className="flex gap-3">
+                          {week.sources.length === 0 ? (
+                            <button
+                              onClick={() => { setOpenSourcePickerWeekId(week.id); setSelectedSourceType(null); setSourceForm({ title:"", url:"", text:"" }); }}
+                              className="flex-1 flex items-center justify-center gap-2 hover:bg-gray-50 transition-all"
+                              style={{ minHeight:52, borderRadius:8, border:"2px dashed rgba(193,199,211,0.7)" }}
+                            >
+                              <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M4 10H16M10 4V16" stroke="#717783" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.667"/></svg>
+                              <span style={{ fontSize:"13px", fontWeight:600, color:"#717783" }}>소스를 먼저 추가해주세요</span>
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => { setOpenPickerWeekId(week.id); setSelectedPickerItem(null); }}
+                                className="flex-1 flex items-center justify-center gap-2 hover:bg-gray-50 transition-all"
+                                style={{ minHeight:52, borderRadius:8, border:"2px dashed rgba(193,199,211,0.5)" }}
+                              >
+                                <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M4 10H16M10 4V16" stroke="#717783" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.667"/></svg>
+                                <span style={{ fontSize:"13px", fontWeight:600, color:"#717783" }}>Add Task</span>
+                              </button>
+                              <button
+                                onClick={() => { setOpenSourcePickerWeekId(week.id); setSelectedSourceType(null); setSourceForm({ title:"", url:"", text:"" }); }}
+                                className="flex-1 flex items-center justify-center gap-2 hover:bg-gray-50 transition-all"
+                                style={{ minHeight:52, borderRadius:8, border:"2px dashed rgba(193,199,211,0.5)" }}
+                              >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke="#717783" strokeWidth="1.8" strokeLinejoin="round"/><path d="M14 2v6h6" stroke="#717783" strokeWidth="1.8" strokeLinejoin="round"/></svg>
+                                <span style={{ fontSize:"13px", fontWeight:600, color:"#717783" }}>Add Source</span>
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Add New Week */}
+                  <button
+                    onClick={handleAddWeek}
+                    className="w-full flex items-center justify-center gap-2 hover:bg-gray-50 transition-all"
+                    style={{ minHeight:52, borderRadius:8, border:"2px dashed rgba(193,199,211,0.5)" }}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M4 10H16M10 4V16" stroke="#717783" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.667"/></svg>
+                    <span style={{ fontSize:"13px", fontWeight:600, color:"#717783" }}>Add New Week</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* AI Chat Bar (collapsed) */}
+            {!chatOpen && (
+              <div className="shrink-0 flex items-center justify-between px-6 py-3 bg-white border-t border-gray-100 shadow-sm">
+                <span className="text-gray-400" style={{ fontSize: "0.82rem" }}>AI에게 강의 설계 도움 요청...</span>
+                <button
+                  onClick={() => setChatOpen(true)}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-white shadow-sm hover:shadow-md transition-all"
+                  style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", fontSize: "0.82rem", fontWeight: 600 }}
+                >
+                  <svg className="w-3 h-3 text-blue-200" fill="none" viewBox="0 0 24 24"><path d="M12 3l1.2 3.6L17 8.4l-3.8 2.4L12 14.4l-1.2-3.6L7 8.4l3.8-2.4z" fill="currentColor"/></svg>
+                  Ask AI
+                </button>
+              </div>
+            )}
+
+            {/* AI Chat Panel (expanded) */}
+            {chatOpen && (
+              <div className="shrink-0 flex flex-col border-t border-gray-200" style={{ height: "48%", background: "#f7f9fc" }}>
+                {/* Chat header */}
+                <div className="shrink-0 flex items-center justify-between px-6 py-2.5 border-b" style={{ background: "#f7f9fc", borderColor: "#e9edf4" }}>
+                  <div className="flex items-center gap-2">
+                    <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center">
+                      <svg className="w-2.5 h-2.5 text-blue-500" fill="none" viewBox="0 0 24 24"><path d="M12 3l1.2 3.6L17 8.4l-3.8 2.4L12 14.4l-1.2-3.6L7 8.4l3.8-2.4z" fill="currentColor"/></svg>
+                    </div>
+                    <span className="text-gray-600 font-semibold" style={{ fontSize: "0.8rem" }}>Ask AI</span>
+                    <span className="px-1.5 py-0.5 rounded-full bg-green-50 text-green-500" style={{ fontSize: "0.62rem", fontWeight: 600 }}>● 온라인</span>
+                    {activeDocIds.length > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-500" style={{ fontSize: "0.62rem" }}>{activeDocIds.length}개 소스 활성</span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => setChatOpen(false)}
+                    className="w-6 h-6 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-400"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                  </button>
+                </div>
+
+                {/* Messages */}
+                <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3 min-h-0">
+                  {messages.map((msg, i) =>
+                    msg.role === "user" ? (
+                      <div key={i} className="flex justify-end">
+                        <div className="max-w-[72%] px-4 py-2.5 rounded-2xl rounded-tr-sm text-white" style={{ background: "linear-gradient(135deg, #60a5fa, #2563eb)", fontSize: "0.84rem" }}>
+                          {msg.content}
+                        </div>
+                      </div>
+                    ) : (
+                      <div key={i} className="flex gap-2 items-start">
+                        <div className="w-6 h-6 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center shrink-0 mt-0.5">
+                          <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24"><path d="M12 3l1.2 3.6L17 8.4l-3.8 2.4L12 14.4l-1.2-3.6L7 8.4l3.8-2.4z" fill="currentColor"/></svg>
+                        </div>
+                        <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-2.5 max-w-[72%] border border-gray-100 shadow-sm">
+                          <p className="text-gray-700" style={{ fontSize: "0.84rem", lineHeight: 1.6 }}>{msg.content}</p>
+                        </div>
+                      </div>
+                    )
+                  )}
+                  {chatLoading && (
+                    <div className="flex gap-2 items-start">
+                      <div className="w-6 h-6 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center shrink-0">
+                        <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24"><path d="M12 3l1.2 3.6L17 8.4l-3.8 2.4L12 14.4l-1.2-3.6L7 8.4l3.8-2.4z" fill="currentColor"/></svg>
+                      </div>
+                      <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-2.5 border border-gray-100 shadow-sm">
+                        <div className="flex gap-1 items-center h-4">
+                          {[0,1,2].map((i) => <span key={i} className="w-1.5 h-1.5 bg-blue-300 rounded-full animate-bounce" style={{ animationDelay:`${i*0.15}s` }}/>)}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatBottomRef} />
+                </div>
+
+                {/* Suggestions + Input */}
+                <div className="shrink-0 px-6 pb-4 pt-3 space-y-2 border-t" style={{ borderColor: "#e9edf4", background: "#f7f9fc" }}>
+                  <div className="flex gap-1.5 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
+                    {["퀴즈 만들어줘", "요약해줘", "학습 계획 개선"].map((s, i) => (
+                      <button key={i} onClick={() => setChatInput(s)}
+                        className="shrink-0 px-3 py-1 rounded-full bg-white text-gray-500 border border-gray-200 hover:border-blue-300 hover:text-blue-500 transition-colors whitespace-nowrap"
+                        style={{ fontSize: "0.73rem" }}
+                      >{s}</button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2 bg-white rounded-2xl border border-gray-200 px-4 py-2.5 focus-within:border-blue-300 focus-within:shadow-sm transition-all">
+                    <input
+                      type="text"
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleSendChat()}
+                      placeholder="AI에게 강의 설계 도움 요청..."
+                      className="flex-1 outline-none bg-transparent text-gray-700 placeholder-gray-400 min-w-0"
+                      style={{ fontSize: "0.84rem" }}
+                    />
+                    <button
+                      onClick={handleSendChat}
+                      disabled={!chatInput.trim() || chatLoading}
+                      className="w-7 h-7 rounded-xl flex items-center justify-center transition-all shrink-0"
+                      style={{
+                        background: (chatInput.trim() && !chatLoading) ? "#2563eb" : "#f1f3f4",
+                        color: (chatInput.trim() && !chatLoading) ? "white" : "#9aa0a6",
+                      }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </main>
+
+        {/* Right resize handle */}
+        {studioSidebarOpen && (
+          <div
+            onMouseDown={startRightResize}
+            className="w-1 shrink-0 cursor-col-resize relative group z-10"
+            style={{ background: "transparent" }}
+          >
+            <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-[3px] bg-gray-200 group-hover:bg-blue-400 transition-colors rounded-full" />
+          </div>
+        )}
+
+        {/* ─── Right: Studio Panel ─── */}
+        {studioSidebarOpen && (
+          <div style={{ width: studioWidth, flexShrink: 0 }} className="h-full overflow-hidden">
+            <StudioPanel
+              notebookId={notebook.id}
+              activeDocIds={activeDocIds}
+              docs={docs}
+              getToken={getToken}
+              weeks={weeks}
+              onAddWeekTask={handleAddWeekTask}
+              openItemId={studioOpenItemId}
+              onOpenItemHandled={() => setStudioOpenItemId(null)}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* ─── Add Task Modal ─── */}
+      {openPickerWeekId !== null && (
+        <>
+          <div className="fixed inset-0 bg-black/30 z-40" onClick={() => { setOpenPickerWeekId(null); setSelectedPickerItem(null); }} />
+          <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
+            <div
+              className="bg-white rounded-3xl shadow-2xl pointer-events-auto overflow-hidden"
+              style={{ width: selectedPickerItem ? 560 : 520, maxHeight: "90vh", display: "flex", flexDirection: "column" }}
+            >
+              {/* Modal Header */}
+              <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-100 shrink-0">
+                <div className="flex items-center gap-3">
+                  {selectedPickerItem && (
+                    <button onClick={() => setSelectedPickerItem(null)} className="w-7 h-7 rounded-lg bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11L5 7L9 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </button>
+                  )}
+                  <div>
+                    <p className="text-gray-800 font-bold" style={{ fontSize: "1.05rem" }}>
+                      {selectedPickerItem ? `${selectedPickerItem.label} 생성` : "태스크 추가"}
+                    </p>
+                    <p className="text-gray-400" style={{ fontSize: "0.78rem" }}>
+                      {selectedPickerItem ? "상세 옵션을 설정하고 만들기를 누르세요" : `Week ${openPickerWeekId}에 추가할 콘텐츠 유형을 선택하세요`}
+                    </p>
+                  </div>
+                </div>
+                <button onClick={() => { setOpenPickerWeekId(null); setSelectedPickerItem(null); }} className="w-8 h-8 rounded-xl bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                </button>
+              </div>
+
+              {/* Step 1: Grid */}
+              {!selectedPickerItem && (
+                <div className="grid grid-cols-3 gap-3 p-5 overflow-y-auto">
+                  {studioTaskItems.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => { setSelectedPickerItem(item); setDetailConfig({ format:"", instructions:"", length:"기본값", language:"한국어", style:"격식체", selectedSources:[] }); }}
+                      className="flex flex-col items-center gap-2 p-4 rounded-2xl border-2 border-gray-100 hover:border-blue-300 hover:bg-blue-50 hover:shadow-md transition-all group"
+                    >
+                      <div className={`w-12 h-12 rounded-2xl ${item.iconBg} flex items-center justify-center text-2xl border border-gray-100 group-hover:scale-110 transition-transform`}>
+                        {item.icon}
+                      </div>
+                      <div className="text-center">
+                        <p className="text-gray-700 group-hover:text-blue-600 transition-colors font-semibold" style={{ fontSize: "0.82rem" }}>{item.label}</p>
+                        <p className="text-gray-400" style={{ fontSize: "0.7rem" }}>{item.subtitle}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Step 2: Detail */}
+              {selectedPickerItem && (
+                <div className="overflow-y-auto flex-1">
+                  <div className="p-6 space-y-5">
+                    {/* Source selection */}
+                    {(() => {
+                      const weekSources = weeks.find((w) => w.id === openPickerWeekId)?.sources ?? [];
+                      if (weekSources.length === 0) return null;
+                      return (
+                        <div>
+                          <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>참고 소스 <span className="text-gray-400 font-normal">(선택)</span></p>
+                          <div className="space-y-2">
+                            {weekSources.map((src) => {
+                              const checked = detailConfig.selectedSources.includes(src.id);
+                              return (
+                                <button key={src.id}
+                                  onClick={() => setDetailConfig((c) => ({ ...c, selectedSources: checked ? c.selectedSources.filter((id) => id !== src.id) : [...c.selectedSources, src.id] }))}
+                                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-2 text-left transition-all ${checked ? "border-blue-400 bg-blue-50" : "border-gray-100 hover:border-gray-300 bg-gray-50"}`}
+                                >
+                                  <span className="text-lg">{src.icon}</span>
+                                  <span className={`flex-1 truncate font-semibold ${checked ? "text-blue-700" : "text-gray-600"}`} style={{ fontSize: "0.83rem" }}>{src.name}</span>
+                                  {checked && <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Format */}
+                    <div>
+                      <p className="text-gray-700 mb-3 font-bold" style={{ fontSize: "0.88rem" }}>형식</p>
+                      <button
+                        onClick={() => setDetailConfig((c) => ({ ...c, format: "" }))}
+                        className={`w-full flex items-center gap-2 px-4 py-3 rounded-xl border-2 mb-3 transition-all ${detailConfig.format === "" ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}
+                      >
+                        <span className={detailConfig.format === "" ? "text-blue-600 font-semibold" : "text-gray-600 font-semibold"} style={{ fontSize: "0.85rem" }}>직접 만들기</span>
+                        {detailConfig.format === "" && <svg className="ml-auto" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                      </button>
+                      <p className="text-gray-400 mb-2 font-semibold" style={{ fontSize: "0.75rem" }}>추천 형식</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {selectedPickerItem.presets.map((preset) => (
+                          <button key={preset}
+                            onClick={() => setDetailConfig((c) => ({ ...c, format: preset }))}
+                            className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 text-left transition-all ${detailConfig.format === preset ? "border-blue-400 bg-blue-50" : "border-gray-100 hover:border-gray-300 bg-gray-50"}`}
+                          >
+                            <span className="text-base">{selectedPickerItem.icon}</span>
+                            <span className={detailConfig.format === preset ? "text-blue-600 font-medium" : "text-gray-600"} style={{ fontSize: "0.8rem" }}>{preset}</span>
+                            {detailConfig.format === preset && <svg className="ml-auto shrink-0" width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Instructions */}
+                    <div>
+                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>추가 지시사항 <span className="text-gray-400 font-normal">(선택)</span></p>
+                      <textarea
+                        value={detailConfig.instructions}
+                        onChange={(e) => setDetailConfig((c) => ({ ...c, instructions: e.target.value }))}
+                        placeholder="예) 초등학생도 이해할 수 있도록 쉽게 작성해주세요..."
+                        rows={3}
+                        className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-blue-300 focus:outline-none resize-none text-gray-700 placeholder-gray-300 bg-gray-50 focus:bg-white transition-all"
+                        style={{ fontSize: "0.84rem" }}
+                      />
+                    </div>
+
+                    {/* Length */}
+                    <div>
+                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>길이</p>
+                      <div className="flex gap-2">
+                        {["간결하게","기본값","상세하게"].map((opt) => (
+                          <button key={opt} onClick={() => setDetailConfig((c) => ({ ...c, length: opt }))}
+                            className={`flex-1 py-2 rounded-xl border-2 transition-all ${detailConfig.length === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
+                            style={{ fontSize: "0.82rem" }}
+                          >{opt}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Language */}
+                    <div>
+                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>언어</p>
+                      <div className="flex gap-2">
+                        {["한국어","English","日本語","中文"].map((opt) => (
+                          <button key={opt} onClick={() => setDetailConfig((c) => ({ ...c, language: opt }))}
+                            className={`flex-1 py-2 rounded-xl border-2 transition-all ${detailConfig.language === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
+                            style={{ fontSize: "0.8rem" }}
+                          >{opt}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Style */}
+                    <div>
+                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>문체</p>
+                      <div className="flex gap-2">
+                        {["격식체","구어체","학술체"].map((opt) => (
+                          <button key={opt} onClick={() => setDetailConfig((c) => ({ ...c, style: opt }))}
+                            className={`flex-1 py-2 rounded-xl border-2 transition-all ${detailConfig.style === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
+                            style={{ fontSize: "0.82rem" }}
+                          >{opt}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Create button */}
+                    <button
+                      onClick={() => handleAddTask(openPickerWeekId!, selectedPickerItem)}
+                      className="w-full py-3.5 rounded-2xl text-white transition-all hover:opacity-90 shadow-md"
+                      style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", fontSize: "0.95rem", fontWeight: 700 }}
+                    >
+                      {selectedPickerItem.icon} {selectedPickerItem.label} 만들기
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ─── Add Source Modal (existing docs picker) ─── */}
+      {openSourcePickerWeekId !== null && openSourcePickerWeekId > 0 && (
+        <>
+          <div className="fixed inset-0 bg-black/30 z-40" onClick={closeSourceModal} />
+          <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
+            <div
+              className="bg-white rounded-3xl shadow-2xl pointer-events-auto overflow-hidden"
+              style={{ width: 460, maxHeight: "80vh", display: "flex", flexDirection: "column" }}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-100 shrink-0">
+                <div>
+                  <p className="text-gray-800 font-bold" style={{ fontSize: "1.05rem" }}>소스에서 청크 선택</p>
+                  <p className="text-gray-400" style={{ fontSize: "0.78rem" }}>
+                    {(() => { const idx = weeks.findIndex(w => w.id === openSourcePickerWeekId); return idx >= 0 ? `Week ${idx + 1}에 추가할 청크를 선택하세요` : "소스를 선택하세요"; })()}
+                  </p>
+                </div>
+                <button onClick={closeSourceModal} className="w-8 h-8 rounded-xl bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                </button>
+              </div>
+
+              {/* Body — doc list */}
+              <div className="flex-1 overflow-y-auto">
+                {docs.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-center px-6">
+                    <svg className="w-10 h-10 text-gray-200 mb-3" viewBox="0 0 24 24" fill="none">
+                      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
+                      <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
+                    </svg>
+                    <p className="text-gray-400" style={{ fontSize: "0.85rem" }}>먼저 왼쪽 사이드바에서<br/>소스를 추가해주세요</p>
+                  </div>
+                ) : (
+                  <div className="py-2 px-3 space-y-0.5">
+                    <p className="px-3 pt-1 pb-2 text-gray-400" style={{ fontSize: "0.72rem" }}>소스를 선택하세요</p>
+                    {docs.map((doc) => {
+                      const checked = pickedDocIds.includes(doc.id);
+                      const alreadyAdded = (() => {
+                        const w = weeks.find(wk => wk.id === openSourcePickerWeekId);
+                        return w?.sources.some(s => s.docId === doc.id) ?? false;
+                      })();
+                      const ext = (doc.type ?? "").toLowerCase();
+                      const icon = ext === "pdf" ? "📜" : ext === "url" ? "🔗" : ["jpg","jpeg","png","gif","webp"].includes(ext) ? "🖼️" : ["mp4","mov","avi","mkv","webm"].includes(ext) ? "🎥" : ["mp3","m4a"].includes(ext) ? "🎧" : "📄";
+                      return (
+                        <div
+                          key={doc.id}
+                          onClick={() => {
+                            if (alreadyAdded) return;
+                            setPickedDocIds(prev => prev.includes(doc.id) ? prev.filter(id => id !== doc.id) : [...prev, doc.id]);
+                          }}
+                          className={`flex items-center gap-3 px-3 py-3 rounded-xl transition-colors ${
+                            alreadyAdded ? "opacity-40 cursor-not-allowed" : "cursor-pointer hover:bg-gray-50"
+                          } ${checked ? "bg-blue-50" : ""}`}
+                        >
+                          <div className={`w-5 h-5 rounded-[5px] border-2 flex items-center justify-center shrink-0 transition-colors ${
+                            checked ? "bg-blue-500 border-blue-500" : "border-gray-300"
+                          }`}>
+                            {checked && (
+                              <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                              </svg>
+                            )}
+                          </div>
+                          <div className="w-8 h-8 rounded-lg bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0 text-base">
+                            {icon}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-gray-800 truncate" style={{ fontSize: "0.82rem", fontWeight: 500 }}>{doc.name}</p>
+                            <p className="text-gray-400" style={{ fontSize: "0.68rem" }}>
+                              {doc.chunks != null ? `전체 ${doc.chunks}개 청크` : "청크 미집계"}
+                              {alreadyAdded ? " · 이미 추가됨" : ""}
+                            </p>
+                          </div>
+                          {alreadyAdded && (
+                            <svg className="w-4 h-4 text-green-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="shrink-0 px-5 py-4 border-t border-gray-100 bg-gray-50">
+                <button
+                  onClick={() => handleConfirmDocPick(openSourcePickerWeekId!)}
+                  disabled={pickedDocIds.length === 0}
+                  className="w-full py-3 rounded-2xl text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed font-semibold"
+                  style={{ background: pickedDocIds.length > 0 ? "linear-gradient(135deg, #3b82f6, #1d4ed8)" : undefined, fontSize: "0.92rem" }}
+                >
+                  {pickedDocIds.length === 0 ? "청크를 선택하세요" : `${pickedDocIds.length}개 소스 추가`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ─── Share URL Modal ─── */}
+      {showShareModal && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-50" onClick={() => { setShowShareModal(false); setLinkCopied(false); }} />
+          <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
+            <div className="bg-white rounded-2xl shadow-2xl w-[480px] pointer-events-auto overflow-hidden">
+              <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #2B7FFF, #60a5fa)" }}>
+                    <svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="none"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  </div>
+                  <div>
+                    <h3 className="text-gray-800 font-bold" style={{ fontSize: "15px" }}>공유 URL 생성</h3>
+                    <p className="text-gray-400" style={{ fontSize: "12px" }}>아래 링크로 노트북을 공유할 수 있어요</p>
+                  </div>
+                </div>
+                <button onClick={() => { setShowShareModal(false); setLinkCopied(false); }} className="w-8 h-8 rounded-xl bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                </button>
+              </div>
+              <div className="px-6 py-5 space-y-4">
+                <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3">
+                  <svg className="w-3.5 h-3.5 shrink-0 text-gray-400" viewBox="0 0 24 24" fill="none"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  <span className="flex-1 text-gray-600 truncate" style={{ fontSize: "13px" }}>{shareUrl}</span>
+                </div>
+                <button
+                  onClick={() => {
+                    try {
+                      const ta = document.createElement("textarea");
+                      ta.value = shareUrl;
+                      ta.style.cssText = "position:fixed;opacity:0";
+                      document.body.appendChild(ta);
+                      ta.focus(); ta.select();
+                      document.execCommand("copy");
+                      document.body.removeChild(ta);
+                    } catch {}
+                    setLinkCopied(true);
+                    setTimeout(() => setLinkCopied(false), 2500);
+                  }}
+                  className="w-full py-3 rounded-xl text-white transition-all hover:opacity-90 flex items-center justify-center gap-2"
+                  style={{ background: linkCopied ? "#16a34a" : "linear-gradient(135deg, #2B7FFF, #60a5fa)", fontSize: "14px", fontWeight: 600 }}
+                >
+                  {linkCopied ? (
+                    <><svg width="15" height="15" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>복사 완료!</>
+                  ) : (
+                    <><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="13" height="13" rx="2" stroke="white" strokeWidth="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke="white" strokeWidth="2" strokeLinecap="round"/></svg>URL 복사</>
+                  )}
+                </button>
+                <p className="text-center text-gray-400" style={{ fontSize: "11.5px" }}>링크를 가진 누구나 이 노트북을 볼 수 있어요</p>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
