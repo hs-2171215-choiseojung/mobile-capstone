@@ -136,17 +136,40 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   );
   const [activeDocIds, setActiveDocIds] = useState<string[]>(initialDocs.map((d) => d.id));
 
-  // Study plan (localStorage)
+  // Study plan (Supabase DB)
   const [weeks, setWeeks] = useState<Week[]>([]);
+  const [weeksLoaded, setWeeksLoaded] = useState(false);
+
+  // 초기 로드
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(`study_plan_${notebook.id}`);
-      if (saved) setWeeks(JSON.parse(saved));
-    } catch {}
+    setWeeksLoaded(false);
+    getToken().then((token) => {
+      fetch(`${API}/api/notebooks/${notebook.id}/study-plan`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          setWeeks(Array.isArray(data.plan_data) ? data.plan_data : []);
+        })
+        .catch(() => setWeeks([]))
+        .finally(() => setWeeksLoaded(true));
+    });
   }, [notebook.id]);
+
+  // 변경 시 저장 (debounce 500ms)
   useEffect(() => {
-    try { localStorage.setItem(`study_plan_${notebook.id}`, JSON.stringify(weeks)); } catch {}
-  }, [weeks, notebook.id]);
+    if (!weeksLoaded) return;
+    const timer = setTimeout(() => {
+      getToken().then((token) => {
+        fetch(`${API}/api/notebooks/${notebook.id}/study-plan`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ plan_data: weeks }),
+        }).catch(() => {});
+      });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [weeks, notebook.id, weeksLoaded]);
 
   // Sidebar widths
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);

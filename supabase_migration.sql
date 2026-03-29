@@ -108,3 +108,8 @@ USING (
         SELECT id FROM documents WHERE user_id = auth.uid()
     )
 );
+
+-- ── 7. instructor_weeks 컬럼 (강사 주차별 학습 계획 저장) ──────
+-- study_plans 테이블에 이미 추가되어 있습니다. 실행 불필요.
+-- ALTER TABLE study_plans ADD COLUMN IF NOT EXISTS instructor_weeks JSONB NOT NULL DEFAULT '[]';
+-- (현재 DB에 이미 반영됨)
