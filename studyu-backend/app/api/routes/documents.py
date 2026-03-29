@@ -222,6 +222,75 @@ class RenameRequest(BaseModel):
     filename: str
 
 
+@router.get("/documents/{document_id}/access-url")
+async def get_document_access_url(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """문서 열람용 URL 반환 (소유자 또는 수강 학생)."""
+    doc_res = (
+        supabase_admin.table("documents")
+        .select("id, notebook_id, user_id, storage_path, filename, status")
+        .eq("id", document_id)
+        .limit(1)
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    doc = doc_res.data[0]
+    if doc.get("status") != "ready":
+        raise HTTPException(status_code=404, detail="사용할 수 없는 문서입니다.")
+    notebook_id = doc.get("notebook_id")
+    if not notebook_id:
+        raise HTTPException(status_code=400, detail="노트북 정보가 없는 문서입니다.")
+
+    nb = (
+        supabase_admin.table("notebooks")
+        .select("id, user_id")
+        .eq("id", notebook_id)
+        .single()
+        .execute()
+        .data
+    )
+    if not nb:
+        raise HTTPException(status_code=404, detail="노트북을 찾을 수 없습니다.")
+
+    owner_id = nb.get("user_id")
+    is_owner = owner_id == user["id"]
+    if not is_owner:
+        enrolled = (
+            supabase_admin.table("notebook_enrollments")
+            .select("id")
+            .eq("notebook_id", notebook_id)
+            .eq("student_id", user["id"])
+            .execute()
+            .data
+        )
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="문서 열람 권한이 없습니다.")
+
+    storage_path = (doc.get("storage_path") or "").strip()
+    if not storage_path:
+        raise HTTPException(status_code=400, detail="문서 경로 정보가 없습니다.")
+
+    if storage_path.startswith(("http://", "https://")):
+        return {"url": storage_path, "kind": "external"}
+
+    try:
+        resp = supabase_admin.storage.from_(STORAGE_BUCKET).create_signed_url(
+            storage_path, 3600
+        )
+        signed_url = resp.get("signedURL") or resp.get("signedUrl") or ""
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"문서 URL 생성 실패: {str(e)}")
+
+    if not signed_url:
+        raise HTTPException(status_code=500, detail="문서 URL 생성에 실패했습니다.")
+
+    return {"url": signed_url, "kind": "signed", "expires_in": 3600}
+
+
 @router.patch("/documents/{document_id}")
 async def rename_document(
     document_id: str,

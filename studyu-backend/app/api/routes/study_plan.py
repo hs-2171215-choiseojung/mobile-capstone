@@ -1,17 +1,8 @@
-"""
-강사 주차별 학습 계획(Instructor Weekly Plan) 라우터.
-
-study_plans 테이블의 instructor_weeks(JSONB) 컬럼을 사용합니다.
-노트북당 하나의 행(title='__instructor_weekly_plan__')으로 관리합니다.
-
-엔드포인트:
-    GET  /api/notebooks/{notebook_id}/study-plan  → 주차 목록 조회
-    PUT  /api/notebooks/{notebook_id}/study-plan  → 주차 목록 저장(upsert)
-"""
+﻿from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from typing import Any
+
 from app.core.auth import get_current_user
 from app.core.supabase import supabase_admin
 
@@ -29,8 +20,7 @@ async def get_study_plan(
     notebook_id: str,
     user: dict = Depends(get_current_user),
 ):
-    """강사의 주차별 학습 계획을 반환합니다. 없으면 빈 배열 반환."""
-    # 노트북 소유권 확인
+    """Return instructor weekly plan. Owner or enrolled student can read."""
     nb = (
         supabase_admin.table("notebooks")
         .select("id, user_id")
@@ -39,15 +29,25 @@ async def get_study_plan(
         .execute()
     )
     if not nb.data:
-        raise HTTPException(status_code=404, detail="노트북을 찾을 수 없습니다.")
-    if nb.data[0]["user_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="접근 권한이 없습니다.")
+        raise HTTPException(status_code=404, detail="Notebook not found.")
+
+    is_owner = nb.data[0]["user_id"] == user["id"]
+    if not is_owner:
+        enrolled = (
+            supabase_admin.table("notebook_enrollments")
+            .select("id")
+            .eq("notebook_id", notebook_id)
+            .eq("student_id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        if not enrolled.data:
+            raise HTTPException(status_code=403, detail="Access denied.")
 
     result = (
         supabase_admin.table("study_plans")
         .select("instructor_weeks")
         .eq("notebook_id", notebook_id)
-        .eq("user_id", user["id"])
         .eq("title", PLAN_TITLE)
         .limit(1)
         .execute()
@@ -62,8 +62,7 @@ async def save_study_plan(
     body: StudyPlanBody,
     user: dict = Depends(get_current_user),
 ):
-    """강사의 주차별 학습 계획을 저장합니다(없으면 생성, 있으면 업데이트)."""
-    # 노트북 소유권 확인
+    """Save instructor weekly plan. Owner only."""
     nb = (
         supabase_admin.table("notebooks")
         .select("id, user_id")
@@ -72,11 +71,10 @@ async def save_study_plan(
         .execute()
     )
     if not nb.data:
-        raise HTTPException(status_code=404, detail="노트북을 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="Notebook not found.")
     if nb.data[0]["user_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="접근 권한이 없습니다.")
+        raise HTTPException(status_code=403, detail="Access denied.")
 
-    # 기존 행 조회
     existing = (
         supabase_admin.table("study_plans")
         .select("id")
@@ -88,12 +86,10 @@ async def save_study_plan(
     )
 
     if existing.data:
-        # UPDATE
         supabase_admin.table("study_plans").update({
             "instructor_weeks": body.plan_data,
         }).eq("id", existing.data[0]["id"]).execute()
     else:
-        # INSERT — title, notebook_id, user_id만 필수 (goal, start_date 등은 nullable)
         supabase_admin.table("study_plans").insert({
             "notebook_id": notebook_id,
             "user_id": user["id"],
@@ -102,5 +98,3 @@ async def save_study_plan(
         }).execute()
 
     return {"ok": True}
-
-

@@ -67,6 +67,7 @@ class GenerateRequest(BaseModel):
     difficulty: Optional[str] = "intermediate"
     item_title: Optional[str] = None  # 스튜디오 저장 시 표시 제목
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate")
@@ -110,6 +111,7 @@ async def generate(
                 "title": quiz_title,
                 "questions": parsed.get("questions", []),
                 "difficulty": req.difficulty or "intermediate",
+                "week_id": req.week_id,
             },
             notebook_id=req.notebook_id,
         )
@@ -121,7 +123,7 @@ async def generate(
         item_type=req.type,
         title=req.item_title or "요약",
         subtitle=f"요약 · 소스 {len(doc_ids)}개",
-        content={"text": result},
+        content={"text": result, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
     return {"result": result, "type": req.type, "item_id": item_id}
@@ -136,6 +138,7 @@ class AudioGenerateRequest(BaseModel):
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None  # 스튜디오 저장 시 표시 제목
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate/audio")
@@ -165,7 +168,7 @@ async def generate_audio(
         item_type="audio",
         title=title,
         subtitle=f"오디오 · 소스 {len(req.doc_ids)}개",
-        content={"script": script},
+        content={"script": script, "week_id": req.week_id},
         audio_bytes=audio_bytes,
         notebook_id=req.notebook_id,
     )
@@ -183,6 +186,7 @@ class MindmapGenerateRequest(BaseModel):
     focus: str = ""
     model: Optional[str] = "gpt-4o-mini"
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate/mindmap")
@@ -210,7 +214,7 @@ async def generate_mindmap_route(
         item_type="mindmap",
         title=title,
         subtitle=f"마인드맵 · 소스 {len(req.doc_ids)}개",
-        content={"nodes": nodes},
+        content={"nodes": nodes, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
     return {
@@ -229,6 +233,7 @@ class FlashcardGenerateRequest(BaseModel):
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate/flashcard")
@@ -258,7 +263,7 @@ async def generate_flashcard(
         item_type="flashcard",
         title=title,
         subtitle=f"플래시카드 · 소스 {len(req.doc_ids)}개",
-        content={"cards": cards, "difficulty": req.difficulty},
+        content={"cards": cards, "difficulty": req.difficulty, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
     return {
@@ -277,6 +282,7 @@ class SlideGenerateRequest(BaseModel):
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate/slides")
@@ -306,7 +312,7 @@ async def generate_slides_route(
         item_type="slides",
         title=title,
         subtitle=f"슬라이드 · 소스 {len(req.doc_ids)}개",
-        content={"slides": slides, "format": req.format, "cover_image_b64": cover_image_b64},
+        content={"slides": slides, "format": req.format, "cover_image_b64": cover_image_b64, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
     return {
@@ -327,6 +333,7 @@ class ReportGenerateRequest(BaseModel):
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate/report")
@@ -357,7 +364,7 @@ async def generate_report_route(
         item_type="report",
         title=title,
         subtitle=f"보고서 · 소스 {len(req.doc_ids)}개",
-        content={"sections": sections, "format": req.format},
+        content={"sections": sections, "format": req.format, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
     return {
@@ -375,6 +382,7 @@ class DataTableGenerateRequest(BaseModel):
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate/data")
@@ -403,7 +411,7 @@ async def generate_data_table_route(
         item_type="data",
         title=title,
         subtitle=f"데이터표 · 소스 {len(req.doc_ids)}개",
-        content={"title": title, "description": description, "columns": columns, "rows": rows},
+        content={"title": title, "description": description, "columns": columns, "rows": rows, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
     return {
