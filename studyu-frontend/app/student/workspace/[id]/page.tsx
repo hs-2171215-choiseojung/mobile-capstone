@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ChevronDown, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, BotMessageSquare } from 'lucide-react';
@@ -13,22 +13,52 @@ import { StudentStudioPanel } from "@/components/workspace/student/StudentStudio
 import { StudentChatPanel } from "@/components/workspace/student/StudentChatPanel";
 import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer"; 
 
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+interface WeekTask {
+  itemId?: string;
+}
+
+interface WeekPlan {
+  id: number;
+  title?: string;
+  instruct?: string;
+  instruction?: string;
+  instructions?: string;
+  description?: string;
+  tasks?: WeekTask[];
+  sources?: { docId?: string; doc_id?: string; name?: string; title?: string }[];
+}
+
+interface DocumentInfo {
+  id: string;
+  filename: string;
+  storage_path?: string;
+  file_type: string;
+  status?: string;
+}
+
 export default function StudentWorkspacePage() {
   const params = useParams();
   const notebookId = params.id as string;
   
   const [notebookTitle, setNotebookTitle] = useState<string>("");
+  const [currentUserId, setCurrentUserId] = useState<string>("");
 
   const [activeDocIds, setActiveDocIds] = useState<string[]>([]);
   const [docs, setDocs] = useState<any[]>([]);
   const [studioItems, setStudioItems] = useState<any[]>([]); 
+  const [weekPlans, setWeekPlans] = useState<WeekPlan[]>([]);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
 
   const [selectedLLM, setSelectedLLM] = useState('gpt-4o');
   const [selectedDifficulty, setSelectedDifficulty] = useState('intermediate');
+  const [expandedCenterWeeks, setExpandedCenterWeeks] = useState<number[]>([]);
+  const [centerWeeksHydrated, setCenterWeeksHydrated] = useState(false);
 
   const [isLeftOpen, setIsLeftOpen] = useState(true);
   const [isRightOpen, setIsRightOpen] = useState(true);
+  const [leftOpenBefore, setLeftOpenBefore] = useState(true);
 
   const [chatHeight, setChatHeight] = useState(320);
   const [isChatOpen, setIsChatOpen] = useState(true);
@@ -37,73 +67,290 @@ export default function StudentWorkspacePage() {
   const [rightWidth, setRightWidth] = useState(360);
   const [isLeftResizing, setIsLeftResizing] = useState(false);
   const [isRightResizing, setIsRightResizing] = useState(false);
-  const [leftOpenBefore, setLeftOpenBefore] = useState(true);
-  
+  const centerScrollRef = useRef<HTMLDivElement | null>(null);
+  const centerScrollTopRef = useRef(0);
+  const shouldRestoreCenterScrollRef = useRef(false);
+
+  const toText = (value: unknown, fallback = ""): string => {
+    if (typeof value === "string") return value;
+    if (typeof value === "number") return String(value);
+    if (value && typeof value === "object" && "title" in (value as Record<string, unknown>)) {
+      return toText((value as Record<string, unknown>).title, fallback);
+    }
+    return fallback;
+  };
+
+  const normalizeDocumentName = (value: unknown) =>
+    toText(value).trim().toLowerCase();
+
+  const isReadyDocument = (doc: Partial<DocumentInfo> | null | undefined) =>
+    !!doc?.id && (!doc.status || doc.status === "ready");
+
+  const getDocumentIdentityKeys = (doc: Partial<DocumentInfo>) => {
+    const keys: string[] = [];
+    const id = typeof doc.id === "string" ? doc.id.trim() : "";
+    if (id) keys.push(`id:${id}`);
+
+    const storagePath = typeof doc.storage_path === "string" ? doc.storage_path.trim().toLowerCase() : "";
+    if (storagePath) keys.push(`path:${storagePath}`);
+
+    const filename = typeof doc.filename === "string" ? doc.filename.trim().toLowerCase() : "";
+    if (filename) keys.push(`name:${filename}`);
+
+    return keys;
+  };
+
+  const mergeUniqueDocuments = (...groups: Array<Partial<DocumentInfo>[]>) => {
+    const uniqueDocs: DocumentInfo[] = [];
+    const seenKeys = new Set<string>();
+
+    groups.flat().forEach((rawDoc) => {
+      if (!rawDoc) return;
+
+      const normalizedDoc: DocumentInfo = {
+        id: toText(rawDoc.id),
+        filename: toText(rawDoc.filename, "Source"),
+        storage_path: toText(rawDoc.storage_path),
+        file_type: toText(rawDoc.file_type, "file"),
+        status: toText(rawDoc.status),
+      };
+
+      const identityKeys = getDocumentIdentityKeys(normalizedDoc);
+      if (identityKeys.length === 0) return;
+      if (identityKeys.some((key) => seenKeys.has(key))) return;
+
+      identityKeys.forEach((key) => seenKeys.add(key));
+      uniqueDocs.push(normalizedDoc);
+    });
+
+    return uniqueDocs;
+  };
+
   const fetchData = async () => {
     const supabase = createClient();
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    const me = sessionData.session?.user?.id || "";
+    setCurrentUserId(me);
+    if (!token) return;
 
-    const { data: notebookData } = await supabase
-      .from('notebooks')
-      .select('title')
-      .eq('id', notebookId)
-      .single();
-    if (notebookData) setNotebookTitle(notebookData.title);
+    const [notebookRes, studioRes, studyPlanRes] = await Promise.all([
+      fetch(`${API}/api/notebooks/${notebookId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      }),
+      fetch(`${API}/api/studio?notebook_id=${notebookId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      }),
+      fetch(`${API}/api/notebooks/${notebookId}/study-plan`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      }),
+    ]);
 
-    const { data: docsData } = await supabase
-      .from('documents')
-      .select('*')
-      .eq('notebook_id', notebookId)
-      .order('created_at', { ascending: false });
-    if (docsData) setDocs(docsData);
+    if (notebookRes.ok) {
+      const notebookData = await notebookRes.json();
+      setNotebookTitle(toText(notebookData?.title));
+      setDocs(
+        Array.isArray(notebookData?.documents)
+          ? notebookData.documents.filter((doc: Partial<DocumentInfo>) => isReadyDocument(doc))
+          : []
+      );
+    } else {
+      setNotebookTitle("");
+      setDocs([]);
+    }
 
-    const { data: studioData } = await supabase
-      .from('studio_items')
-      .select('*')
-      .eq('notebook_id', notebookId)
-      .order('created_at', { ascending: false });
-    if (studioData) setStudioItems(studioData);
+    if (studyPlanRes.ok) {
+      const studyPlanData = await studyPlanRes.json();
+      setWeekPlans(Array.isArray(studyPlanData?.plan_data) ? studyPlanData.plan_data : []);
+    } else {
+      setWeekPlans([]);
+    }
+
+    if (studioRes.ok) {
+      const studioData = await studioRes.json();
+      setStudioItems(Array.isArray(studioData) ? studioData : []);
+    } else {
+      setStudioItems([]);
+    }
   };
 
   useEffect(() => {
     if (notebookId) fetchData();
   }, [notebookId]);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      const supabase = createClient();
+  const displayDocs = useMemo(() => mergeUniqueDocuments(docs), [docs]);
 
-      const { data: notebookData } = await supabase
-        .from('notebooks')
-        .select('title')
-        .eq('id', notebookId)
-        .single();
-      if (notebookData) setNotebookTitle(notebookData.title);
+  const displayDocsMap = useMemo(
+    () => new Map(displayDocs.map((doc) => [doc.id, doc])),
+    [displayDocs]
+  );
 
-      const { data: docsData } = await supabase
-        .from('documents')
-        .select('*')
-        .eq('notebook_id', notebookId)
-        .order('created_at', { ascending: false });
-      if (docsData) setDocs(docsData);
+  const displayDocsByName = useMemo(
+    () =>
+      new Map(
+        displayDocs
+          .map((doc) => [normalizeDocumentName(doc.filename), doc] as const)
+          .filter(([name]) => Boolean(name))
+      ),
+    [displayDocs]
+  );
 
-      const { data: studioData } = await supabase
-        .from('studio_items')
-        .select('*')
-        .eq('notebook_id', notebookId)
-        .order('created_at', { ascending: false });
-      if (studioData) setStudioItems(studioData);
+  const studioItemMap = new Map(studioItems.map((item) => [item.id, item]));
+  const assignedStudioItemIds = new Set(
+    weekPlans
+      .flatMap((week) => week.tasks ?? [])
+      .map((task) => task.itemId)
+      .filter(Boolean) as string[]
+  );
+
+  const cards = weekPlans.map((week, index) => {
+    const weekSources = week.sources ?? [];
+    const weekDocs = mergeUniqueDocuments(
+      weekSources
+      .map((source, sourceIndex) => {
+        const docId = source.docId || source.doc_id;
+        const sourceName = source.name || source.title || "Source";
+
+        if (docId) {
+          const matched =
+            displayDocsMap.get(docId) ||
+            displayDocsByName.get(normalizeDocumentName(sourceName));
+          if (!matched) return null;
+          return { ...matched, sourceDocId: docId, resolvedDocId: matched.id };
+        }
+
+        return {
+          id: `week-source-${week.id ?? index + 1}-${sourceIndex}`,
+          sourceDocId: "",
+          resolvedDocId: "",
+          filename: sourceName,
+          file_type: "file",
+        };
+      })
+      .filter(Boolean) as any[]
+    );
+
+    const weekItemIds = (week.tasks ?? []).map((task) => task.itemId).filter(Boolean) as string[];
+    const weekItemsFromPlan = weekItemIds
+      .map((itemId) => studioItemMap.get(itemId))
+      .filter(Boolean) as any[];
+    const weekItemsFromTag = studioItems.filter((item) => {
+      if (!item?.id) return false;
+      if (assignedStudioItemIds.has(item.id)) return false;
+      return item?.content?.week_id === (week.id ?? index + 1);
+    });
+    const instruct =
+      week.instruct ||
+      week.instruction ||
+      week.instructions ||
+      week.description ||
+      "";
+    return {
+      key: week.id ?? index + 1,
+      weekNumber: week.id ?? index + 1,
+      weekTitle: toText(week.title),
+      instruct: toText(instruct),
+      items: [...weekDocs, ...weekItemsFromPlan, ...weekItemsFromTag],
     };
+  });
 
-    if (notebookId) fetchData();
-  }, [notebookId]);
+  const unassignedStudioItems = studioItems.filter((item) => {
+    if (!item?.id) return false;
+    if (assignedStudioItemIds.has(item.id)) return false;
+    return typeof item?.content?.week_id !== "number";
+  });
+
+  const cardsWithUnassigned = unassignedStudioItems.length > 0
+    ? [
+        ...cards,
+        {
+          key: "unassigned-studio",
+          weekNumber: 0,
+          weekTitle: "주차 미지정",
+          instruct: "",
+          items: unassignedStudioItems,
+        },
+      ]
+    : cards;
+
+  useEffect(() => {
+    if (!notebookId) return;
+    const storageKey = `student-center-expanded-weeks:${notebookId}`;
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          setExpandedCenterWeeks(parsed.filter((v): v is number => typeof v === "number"));
+          setCenterWeeksHydrated(true);
+          return;
+        }
+      }
+    } catch {
+      // ignore parse errors
+    }
+
+    const defaultOpen = weekPlans.length > 0 ? [weekPlans[0].id ?? 1] : [1];
+    setExpandedCenterWeeks(defaultOpen);
+    setCenterWeeksHydrated(true);
+  }, [notebookId, weekPlans]);
+
+  useEffect(() => {
+    if (!notebookId || !centerWeeksHydrated) return;
+    const storageKey = `student-center-expanded-weeks:${notebookId}`;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(expandedCenterWeeks));
+    } catch {
+      // ignore storage errors
+    }
+  }, [notebookId, expandedCenterWeeks, centerWeeksHydrated]);
+
+  useEffect(() => {
+    if (selectedItem !== null) return;
+    if (!shouldRestoreCenterScrollRef.current) return;
+    const target = centerScrollRef.current;
+    if (!target) return;
+    target.scrollTop = centerScrollTopRef.current;
+    shouldRestoreCenterScrollRef.current = false;
+  }, [selectedItem]);
+
+  const openSourceDocument = async (doc: DocumentInfo) => {
+    try {
+      const supabase = createClient();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) {
+        alert("로그인이 필요합니다.");
+        return;
+      }
+
+      const res = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data?.detail || "문서 열기에 실패했습니다.");
+        return;
+      }
+
+      const url = data?.url;
+      if (!url) {
+        alert("문서 URL을 가져오지 못했습니다.");
+        return;
+      }
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch {
+      alert("문서를 여는 중 오류가 발생했습니다.");
+    }
+  };
 
   return (
     <div className="flex flex-col h-screen bg-white overflow-hidden min-w-[1200px]">
       <TopNavBar title={notebookTitle} />
-
-      <div className="w-full h-[64px] shrink-0 pointer-events-none" />
-
-      <div className="flex flex-1 overflow-hidden relative">
+      <div className="flex flex-1 pt-[64px] overflow-hidden relative">
         
         {/* 왼쪽: 소스 패널 */}
         <Resizable
@@ -129,7 +376,7 @@ export default function StudentWorkspacePage() {
           } ${isLeftOpen ? "border-r" : "border-r-0 overflow-hidden"}`}
         >
           <div className="w-full h-full flex flex-col min-w-[200px]">
-            <StudentSourcePanel sources={docs} />
+            <StudentSourcePanel sources={displayDocs} onOpenSource={openSourceDocument} />
           </div>
         </Resizable>
 
@@ -173,35 +420,62 @@ export default function StudentWorkspacePage() {
                 onClose={() => {
                   setSelectedItem(null);
                   setIsLeftOpen(leftOpenBefore);
+                  shouldRestoreCenterScrollRef.current = true;
                 }} 
               />
             </div>
           ) : (
             <>
-              <div className="flex-1 overflow-y-auto px-[32px] py-[32px]">
+              <div ref={centerScrollRef} className="flex-1 overflow-y-auto px-[32px] py-[32px]">
                 <div className="max-w-[800px] mx-auto">
                   <div className="mb-[32px]">
                     <h1 className="font-['Inter'] text-[30px] font-semibold text-[#1a1d26] tracking-[-0.75px] leading-[36px]">
                       Weekly Study Plan
                     </h1>
                     <p className="font-['Inter'] text-[16px] text-[#99a1af] mt-[4px] leading-[24px]">
-                      {notebookTitle || "노트북"} • Student Mode
+                      {toText(notebookTitle, "노트북")} • Student Mode
                     </p>
                   </div>
                   <div className="flex flex-col gap-[48px] pb-10">
-                    {[1, 2, 3].map((weekNum) => (
-                      <WeeklyPlanCard 
-                        key={weekNum} 
-                        weekNumber={weekNum}
-                        items={weekNum === 1 ? studioItems : []} 
-                        onOpenItem={(item) => {
-                          setSelectedItem(item);
-                          setLeftOpenBefore(isLeftOpen);
-                          setIsLeftOpen(false);
-                          if (!isRightOpen) setIsRightOpen(true);
-                        }}
-                      />
-                    ))}
+                    {cardsWithUnassigned.length === 0 ? (
+                      <div className="text-sm text-gray-400 bg-gray-50 border border-dashed border-gray-200 rounded-xl px-5 py-6 text-center">
+                        강사가 추가한 주차가 아직 없습니다.
+                      </div>
+                    ) : (
+                      cardsWithUnassigned.map((card) => (
+                        <WeeklyPlanCard 
+                          key={card.key} 
+                          weekNumber={card.weekNumber}
+                          weekTitle={card.weekTitle}
+                          instruct={card.instruct}
+                          items={card.items}
+                          isExpanded={expandedCenterWeeks.includes(card.weekNumber)}
+                          onToggleExpanded={() => {
+                            setExpandedCenterWeeks((prev) =>
+                              prev.includes(card.weekNumber)
+                                ? prev.filter((id) => id !== card.weekNumber)
+                                : [...prev, card.weekNumber]
+                            );
+                          }}
+                          onOpenItem={(item) => {
+                            centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
+                            setSelectedItem(item);
+                            setLeftOpenBefore(isLeftOpen);
+                            setIsLeftOpen(false);
+                            if (!isRightOpen) setIsRightOpen(true);
+                          }}
+                          onOpenDoc={(doc) => {
+                            const targetDocId = doc?.resolvedDocId || doc?.sourceDocId || doc?.id;
+                            if (!targetDocId) return;
+                            const targetDoc = displayDocs.find((candidate) => candidate.id === targetDocId);
+                            if (!targetDoc) return;
+                            setActiveDocIds([targetDoc.id]);
+                            setIsLeftOpen(true);
+                            void openSourceDocument(targetDoc);
+                          }}
+                        />
+                      ))
+                    )}
                   </div>
                 </div>
               </div>
@@ -213,7 +487,7 @@ export default function StudentWorkspacePage() {
                     const newHeight = chatHeight + d.height;
                     if (newHeight <= 100) {
                       setIsChatOpen(false);
-                      setChatHeight(320); // 다음에 다시 열 때를 대비해 기본 크기로 복구해둠
+                      setChatHeight(320);
                     } else {
                       setChatHeight(newHeight);
                     }
@@ -276,10 +550,13 @@ export default function StudentWorkspacePage() {
             ) : (
               <StudentStudioPanel 
                 studioItems={studioItems} 
-                docs={docs}
+                docs={displayDocs}
+                weeks={weekPlans}
                 notebookId={notebookId}
+                currentUserId={currentUserId}
                 onRefresh={() => fetchData()}
                 onOpenItem={(item) => {
+                  centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
                   setSelectedItem(item);
                   setLeftOpenBefore(isLeftOpen);
                   setIsLeftOpen(false);
