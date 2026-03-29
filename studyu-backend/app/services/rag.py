@@ -1285,3 +1285,147 @@ def generate_report(
     title = result.get("title", "보고서")
     sections = result.get("sections", [])
     return sections, title
+
+
+def generate_data_table(
+    doc_ids: list[str],
+    format: str = "summary_table",
+    language: str = "ko",
+    instructions: str = "",
+    model: str = "gpt-4o-mini",
+) -> tuple[str, str, list, list]:
+    """문서 내용을 바탕으로 구조화된 데이터 표를 생성.
+
+    Returns:
+        (title, description, columns, rows)
+        columns: [{"id": "col_id", "title": "Column Title", "type": "text|number|date"}]
+        rows: [{"col_id": value, ...}, ...]
+    """
+    lang_map = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
+    lang_label = lang_map.get(language, "한국어")
+
+    context = _get_context(doc_ids, max_chars=6000)
+    custom_instruction = f"\n\n추가 지시사항: {instructions.strip()}" if instructions.strip() else ""
+
+    # 형식별 상세 프롬프트 정의
+    format_specs = {
+        "summary_table": {
+            "description": "핵심 내용 정리표",
+            "instruction": """다음 구조의 요약 표를 생성하세요:
+- 컬럼: 주제(text) | 핵심 내용(text) | 중요도(text: 상/중/하) | 관련 개념(text)
+- 5~8개의 행: 문서의 핵심 내용을 주제별로 체계적으로 정리
+- 각 행은 하나의 학습 포인트를 명확하게 표현
+
+예시:
+- 주제: "데이터베이스의 정의", 핵심 내용: "구조화된 데이터 모음", 중요도: "상", 관련 개념: "SQL, 스키마"
+- 주제: "인덱싱", 핵심 내용: "검색 성능 향상 기법", 중요도: "중", 관련 개념: "B-tree, 쿼리"
+""",
+        },
+        "comparison_table": {
+            "description": "비교 분석 표",
+            "instruction": """문서에서 비교할 2~4개의 개념/항목을 추출하여 다음 구조로 표를 생성하세요:
+- 첫 번째 컬럼: 비교 항목(text)
+- 나머지 컬럼: 각 개념/항목별 특성(text)
+- 5~7개의 행: 명확한 비교 항목 (정의, 특징, 장점, 단점, 사용 사례 등)
+- 각 셀에는 간결하고 구체적인 설명 작성
+
+예시:
+- 비교항목: "정의", [개념A]: "...", [개념B]: "..."
+- 비교항목: "장점", [개념A]: "...", [개념B]: "..."
+""",
+        },
+        "concept_definition": {
+            "description": "개념 정의 표",
+            "instruction": """문서의 핵심 개념/용어를 추출하여 다음 구조의 완전한 정의 표를 생성하세요:
+- 컬럼: 개념(text) | 정의(text) | 예시(text) | 유사어/반대어(text) | 관련 분야(text)
+- 8~12개의 행: 문서에서 중요한 개념들을 모두 포함
+- 정의는 명확하고 이해하기 쉽게
+- 예시는 실제로 발생할 수 있는 사례로
+- 유사어와 반대어를 모두 포함
+
+예시:
+- 개념: "인덱싱", 정의: "데이터 검색 성능 향상 기법", 예시: "데이터베이스 컬럼에 인덱스 생성", 유사어: "색인화", 관련분야: "데이터베이스"
+""",
+        },
+        "learning_checklist": {
+            "description": "학습 점검표",
+            "instruction": """학습자가 자신의 이해도를 점검할 수 있는 다음 구조의 체크리스트를 생성하세요:
+- 컬럼: 학습 항목(text) | 상세 설명(text) | 중요도(text: 상/중/하) | 자가 평가 기준(text)
+- 8~15개의 행: 문서의 학습 목표를 구체적인 항목으로 분해
+- 자가 평가 기준: "설명할 수 있다", "예시를 들 수 있다", "응용할 수 있다" 등 명확한 기준 제시
+- 중요도에 따라 학습 우선순위 명시
+
+예시:
+- 학습항목: "SELECT 문장", 상세설명: "데이터베이스에서 데이터를 조회하는 명령어", 중요도: "상", 평가기준: "SELECT * FROM 문법을 이해하고 사용할 수 있다"
+""",
+        },
+        "progress_tracking": {
+            "description": "진도 추적표",
+            "instruction": """주차/단계별 학습 계획을 추적할 수 있는 다음 구조의 표를 생성하세요:
+- 컬럼: 주차(text) | 학습 내용(text) | 예상 소요 시간(text) | 학습 목표(text) | 완료 여부(text: 미완료/진행중/완료)
+- 6~10개의 행: 문서 내용을 주차/단계별로 분할하여 구성
+- 소요 시간: 현실적인 학습 시간 제시 (예: "2시간", "1주일")
+- 학습 목표: 각 주차의 구체적인 달성 목표 명시
+- 완료 여부: 초기값은 모두 "미완료"로 설정
+
+예시:
+- 주차: "1주차", 내용: "데이터베이스 기초 개념", 소요시간: "3시간", 목표: "DBMS의 정의와 종류 이해", 완료여부: "미완료"
+""",
+        },
+    }
+
+    spec = format_specs.get(format, format_specs["summary_table"])
+    format_instruction = spec["instruction"]
+
+    prompt_text = f"""당신은 학습 자료를 체계적으로 정리하는 교육 전문가입니다.
+아래 문서 내용을 바탕으로 {spec["description"]}을 생성해주세요.{custom_instruction}
+
+생성 규칙:
+{format_instruction}
+
+문서 내용:
+{context}
+
+반드시 아래 JSON 형식으로만 응답하세요. 필드를 생략하지 마세요:
+{{
+  "title": "표의 제목 (문서 내용을 반영한 구체적인 제목)",
+  "description": "표의 목적과 사용 방법을 설명하는 한두 문장",
+  "columns": [
+    {{
+      "id": "col_1",
+      "title": "첫 번째 열 제목",
+      "type": "text"
+    }},
+    {{
+      "id": "col_2",
+      "title": "두 번째 열 제목",
+      "type": "text"
+    }}
+  ],
+  "rows": [
+    {{
+      "col_1": "첫 번째 셀 값",
+      "col_2": "두 번째 셀 값"
+    }},
+    {{
+      "col_1": "첫 번째 셀 값",
+      "col_2": "두 번째 셀 값"
+    }}
+  ]
+}}"""
+
+    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=safe_model,
+        messages=[{"role": "user", "content": prompt_text}],
+        response_format={"type": "json_object"},
+        temperature=0.7,
+    )
+
+    result = json.loads(response.choices[0].message.content or "{}")
+    title = result.get("title", "데이터표")
+    description = result.get("description", "")
+    columns = result.get("columns", [])
+    rows = result.get("rows", [])
+    return title, description, columns, rows

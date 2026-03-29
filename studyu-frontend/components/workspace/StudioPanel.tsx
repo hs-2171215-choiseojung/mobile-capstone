@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import type { Doc } from "./SourcePanel";
 
 const MindMapView = dynamic(() => import("./MindMapView"), { ssr: false });
+const DataTableView = dynamic(() => import("./DataTableView").then(m => ({ default: m.DataTableView })), { ssr: false });
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -94,7 +95,7 @@ interface MindmapNode {
 
 interface SavedItem {
   id: string;
-  type: "summary" | "quiz" | "audio" | "mindmap" | "memo" | "flashcard" | "slides" | "report";
+  type: "summary" | "quiz" | "audio" | "mindmap" | "memo" | "flashcard" | "slides" | "report" | "data";
   title: string;
   subtitle: string;
   createdAt: Date;
@@ -107,6 +108,7 @@ interface SavedItem {
   flashcard?: { cards: FlashCard[]; difficulty: string };
   slides?: { slides: Slide[]; format: string; cover_image_b64?: string };
   report?: { sections: ReportSection[]; format: string };
+  dataTable?: { title: string; description?: string; columns: any[]; rows: any[] };
 }
 
 interface WeekSource {
@@ -220,6 +222,8 @@ const STUDIO_TASK_ITEMS: StudioTaskItem[] = [
     presets: ["단어·정의 카드","Q&A 카드","빈칸 채우기 카드","이미지 연상 카드","공식 암기 카드","사례 카드"] },
   { id: "quiz",      label: "퀴즈",             icon: "✅",
     presets: ["객관식 퀴즈","O/X 퀴즈","단답형 퀴즈","빈칸 채우기","서술형 퀴즈","사례 분석 퀴즈"] },
+  { id: "table",     label: "데이터 표",       icon: "📋",
+    presets: ["핵심 내용 정리표","비교 분석 표","개념 정의 표","학습 점검표","진도 추적 표","요약 데이터표"] },
 ];
 
 interface UnifiedConfig {
@@ -2029,6 +2033,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
   const [activeFlashcard, setActiveFlashcard] = useState<{ cards: FlashCard[]; title: string } | null>(null);
   const [activeSlides, setActiveSlides] = useState<{ slides: Slide[]; title: string; cover_image_b64?: string } | null>(null);
   const [activeReport, setActiveReport] = useState<{ sections: ReportSection[]; title: string; format: string } | null>(null);
+  const [activeDataTable, setActiveDataTable] = useState<{ title: string; description?: string; columns: any[]; rows: any[] } | null>(null);
   const [summaryContent, setSummaryContent] = useState<string | null>(null);
   const [activeMemo, setActiveMemo] = useState<{ id: string | null; title: string; content: string } | null>(null);
   const [savedItems, setSavedItems] = useState<SavedItem[]>([]);
@@ -2053,6 +2058,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
     else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
     else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
+    else if (item.type === "data" && item.dataTable) setActiveDataTable({ title: item.dataTable.title, description: item.dataTable.description, columns: item.dataTable.columns, rows: item.dataTable.rows });
     else if (item.summaryContent) setSummaryContent(item.summaryContent);
     setIsExpanded(true);
     onOpenItemHandled?.();
@@ -2070,6 +2076,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
     else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
     else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
+    else if (item.type === "data" && item.dataTable) setActiveDataTable({ title: item.dataTable.title, description: item.dataTable.description, columns: item.dataTable.columns, rows: item.dataTable.rows });
     else if (item.summaryContent) setSummaryContent(item.summaryContent);
     setIsExpanded(true);
     setPendingOpenItemId(null);
@@ -2681,6 +2688,28 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
         if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("report", title, `보고서 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
         else { setActiveReport({ sections: data.sections || [], title, format: cfg.format }); }
+      } else if (typeId === "table") {
+        const tableFormatMap: Record<string, string> = {
+          "핵심 내용 정리표": "summary_table",
+          "비교 분석 표": "comparison_table",
+          "개념 정의 표": "concept_definition",
+          "학습 점검표": "learning_checklist",
+          "진도 추적 표": "progress_tracking",
+          "요약 데이터표": "summary_table",
+        };
+        const tableFormat = tableFormatMap[cfg.format] || "summary_table";
+        const res = await fetch(`${API}/api/generate/data`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: docIds, format: tableFormat, language: lang, instructions: cfg.instructions, item_title: docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ") || "데이터표", notebook_id: notebookId }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+        const title = data.title || "데이터표";
+        const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "data", title, subtitle: `데이터표 · 소스 ${docIds.length}개`, createdAt: new Date(), dataTable: { title: data.title || "데이터표", description: data.description || "", columns: data.columns || [], rows: data.rows || [] } };
+        setSavedItems((prev) => [newItem, ...prev]);
+        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("data", title, `데이터표 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        else { setActiveDataTable({ title: data.title || "데이터표", description: data.description || "", columns: data.columns || [], rows: data.rows || [] }); }
       }
       setShowUnifiedModal(false);
       setUnifiedModalItem(null);
@@ -2753,6 +2782,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     activeFlashcard ? <FlashcardView cards={activeFlashcard.cards} title={activeFlashcard.title} onBack={() => handleSubviewBack(() => setActiveFlashcard(null))} /> :
     activeSlides ? <SlideView slides={activeSlides.slides} title={activeSlides.title} coverImageB64={activeSlides.cover_image_b64} onBack={() => handleSubviewBack(() => setActiveSlides(null))} /> :
     activeReport ? <ReportView sections={activeReport.sections} title={activeReport.title} format={activeReport.format} onBack={() => handleSubviewBack(() => setActiveReport(null))} /> :
+    activeDataTable ? <DataTableView data={activeDataTable} onBack={() => handleSubviewBack(() => setActiveDataTable(null))} /> :
     null;
 
   if (subviewContent) {
@@ -2880,6 +2910,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
                     else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
                     else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
                     else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
+                    else if (item.type === "data" && item.dataTable) setActiveDataTable({ title: item.dataTable.title, description: item.dataTable.description, columns: item.dataTable.columns, rows: item.dataTable.rows });
                     else if (item.summaryContent) setSummaryContent(item.summaryContent);
                   }}
                   className="w-5 h-5 rounded-md bg-blue-500 flex items-center justify-center shrink-0 hover:bg-blue-600 transition-colors opacity-0 group-hover:opacity-100"

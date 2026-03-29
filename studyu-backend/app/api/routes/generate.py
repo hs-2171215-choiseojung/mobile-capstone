@@ -365,3 +365,51 @@ async def generate_report_route(
         "title": title,
         "item_id": item_id,
     }
+
+
+class DataTableGenerateRequest(BaseModel):
+    doc_ids: list[str]
+    format: str = "summary_table"   # summary_table | comparison_table | concept_definition | learning_checklist | progress_tracking
+    language: str = "ko"            # ko | en | ja | zh
+    instructions: str = ""          # 사용자 커스텀 지시사항
+    model: Optional[str] = "gpt-4o-mini"
+    item_title: Optional[str] = None
+    notebook_id: Optional[str] = None
+
+
+@router.post("/generate/data")
+async def generate_data_table_route(
+    req: DataTableGenerateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """문서 내용을 바탕으로 구조화된 데이터 표를 생성."""
+    if not req.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
+
+    from app.services.rag import generate_data_table
+    try:
+        title, description, columns, rows = generate_data_table(
+            doc_ids=req.doc_ids,
+            format=req.format,
+            language=req.language,
+            instructions=req.instructions,
+            model=req.model or "gpt-4o-mini",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"데이터 표 생성 실패: {str(e)}")
+
+    item_id = _save_studio_item(
+        user_id=user["id"],
+        item_type="data",
+        title=title,
+        subtitle=f"데이터표 · 소스 {len(req.doc_ids)}개",
+        content={"title": title, "description": description, "columns": columns, "rows": rows},
+        notebook_id=req.notebook_id,
+    )
+    return {
+        "title": title,
+        "description": description,
+        "columns": columns,
+        "rows": rows,
+        "item_id": item_id,
+    }
