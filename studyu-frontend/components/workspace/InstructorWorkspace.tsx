@@ -779,22 +779,6 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                 {/* Nav tabs */}
                 <nav className="flex flex-col gap-[4px] px-2 shrink-0">
                   <button
-                    onClick={() => setActiveView("sources")}
-                    className={`h-[41px] flex items-center gap-2.5 pl-3 rounded-[14px] transition-all ${
-                      activeView === "sources" ? "bg-[#eff6ff] shadow-sm" : "hover:bg-gray-50"
-                    }`}
-                  >
-                    <span className="shrink-0 w-4 h-4 flex items-center justify-center">
-                      <svg width="12" height="14" viewBox="0 0 12 14" fill="none">
-                        <path d="M7 1H2a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V5L7 1z" stroke={activeView === "sources" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                        <path d="M7 1v4h4" stroke={activeView === "sources" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                        <path d="M2 7h8M2 9h8" stroke={activeView === "sources" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                    </span>
-                    <span className={activeView === "sources" ? "text-[#155dfc]" : "text-[#4a5565]"} style={{ fontSize: "13.92px", fontWeight: activeView === "sources" ? 600 : 400 }}>Sources</span>
-                  </button>
-
-                  <button
                     onClick={() => router.push(`/dashboard/students?notebook=${notebook.id}`)}
                     className={`h-[41px] flex items-center gap-2.5 pl-3 rounded-[14px] transition-all ${
                       activeView === "students" ? "bg-[#eff6ff] shadow-sm" : "hover:bg-gray-50"
@@ -831,25 +815,10 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                     <span className={activeView === "link" ? "text-[#155dfc]" : "text-[#4a5565]"} style={{ fontSize: "13.92px", fontWeight: activeView === "link" ? 600 : 400 }}>Link URL</span>
                   </button>
 
-                  <button
-                    onClick={() => setActiveView("library")}
-                    className={`h-[41px] flex items-center gap-2.5 pl-3 rounded-[14px] transition-all ${
-                      activeView === "library" ? "bg-[#eff6ff] shadow-sm" : "hover:bg-gray-50"
-                    }`}
-                  >
-                    <span className="shrink-0 w-4 h-4 flex items-center justify-center">
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                        <rect x="1" y="2" width="12" height="10" rx="1" stroke={activeView === "library" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2"/>
-                        <path d="M5 2v10M7.5 4v8M10 5v7" stroke={activeView === "library" ? "#2B7FFF" : "#99A1AF"} strokeWidth="1.2" strokeLinecap="round"/>
-                      </svg>
-                    </span>
-                    <span className={activeView === "library" ? "text-[#155dfc]" : "text-[#4a5565]"} style={{ fontSize: "13.92px", fontWeight: activeView === "library" ? 600 : 400 }}>Library</span>
-                  </button>
                 </nav>
 
                 {/* Sources view */}
-                {activeView === "sources" && (
-                  <div className="mt-4 flex-1 flex flex-col min-h-0 overflow-hidden">
+                <div className="mt-4 flex-1 flex flex-col min-h-0 overflow-hidden">
                     {/* 소스 X/X + 소스 추가 */}
                     <div className="flex items-center justify-between mb-2 px-4 shrink-0">
                       <span className="text-[#99a1af]" style={{ fontSize: "11.52px" }}>소스 {docs.length}/{docs.length}</span>
@@ -985,14 +954,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                       )}
                     </div>
                   </div>
-                )}
 
-                {/* Other views placeholder */}
-                {activeView !== "sources" && (
-                  <div className="flex-1 flex items-center justify-center">
-                    <p className="text-gray-300" style={{ fontSize: "0.82rem" }}>준비 중</p>
-                  </div>
-                )}
+
               </div>
             )}
 
