@@ -137,7 +137,7 @@ export default function StudentsPageClient({ notebookData, errorMsg, notebookLis
         <div className="h-full px-4 sm:px-6 lg:px-8 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button
-              onClick={() => router.push("/dashboard/instructor")}
+              onClick={() => router.back()}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-500 hover:text-blue-600 transition-colors"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">

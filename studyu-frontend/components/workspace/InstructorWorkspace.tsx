@@ -38,6 +38,7 @@ export interface WeekTask {
   title: string;
   subtitle: string;
   itemId?: string;
+  studioType?: string;
 }
 
 export interface Week {
@@ -178,6 +179,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [studioSidebarOpen, setStudioSidebarOpen] = useState(true);
   const [studioWidth, setStudioWidth] = useState(304);
   const [studioOpenItemId, setStudioOpenItemId] = useState<string | null>(null);
+  const [studioCreateType, setStudioCreateType] = useState<string | null>(null);
+  const [studioCreateWeekId, setStudioCreateWeekId] = useState<number | null>(null);
   const isResizingLeft = useRef(false);
   const isResizingRight = useRef(false);
   const startX = useRef(0);
@@ -214,6 +217,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체",
     selectedSources: [] as number[],
   });
+  const [pickerSelectedWeekId, setPickerSelectedWeekId] = useState<number | null>(null);
+  const [generatingTask, setGeneratingTask] = useState(false);
 
   // Add Source modal
   const [openSourcePickerWeekId, setOpenSourcePickerWeekId] = useState<number | null>(null);
@@ -224,6 +229,10 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   // Week editing
   const [editingWeekId, setEditingWeekId] = useState<number | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
+
+  // Task renaming
+  const [renamingTask, setRenamingTask] = useState<{ weekId: number; taskId: number } | null>(null);
+  const [renamingTaskTitle, setRenamingTaskTitle] = useState("");
 
   // Share modal
   const [showShareModal, setShowShareModal] = useState(false);
@@ -498,6 +507,36 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     setWeeks((prev) => prev.map((w) => w.id !== weekId ? w : { ...w, tasks: w.tasks.filter((t) => t.id !== taskId) }));
   }
 
+  function handleRenameTaskConfirm() {
+    if (!renamingTask) return;
+    const newTitle = renamingTaskTitle.trim();
+    if (newTitle) {
+      // 로컬 weeks 상태 업데이트
+      let targetItemId: string | undefined;
+      setWeeks((prev) => prev.map((w) => w.id !== renamingTask.weekId ? w : {
+        ...w,
+        tasks: w.tasks.map((t) => {
+          if (t.id !== renamingTask.taskId) return t;
+          targetItemId = t.itemId;
+          return { ...t, title: newTitle };
+        }),
+      }));
+      // itemId 있으면 백엔드 스튜디오 아이템도 동기화
+      if (targetItemId) {
+        const itemId = targetItemId;
+        getToken().then((token) =>
+          fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/studio/${itemId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ title: newTitle }),
+          })
+        ).catch(() => {});
+      }
+    }
+    setRenamingTask(null);
+    setRenamingTaskTitle("");
+  }
+
   function handleToggleWeekStatus(weekId: number) {
     setWeeks((prev) => prev.map((w) => w.id !== weekId ? w : { ...w, status: w.status === "ACTIVE" ? "UPCOMING" : "ACTIVE" }));
   }
@@ -508,22 +547,107 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       const maxId = w.tasks.length > 0 ? Math.max(...w.tasks.map((t) => t.id)) : 0;
       return { ...w, tasks: [...w.tasks, { ...task, id: maxId + 1 }] };
     }));
+    setStudioCreateType(null);
+    setStudioCreateWeekId(null);
   }
 
-  function handleAddTask(weekId: number, item: StudioTaskItem) {
-    setWeeks((prev) => prev.map((w) => {
-      if (w.id !== weekId) return w;
-      const formatNote = detailConfig.format ? ` • ${detailConfig.format}` : "";
-      const maxId = w.tasks.length > 0 ? Math.max(...w.tasks.map((t) => t.id)) : 0;
+  async function handleGenerateFromModal(item: StudioTaskItem) {
+    const weekId = pickerSelectedWeekId!;
+    const week = weeks.find((w) => w.id === weekId);
+    const weekSources = week?.sources ?? [];
+    const usedSources = detailConfig.selectedSources.length > 0
+      ? weekSources.filter((s) => detailConfig.selectedSources.includes(s.id))
+      : weekSources;
+    const docIds = usedSources.flatMap((s) => (s.docId ? [s.docId] : []));
+    const effectiveDocIds = docIds.length > 0 ? docIds : activeDocIds;
+
+    if (["video", "infographic", "table"].includes(item.id)) {
+      setOpenPickerWeekId(null);
+      setSelectedPickerItem(null);
+      setStudioCreateType(item.id);
+      setStudioCreateWeekId(weekId);
+      if (!studioSidebarOpen) setStudioSidebarOpen(true);
+      return;
+    }
+
+    setGeneratingTask(true);
+    try {
+      const token = await getToken();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any;
+      const lengthMap: Record<string, string> = { "간결하게": "short", "기본값": "medium", "상세하게": "long" };
+      const diffMap: Record<string, string> = { "간결하게": "easy", "기본값": "medium", "상세하게": "hard" };
+      const countMap: Record<string, number> = { "간결하게": 3, "기본값": 5, "상세하게": 10 };
+
+      if (item.id === "audio") {
+        const res = await fetch(`${API}/api/generate/audio`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: detailConfig.format || "overview", language: detailConfig.language, length: lengthMap[detailConfig.length] || "medium", focus: detailConfig.instructions, item_title: item.label, notebook_id: notebook.id }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      } else if (item.id === "quiz") {
+        const res = await fetch(`${API}/api/generate`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, type: "quiz", difficulty: diffMap[detailConfig.length] || "medium", quiz_count: countMap[detailConfig.length] || 5, topic: detailConfig.format || detailConfig.instructions || "", notebook_id: notebook.id }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+        // 백엔드 응답: { result: { title, questions }, item_id }
+        data = { ...data.result, item_id: data.item_id };
+      } else if (item.id === "mindmap") {
+        const res = await fetch(`${API}/api/generate/mindmap`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, language: detailConfig.language, focus: detailConfig.instructions || detailConfig.format, notebook_id: notebook.id }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      } else if (item.id === "flashcard") {
+        const res = await fetch(`${API}/api/generate/flashcard`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, count: countMap[detailConfig.length] || 5, difficulty: diffMap[detailConfig.length] || "medium", topic: detailConfig.format || detailConfig.instructions || "", language: detailConfig.language, item_title: item.label, notebook_id: notebook.id }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      } else if (item.id === "slides") {
+        const res = await fetch(`${API}/api/generate/slides`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: detailConfig.format || "lecture", length: lengthMap[detailConfig.length] || "medium", language: detailConfig.language, prompt: detailConfig.instructions, item_title: item.label, notebook_id: notebook.id }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      } else if (item.id === "report") {
+        const res = await fetch(`${API}/api/generate/report`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: detailConfig.format || "report", language: detailConfig.language, length: lengthMap[detailConfig.length] || "medium", tone: detailConfig.style, instructions: detailConfig.instructions, item_title: item.label, notebook_id: notebook.id }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      }
+
+      const taskTitle = (data?.title as string) || item.label;
+      const formatNote = detailConfig.format ? ` · ${detailConfig.format}` : "";
       const newTask: WeekTask = {
-        id: maxId + 1, icon: item.icon, iconBg: item.iconBg,
-        title: item.label, subtitle: `${item.subtitle}${formatNote} • ${detailConfig.length} • ${detailConfig.language}`,
+        id: 0, icon: item.icon, iconBg: item.iconBg,
+        title: taskTitle,
+        subtitle: `${item.subtitle}${formatNote} · ${detailConfig.length} · ${detailConfig.language}`,
+        itemId: data?.item_id as string | undefined,
+        studioType: item.id,
       };
-      return { ...w, tasks: [...w.tasks, newTask] };
-    }));
-    setOpenPickerWeekId(null);
-    setSelectedPickerItem(null);
-    setDetailConfig({ format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체", selectedSources: [] });
+      setWeeks((prev) => prev.map((w) => {
+        if (w.id !== weekId) return w;
+        const maxId = w.tasks.length > 0 ? Math.max(...w.tasks.map((t) => t.id)) : 0;
+        return { ...w, tasks: [...w.tasks, { ...newTask, id: maxId + 1 }] };
+      }));
+      setOpenPickerWeekId(null);
+      setSelectedPickerItem(null);
+      setPickerSelectedWeekId(null);
+      setDetailConfig({ format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체", selectedSources: [] });
+    } catch (e) {
+      alert(`생성 실패: ${e instanceof Error ? e.message : "오류가 발생했습니다"}`);
+    } finally {
+      setGeneratingTask(false);
+    }
   }
 
   // ── Chat ──────────────────────────────────────────────────────────
@@ -671,7 +795,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                   </button>
 
                   <button
-                    onClick={() => setActiveView("students")}
+                    onClick={() => router.push(`/dashboard/students?notebook=${notebook.id}`)}
                     className={`h-[41px] flex items-center gap-2.5 pl-3 rounded-[14px] transition-all ${
                       activeView === "students" ? "bg-[#eff6ff] shadow-sm" : "hover:bg-gray-50"
                     }`}
@@ -1028,7 +1152,44 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                 {task.icon}
                               </div>
                               <div className="flex-1 min-w-0">
-                                <p className="truncate" style={{ fontFamily:"Inter,sans-serif", fontSize:"15px", fontWeight:600, color:"#191c1d" }}>{task.title}</p>
+                                {renamingTask?.weekId === week.id && renamingTask?.taskId === task.id ? (
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      autoFocus
+                                      value={renamingTaskTitle}
+                                      onChange={(e) => setRenamingTaskTitle(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") handleRenameTaskConfirm();
+                                        if (e.key === "Escape") { setRenamingTask(null); setRenamingTaskTitle(""); }
+                                      }}
+                                      onBlur={handleRenameTaskConfirm}
+                                      className="flex-1 min-w-0 rounded-md border border-blue-400 px-2 py-0.5 text-sm font-semibold outline-none"
+                                      style={{ fontFamily:"Inter,sans-serif", fontSize:"15px", color:"#191c1d" }}
+                                    />
+                                  </div>
+                                ) : (
+                                  <div
+                                    className="flex items-center gap-1 group/title cursor-text min-w-0"
+                                    onDoubleClick={() => { setRenamingTask({ weekId: week.id, taskId: task.id }); setRenamingTaskTitle(task.title); }}
+                                  >
+                                    <p
+                                      className="truncate"
+                                      style={{ fontFamily:"Inter,sans-serif", fontSize:"15px", fontWeight:600, color:"#191c1d" }}
+                                    >
+                                      {task.title}
+                                    </p>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setRenamingTask({ weekId: week.id, taskId: task.id }); setRenamingTaskTitle(task.title); }}
+                                      className="shrink-0 opacity-0 group-hover/task:opacity-100 transition-opacity p-0.5 rounded hover:bg-gray-200"
+                                      title="이름 변경"
+                                    >
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9aa0a6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                      </svg>
+                                    </button>
+                                  </div>
+                                )}
                                 <p style={{ fontFamily:"Inter,sans-serif", fontSize:"12px", color:"#414751" }}>{task.subtitle}</p>
                               </div>
                               {task.itemId && (
@@ -1234,8 +1395,23 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
               getToken={getToken}
               weeks={weeks}
               onAddWeekTask={handleAddWeekTask}
+              onRenameItem={(itemId, newTitle) => {
+                setWeeks((prev) => prev.map((w) => ({
+                  ...w,
+                  tasks: w.tasks.map((t) => t.itemId === itemId ? { ...t, title: newTitle } : t),
+                })));
+              }}
+              onDeleteItem={(itemId) => {
+                setWeeks((prev) => prev.map((w) => ({
+                  ...w,
+                  tasks: w.tasks.filter((t) => t.itemId !== itemId),
+                })));
+              }}
               openItemId={studioOpenItemId}
               onOpenItemHandled={() => setStudioOpenItemId(null)}
+              openCreateType={studioCreateType}
+              openCreateWeekId={studioCreateWeekId}
+              onOpenCreateHandled={() => setStudioCreateType(null)}
             />
           </div>
         )}
@@ -1278,7 +1454,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                   {studioTaskItems.map((item) => (
                     <button
                       key={item.id}
-                      onClick={() => { setSelectedPickerItem(item); setDetailConfig({ format:"", instructions:"", length:"기본값", language:"한국어", style:"격식체", selectedSources:[] }); }}
+                      onClick={() => { setSelectedPickerItem(item); setPickerSelectedWeekId(openPickerWeekId); setDetailConfig({ format:"", instructions:"", length:"기본값", language:"한국어", style:"격식체", selectedSources:[] }); }}
                       className="flex flex-col items-center gap-2 p-4 rounded-2xl border-2 border-gray-100 hover:border-blue-300 hover:bg-blue-50 hover:shadow-md transition-all group"
                     >
                       <div className={`w-12 h-12 rounded-2xl ${item.iconBg} flex items-center justify-center text-2xl border border-gray-100 group-hover:scale-110 transition-transform`}>
@@ -1297,9 +1473,26 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
               {selectedPickerItem && (
                 <div className="overflow-y-auto flex-1">
                   <div className="p-6 space-y-5">
+                    {/* Week selector */}
+                    <div>
+                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>주차</p>
+                      <div className="flex flex-wrap gap-2">
+                        {weeks.map((w, idx) => (
+                          <button
+                            key={w.id}
+                            onClick={() => { setPickerSelectedWeekId(w.id); setDetailConfig((c) => ({ ...c, selectedSources: [] })); }}
+                            className={`px-3 py-1.5 rounded-xl border-2 font-semibold transition-all ${pickerSelectedWeekId === w.id ? "border-blue-400 bg-blue-50 text-blue-600" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
+                            style={{ fontSize: "0.82rem" }}
+                          >
+                            {w.title || `Week ${idx + 1}`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     {/* Source selection */}
                     {(() => {
-                      const weekSources = weeks.find((w) => w.id === openPickerWeekId)?.sources ?? [];
+                      const weekSources = weeks.find((w) => w.id === pickerSelectedWeekId)?.sources ?? [];
                       if (weekSources.length === 0) return null;
                       return (
                         <div>
@@ -1402,11 +1595,19 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
 
                     {/* Create button */}
                     <button
-                      onClick={() => handleAddTask(openPickerWeekId!, selectedPickerItem)}
-                      className="w-full py-3.5 rounded-2xl text-white transition-all hover:opacity-90 shadow-md"
+                      onClick={() => handleGenerateFromModal(selectedPickerItem)}
+                      disabled={generatingTask}
+                      className="w-full py-3.5 rounded-2xl text-white transition-all hover:opacity-90 shadow-md disabled:opacity-70"
                       style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", fontSize: "0.95rem", fontWeight: 700 }}
                     >
-                      {selectedPickerItem.icon} {selectedPickerItem.label} 만들기
+                      {generatingTask ? (
+                        <span className="flex items-center justify-center gap-2">
+                          <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" strokeOpacity="0.25"/><path d="M12 2a10 10 0 0110 10" stroke="currentColor" strokeWidth="4" strokeLinecap="round"/></svg>
+                          생성 중...
+                        </span>
+                      ) : (
+                        <>{selectedPickerItem.icon} {selectedPickerItem.label} 만들기</>
+                      )}
                     </button>
                   </div>
                 </div>
