@@ -124,6 +124,7 @@ interface WeekTask {
   title: string;
   subtitle: string;
   itemId?: string;
+  studioType?: string;
 }
 
 interface Week {
@@ -141,8 +142,13 @@ interface Props {
   getToken: () => Promise<string>;
   weeks?: Week[];
   onAddWeekTask?: (weekId: number, task: WeekTask) => void;
+  onRenameItem?: (itemId: string, newTitle: string) => void;
+  onDeleteItem?: (itemId: string) => void;
   openItemId?: string | null;
   onOpenItemHandled?: () => void;
+  openCreateType?: string | null;
+  openCreateWeekId?: number | null;
+  onOpenCreateHandled?: () => void;
 }
 
 const COUNT_MAP: Record<string, number> = { fewer: 3, standard: 5, more: 10 };
@@ -191,6 +197,227 @@ function TypeIcon({ id, color, size = 16 }: { id: string; color: string; size?: 
   if (id === "quiz") return <svg {...s}><circle cx="12" cy="12" r="10" stroke={color} fill="none" /><path strokeLinecap="round" strokeLinejoin="round" d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3M12 17h.01" /></svg>;
   if (id === "infographic") return <svg {...s}><path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>;
   return <svg {...s}><path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M3 14h18M10 3v18M4 3h16a1 1 0 011 1v16a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" /></svg>;
+}
+
+// ── Studio task items (unified modal) ─────────────────────────────────────
+interface StudioTaskItem {
+  id: string;
+  label: string;
+  icon: string;
+  presets: string[];
+}
+
+const STUDIO_TASK_ITEMS: StudioTaskItem[] = [
+  { id: "audio",     label: "AI 오디오 오버뷰", icon: "🎧",
+    presets: ["강의 요약 오디오","핵심 개념 설명","Q&A 형식","스토리텔링 방식","토론 형식","인터뷰 형식"] },
+  { id: "slides",    label: "슬라이드 자료",    icon: "📊",
+    presets: ["강의 슬라이드","요약 슬라이드","발표 자료","학습 정리 슬라이드","비교 분석 슬라이드","사례 연구 슬라이드"] },
+  { id: "mindmap",   label: "마인드맵",         icon: "🧠",
+    presets: ["개념 구조도","인과관계 맵","비교 분석 맵","학습 흐름도","키워드 맵","프로세스 맵"] },
+  { id: "report",    label: "보고서",           icon: "📝",
+    presets: ["학습 가이드","블로그 게시물","제품 요구사항 정의서","기술 개념 설명서","학습 활용 가이드","사례 분석 보고서"] },
+  { id: "flashcard", label: "플래시카드",       icon: "🃏",
+    presets: ["단어·정의 카드","Q&A 카드","빈칸 채우기 카드","이미지 연상 카드","공식 암기 카드","사례 카드"] },
+  { id: "quiz",      label: "퀴즈",             icon: "✅",
+    presets: ["객관식 퀴즈","O/X 퀴즈","단답형 퀴즈","빈칸 채우기","서술형 퀴즈","사례 분석 퀴즈"] },
+];
+
+interface UnifiedConfig {
+  format: string;
+  instructions: string;
+  length: string;
+  language: string;
+  style: string;
+  selectedDocIds: string[];
+}
+
+// ── UnifiedGenerateModal (Add Task 스타일 통합 모달) ──────────────────────────
+function UnifiedGenerateModal({
+  item, loading, docs, activeDocIds, weeks, initialWeekId, onClose, onGenerate,
+}: {
+  item: StudioTaskItem;
+  loading: boolean;
+  docs: Doc[];
+  activeDocIds: string[];
+  weeks: Week[];
+  initialWeekId: number | null;
+  onClose: () => void;
+  onGenerate: (cfg: UnifiedConfig, weekId: number | null) => void;
+}) {
+  const [cfg, setCfg] = useState<UnifiedConfig>({
+    format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체",
+    selectedDocIds: activeDocIds.length > 0 ? activeDocIds : docs.map((d) => d.id),
+  });
+  const [selectedWeekId, setSelectedWeekId] = useState<number | null>(initialWeekId);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.45)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        className="bg-white rounded-3xl shadow-2xl pointer-events-auto overflow-hidden"
+        style={{ width: 560, maxHeight: "90vh", display: "flex", flexDirection: "column" }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-100 shrink-0">
+          <div>
+            <p className="text-gray-800 font-bold" style={{ fontSize: "1.05rem" }}>{item.label} 생성</p>
+            <p className="text-gray-400" style={{ fontSize: "0.78rem" }}>상세 옵션을 설정하고 만들기를 누르세요</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-xl bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto flex-1">
+          <div className="p-6 space-y-5">
+
+            {/* Source selection */}
+            {docs.length > 0 && (
+              <div>
+                <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>참고 소스 <span className="text-gray-400 font-normal">(선택)</span></p>
+                <div className="space-y-2">
+                  {docs.map((doc) => {
+                    const checked = cfg.selectedDocIds.includes(doc.id);
+                    const ext = (doc.type ?? "").toLowerCase();
+                    const icon = ext === "pdf" ? "📜" : ext === "url" ? "🔗" : ["jpg","jpeg","png","gif","webp"].includes(ext) ? "🖼️" : "📄";
+                    return (
+                      <button key={doc.id}
+                        onClick={() => setCfg((c) => ({ ...c, selectedDocIds: checked ? c.selectedDocIds.filter((id) => id !== doc.id) : [...c.selectedDocIds, doc.id] }))}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-2 text-left transition-all ${checked ? "border-blue-400 bg-blue-50" : "border-gray-100 hover:border-gray-300 bg-gray-50"}`}
+                      >
+                        <span className="text-lg">{icon}</span>
+                        <span className={`flex-1 truncate font-semibold ${checked ? "text-blue-700" : "text-gray-600"}`} style={{ fontSize: "0.83rem" }}>{doc.name}</span>
+                        {checked && <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Format */}
+            <div>
+              <p className="text-gray-700 mb-3 font-bold" style={{ fontSize: "0.88rem" }}>형식</p>
+              <button
+                onClick={() => setCfg((c) => ({ ...c, format: "" }))}
+                className={`w-full flex items-center gap-2 px-4 py-3 rounded-xl border-2 mb-3 transition-all ${cfg.format === "" ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}
+              >
+                <span className={cfg.format === "" ? "text-blue-600 font-semibold" : "text-gray-600 font-semibold"} style={{ fontSize: "0.85rem" }}>직접 만들기</span>
+                {cfg.format === "" && <svg className="ml-auto" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+              </button>
+              <p className="text-gray-400 mb-2 font-semibold" style={{ fontSize: "0.75rem" }}>추천 형식</p>
+              <div className="grid grid-cols-2 gap-2">
+                {item.presets.map((preset) => (
+                  <button key={preset}
+                    onClick={() => setCfg((c) => ({ ...c, format: preset }))}
+                    className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 text-left transition-all ${cfg.format === preset ? "border-blue-400 bg-blue-50" : "border-gray-100 hover:border-gray-300 bg-gray-50"}`}
+                  >
+                    <span className="text-base">{item.icon}</span>
+                    <span className={cfg.format === preset ? "text-blue-600 font-medium" : "text-gray-600"} style={{ fontSize: "0.8rem" }}>{preset}</span>
+                    {cfg.format === preset && <svg className="ml-auto shrink-0" width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Instructions */}
+            <div>
+              <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>추가 지시사항 <span className="text-gray-400 font-normal">(선택)</span></p>
+              <textarea
+                value={cfg.instructions}
+                onChange={(e) => setCfg((c) => ({ ...c, instructions: e.target.value }))}
+                placeholder="예) 초등학생도 이해할 수 있도록 쉽게 작성해주세요..."
+                rows={3}
+                className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-blue-300 focus:outline-none resize-none text-gray-700 placeholder-gray-300 bg-gray-50 focus:bg-white transition-all"
+                style={{ fontSize: "0.84rem" }}
+              />
+            </div>
+
+            {/* Length */}
+            <div>
+              <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>길이</p>
+              <div className="flex gap-2">
+                {["간결하게","기본값","상세하게"].map((opt) => (
+                  <button key={opt} onClick={() => setCfg((c) => ({ ...c, length: opt }))}
+                    className={`flex-1 py-2 rounded-xl border-2 transition-all ${cfg.length === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
+                    style={{ fontSize: "0.82rem" }}
+                  >{opt}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Language */}
+            <div>
+              <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>언어</p>
+              <div className="flex gap-2">
+                {["한국어","English","日本語","中文"].map((opt) => (
+                  <button key={opt} onClick={() => setCfg((c) => ({ ...c, language: opt }))}
+                    className={`flex-1 py-2 rounded-xl border-2 transition-all ${cfg.language === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
+                    style={{ fontSize: "0.8rem" }}
+                  >{opt}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Style */}
+            <div>
+              <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>문체</p>
+              <div className="flex gap-2">
+                {["격식체","구어체","학술체"].map((opt) => (
+                  <button key={opt} onClick={() => setCfg((c) => ({ ...c, style: opt }))}
+                    className={`flex-1 py-2 rounded-xl border-2 transition-all ${cfg.style === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
+                    style={{ fontSize: "0.82rem" }}
+                  >{opt}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Week assignment */}
+            {weeks.length > 0 && (
+              <div>
+                <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>주차 등록 <span className="text-gray-400 font-normal">(선택)</span></p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setSelectedWeekId(null)}
+                    className={`px-3 py-1.5 rounded-xl border-2 font-semibold transition-all ${selectedWeekId === null ? "border-blue-400 bg-blue-50 text-blue-600" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
+                    style={{ fontSize: "0.82rem" }}
+                  >등록 안 함</button>
+                  {weeks.map((w, idx) => (
+                    <button key={w.id}
+                      onClick={() => setSelectedWeekId(w.id)}
+                      className={`px-3 py-1.5 rounded-xl border-2 font-semibold transition-all ${selectedWeekId === w.id ? "border-blue-400 bg-blue-50 text-blue-600" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
+                      style={{ fontSize: "0.82rem" }}
+                    >{w.title || `Week ${idx + 1}`}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Create button */}
+            <button
+              onClick={() => onGenerate(cfg, selectedWeekId)}
+              disabled={loading || cfg.selectedDocIds.length === 0}
+              className="w-full py-3.5 rounded-2xl text-white transition-all hover:opacity-90 shadow-md disabled:opacity-70"
+              style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", fontSize: "0.95rem", fontWeight: 700 }}
+            >
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" strokeOpacity="0.25"/><path d="M12 2a10 10 0 0110 10" stroke="currentColor" strokeWidth="4" strokeLinecap="round"/></svg>
+                  생성 중...
+                </span>
+              ) : (
+                <>{item.icon} {item.label} 만들기</>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── WeekPickerStep (공통 주차 선택 2단계) ────────────────────────────────────
@@ -1786,7 +2013,7 @@ function ReportView({
 }
 
 // ── Main StudioPanel ───────────────────────────────────────────────────────
-export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, weeks = [], onAddWeekTask, openItemId, onOpenItemHandled }: Props) {
+export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, weeks = [], onAddWeekTask, onRenameItem, onDeleteItem, openItemId, onOpenItemHandled, openCreateType, openCreateWeekId, onOpenCreateHandled }: Props) {
   const [loadingType, setLoadingType] = useState<string | null>(null);
   const [showQuizModal, setShowQuizModal] = useState(false);
   const [showAudioModal, setShowAudioModal] = useState(false);
@@ -1794,6 +2021,8 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
   const [showFlashcardModal, setShowFlashcardModal] = useState(false);
   const [showSlideModal, setShowSlideModal] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
+  const [showUnifiedModal, setShowUnifiedModal] = useState(false);
+  const [unifiedModalItem, setUnifiedModalItem] = useState<StudioTaskItem | null>(null);
   const [activeQuiz, setActiveQuiz] = useState<SavedQuiz | null>(null);
   const [activeAudio, setActiveAudio] = useState<{ base64?: string; audioUrl?: string; script: string; title: string } | null>(null);
   const [activeMindmap, setActiveMindmap] = useState<{ nodes: MindmapNode[]; title: string } | null>(null);
@@ -1805,12 +2034,19 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
   const [savedItems, setSavedItems] = useState<SavedItem[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [pendingOpenItemId, setPendingOpenItemId] = useState<string | null>(null);
 
   // openItemId: 외부에서 특정 아이템을 전체화면으로 열도록 요청
   useEffect(() => {
     if (!openItemId) return;
     const item = savedItems.find((s) => s.id === openItemId);
-    if (!item) return;
+    if (!item) {
+      // savedItems에 없으면 DB 재로드 후 pendingOpenItemId로 열기
+      setPendingOpenItemId(openItemId);
+      setRefreshTrigger((n) => n + 1);
+      return;
+    }
     if (item.type === "quiz" && item.quiz) setActiveQuiz(item.quiz);
     else if (item.type === "audio") setActiveAudio({ base64: item.audio?.base64, audioUrl: item.audioUrl, script: item.audio?.script || "", title: item.title });
     else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });
@@ -1822,6 +2058,40 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     onOpenItemHandled?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openItemId]);
+
+  // savedItems 재로드 완료 후 pendingOpenItemId 처리
+  useEffect(() => {
+    if (!pendingOpenItemId) return;
+    const item = savedItems.find((s) => s.id === pendingOpenItemId);
+    if (!item) return;
+    if (item.type === "quiz" && item.quiz) setActiveQuiz(item.quiz);
+    else if (item.type === "audio") setActiveAudio({ base64: item.audio?.base64, audioUrl: item.audioUrl, script: item.audio?.script || "", title: item.title });
+    else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });
+    else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
+    else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
+    else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
+    else if (item.summaryContent) setSummaryContent(item.summaryContent);
+    setIsExpanded(true);
+    setPendingOpenItemId(null);
+    onOpenItemHandled?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedItems, pendingOpenItemId]);
+
+  // openCreateType: 외부에서 특정 타입의 콘텐츠 생성 모달을 열도록 요청
+  useEffect(() => {
+    if (!openCreateType) return;
+    if (openCreateWeekId !== undefined && openCreateWeekId !== null) {
+      setWeekGeneratingFor(openCreateWeekId);
+    }
+    const foundItem = STUDIO_TASK_ITEMS.find((i) => i.id === openCreateType);
+    if (foundItem) {
+      setUnifiedModalItem(foundItem);
+      setShowUnifiedModal(true);
+    }
+    onOpenCreateHandled?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openCreateType]);
+
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [collapsedWeeks, setCollapsedWeeks] = useState<number[]>([]);
@@ -1851,7 +2121,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     const resolvedWeekId = weekId !== undefined ? weekId : weekGeneratingFor!;
     const week = weeks.find((w) => w.id === resolvedWeekId);
     const maxId = week && week.tasks.length > 0 ? Math.max(...week.tasks.map((t) => t.id)) : 0;
-    return { id: maxId + 1, icon, iconBg, title, subtitle, itemId };
+    return { id: maxId + 1, icon, iconBg, title, subtitle, itemId, studioType: type };
   }
 
   const hasDoc = activeDocIds.length > 0;
@@ -1908,11 +2178,12 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
       } catch { /* 로드 실패 시 빈 목록 유지 */ }
     }
     loadItems();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [refreshTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleDeleteItem(itemId: string) {
     setSavedItems((prev) => prev.filter((i) => i.id !== itemId));
     setOpenMenuId(null);
+    onDeleteItem?.(itemId);
     try {
       const token = await getToken();
       await fetch(`${API}/api/studio/${itemId}`, {
@@ -1972,6 +2243,8 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     if (!trimmed) { setRenamingItemId(null); return; }
     setSavedItems((prev) => prev.map((i) => i.id === itemId ? { ...i, title: trimmed } : i));
     setRenamingItemId(null);
+    // InstructorWorkspace weeks 동기화
+    onRenameItem?.(itemId, trimmed);
     try {
       const token = await getToken();
       await fetch(`${API}/api/studio/${itemId}`, {
@@ -2311,6 +2584,113 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     }
   }
 
+  async function handleUnifiedGenerate(typeId: string, cfg: UnifiedConfig, saveToWeekId: number | null) {
+    const docIds = cfg.selectedDocIds.length > 0 ? cfg.selectedDocIds : activeDocIds;
+    const langMap: Record<string, string> = { "한국어": "ko", "English": "en", "日本語": "ja", "中文": "zh" };
+    const lengthMap: Record<string, string> = { "간결하게": "short", "기본값": "medium", "상세하게": "long" };
+    const diffMap: Record<string, string> = { "간결하게": "easy", "기본값": "medium", "상세하게": "hard" };
+    const countMap: Record<string, number> = { "간결하게": 3, "기본값": 5, "상세하게": 10 };
+    const lang = langMap[cfg.language] || "ko";
+    const length = lengthMap[cfg.length] || "medium";
+    setLoadingType(typeId);
+    try {
+      const token = await getToken();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any;
+      if (typeId === "audio") {
+        const audioFormatMap: Record<string, string> = {
+          "강의 요약 오디오": "lecture_summary", "핵심 개념 설명": "concept_explanation",
+          "Q&A 형식": "qa", "스토리텔링 방식": "storytelling", "토론 형식": "debate", "인터뷰 형식": "interview",
+        };
+        const res = await fetch(`${API}/api/generate/audio`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: docIds, format: audioFormatMap[cfg.format] || "lecture_summary", language: lang, length, focus: cfg.instructions, notebook_id: notebookId }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+        const title = data.title || "오디오 오버뷰";
+        const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "audio", title, subtitle: `오디오 · 소스 ${docIds.length}개`, createdAt: new Date(), audio: { base64: data.audio_base64, script: data.script } };
+        setSavedItems((prev) => [newItem, ...prev]);
+        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("audio", title, `오디오 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        else { setActiveAudio({ base64: data.audio_base64, script: data.script, title }); }
+      } else if (typeId === "quiz") {
+        const res = await fetch(`${API}/api/generate`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: docIds, type: "quiz", difficulty: diffMap[cfg.length] || "medium", quiz_count: countMap[cfg.length] || 5, topic: cfg.format || cfg.instructions || "", notebook_id: notebookId }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+        const quizData = data.result as { title: string; questions: { id: number; question: string; options: string[]; answerIndex: number; hint: string; explanation: string }[] };
+        const questions: QuizQuestion[] = quizData.questions.map((q) => ({ question: q.question, options: q.options, answer: q.answerIndex, hint: q.hint, explanation: q.explanation }));
+        const quiz: SavedQuiz = { id: data.item_id || Date.now().toString(), title: quizData.title || "퀴즈", questions, createdAt: new Date(), difficulty: diffMap[cfg.length] || "medium" };
+        const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "quiz", title: quiz.title, subtitle: `퀴즈 · 소스 ${docIds.length}개`, createdAt: new Date(), quiz };
+        setSavedItems((prev) => [newItem, ...prev]);
+        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("quiz", quiz.title, `퀴즈 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        else { setActiveQuiz(quiz); }
+      } else if (typeId === "mindmap") {
+        const res = await fetch(`${API}/api/generate/mindmap`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: docIds, language: lang, focus: cfg.instructions || cfg.format, notebook_id: notebookId }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+        const title = data.title || "마인드맵";
+        const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "mindmap", title, subtitle: `마인드맵 · 소스 ${docIds.length}개`, createdAt: new Date(), mindmap: { nodes: data.nodes || [] } };
+        setSavedItems((prev) => [newItem, ...prev]);
+        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("mindmap", title, `마인드맵 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        else { setActiveMindmap({ nodes: data.nodes || [], title }); }
+      } else if (typeId === "flashcard") {
+        const res = await fetch(`${API}/api/generate/flashcard`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: docIds, count: countMap[cfg.length] || 5, difficulty: diffMap[cfg.length] || "medium", topic: cfg.format || cfg.instructions || "", language: lang, item_title: docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ") || "플래시카드", notebook_id: notebookId }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+        const title = data.title || "플래시카드";
+        const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "flashcard", title, subtitle: `플래시카드 · 소스 ${docIds.length}개`, createdAt: new Date(), flashcard: { cards: data.cards || [], difficulty: diffMap[cfg.length] || "medium" } };
+        setSavedItems((prev) => [newItem, ...prev]);
+        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("flashcard", title, `플래시카드 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        else { setActiveFlashcard({ cards: data.cards || [], title }); }
+      } else if (typeId === "slides") {
+        const res = await fetch(`${API}/api/generate/slides`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: docIds, format: cfg.format || "lecture", length, language: lang, prompt: cfg.instructions, item_title: docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ") || "슬라이드 자료", notebook_id: notebookId }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+        const title = data.title || "슬라이드 자료";
+        const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "slides", title, subtitle: `슬라이드 · 소스 ${docIds.length}개`, createdAt: new Date(), slides: { slides: data.slides || [], format: cfg.format, cover_image_b64: data.cover_image_b64 || "" } };
+        setSavedItems((prev) => [newItem, ...prev]);
+        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("slides", title, `슬라이드 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        else { setActiveSlides({ slides: data.slides || [], title, cover_image_b64: data.cover_image_b64 || "" }); }
+      } else if (typeId === "report") {
+        const res = await fetch(`${API}/api/generate/report`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: docIds, format: cfg.format || "report", language: lang, length, tone: cfg.style === "구어체" ? "casual" : cfg.style === "학술체" ? "academic" : "formal", instructions: cfg.instructions, item_title: docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ") || "보고서", notebook_id: notebookId }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+        const title = data.title || "보고서";
+        const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "report", title, subtitle: `보고서 · 소스 ${docIds.length}개`, createdAt: new Date(), report: { sections: data.sections || [], format: cfg.format } };
+        setSavedItems((prev) => [newItem, ...prev]);
+        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("report", title, `보고서 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        else { setActiveReport({ sections: data.sections || [], title, format: cfg.format }); }
+      }
+      setShowUnifiedModal(false);
+      setUnifiedModalItem(null);
+    } catch (e: unknown) {
+      alert(`생성 실패: ${e instanceof Error ? e.message : "오류가 발생했습니다"}`);
+    } finally {
+      setLoadingType(null);
+    }
+  }
+
   function handleCardClick(typeId: string, forWeekId?: number) {
     const effectiveDocIds = forWeekId !== undefined
       ? (weeks.find((w) => w.id === forWeekId)?.sources.filter((s) => s.docId).map((s) => s.docId!) ?? [])
@@ -2323,13 +2703,11 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
       setWeekGeneratingFor(forWeekId);
     }
     setShowWeekTypePickerForId(null);
-    if (typeId === "report") setShowReportModal(true);
-    else if (typeId === "quiz") setShowQuizModal(true);
-    else if (typeId === "audio") setShowAudioModal(true);
-    else if (typeId === "mindmap") setShowMindmapModal(true);
-    else if (typeId === "flashcard") setShowFlashcardModal(true);
-    else if (typeId === "slides") setShowSlideModal(true);
-    else {
+    const taskItem = STUDIO_TASK_ITEMS.find((i) => i.id === typeId);
+    if (taskItem) {
+      setUnifiedModalItem(taskItem);
+      setShowUnifiedModal(true);
+    } else {
       if (forWeekId !== undefined) setWeekGeneratingFor(null);
       alert("곧 지원 예정인 기능입니다 ✨");
     }
@@ -2353,23 +2731,28 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     </button>
   );
 
+  const handleSubviewBack = (clearFn: () => void) => {
+    clearFn();
+    if (isExpanded) setIsExpanded(false);
+  };
+
   const subviewContent =
-    activeQuiz ? <QuizView quiz={activeQuiz} onBack={() => setActiveQuiz(null)} /> :
-    summaryContent ? <SummaryView content={summaryContent} onBack={() => setSummaryContent(null)} /> :
-    activeAudio ? <AudioView audioBase64={activeAudio.base64} audioUrl={activeAudio.audioUrl} script={activeAudio.script} title={activeAudio.title} onBack={() => setActiveAudio(null)} /> :
-    activeMindmap ? <MindMapView nodes={activeMindmap.nodes} title={activeMindmap.title} onBack={() => setActiveMindmap(null)} /> :
+    activeQuiz ? <QuizView quiz={activeQuiz} onBack={() => handleSubviewBack(() => setActiveQuiz(null))} /> :
+    summaryContent ? <SummaryView content={summaryContent} onBack={() => handleSubviewBack(() => setSummaryContent(null))} /> :
+    activeAudio ? <AudioView audioBase64={activeAudio.base64} audioUrl={activeAudio.audioUrl} script={activeAudio.script} title={activeAudio.title} onBack={() => handleSubviewBack(() => setActiveAudio(null))} /> :
+    activeMindmap ? <MindMapView nodes={activeMindmap.nodes} title={activeMindmap.title} onBack={() => handleSubviewBack(() => setActiveMindmap(null))} /> :
     activeMemo !== null ? (
       <MemoView
         initialId={activeMemo.id}
         initialTitle={activeMemo.title}
         initialContent={activeMemo.content}
-        onBack={() => setActiveMemo(null)}
+        onBack={() => handleSubviewBack(() => setActiveMemo(null))}
         onSave={handleSaveMemo}
       />
     ) :
-    activeFlashcard ? <FlashcardView cards={activeFlashcard.cards} title={activeFlashcard.title} onBack={() => setActiveFlashcard(null)} /> :
-    activeSlides ? <SlideView slides={activeSlides.slides} title={activeSlides.title} coverImageB64={activeSlides.cover_image_b64} onBack={() => setActiveSlides(null)} /> :
-    activeReport ? <ReportView sections={activeReport.sections} title={activeReport.title} format={activeReport.format} onBack={() => setActiveReport(null)} /> :
+    activeFlashcard ? <FlashcardView cards={activeFlashcard.cards} title={activeFlashcard.title} onBack={() => handleSubviewBack(() => setActiveFlashcard(null))} /> :
+    activeSlides ? <SlideView slides={activeSlides.slides} title={activeSlides.title} coverImageB64={activeSlides.cover_image_b64} onBack={() => handleSubviewBack(() => setActiveSlides(null))} /> :
+    activeReport ? <ReportView sections={activeReport.sections} title={activeReport.title} format={activeReport.format} onBack={() => handleSubviewBack(() => setActiveReport(null))} /> :
     null;
 
   if (subviewContent) {
@@ -2384,23 +2767,17 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
 
   return (
     <aside className={`flex flex-col bg-white overflow-hidden ${isExpanded ? "fixed inset-0 z-50" : "w-full h-full"}`}>
-      {showQuizModal && (
-        <QuizModal loading={loadingType === "quiz"} onClose={() => { setShowQuizModal(false); setWeekGeneratingFor(null); }} onGenerate={handleQuizGenerate} weeks={weeks} />
-      )}
-      {showAudioModal && (
-        <AudioModal loading={loadingType === "audio"} onClose={() => { setShowAudioModal(false); setWeekGeneratingFor(null); }} onGenerate={handleAudioGenerate} weeks={weeks} />
-      )}
-      {showMindmapModal && (
-        <MindmapModal loading={loadingType === "mindmap"} onClose={() => { setShowMindmapModal(false); setWeekGeneratingFor(null); }} onGenerate={handleMindmapGenerate} weeks={weeks} />
-      )}
-      {showFlashcardModal && (
-        <FlashcardModal loading={loadingType === "flashcard"} onClose={() => { setShowFlashcardModal(false); setWeekGeneratingFor(null); }} onGenerate={handleFlashcardGenerate} weeks={weeks} />
-      )}
-      {showSlideModal && (
-        <SlideModal loading={loadingType === "slides"} onClose={() => { setShowSlideModal(false); setWeekGeneratingFor(null); }} onGenerate={handleSlideGenerate} weeks={weeks} />
-      )}
-      {showReportModal && (
-        <ReportModal loading={loadingType === "report"} onClose={() => { setShowReportModal(false); setWeekGeneratingFor(null); }} onGenerate={handleReportGenerate} weeks={weeks} />
+      {showUnifiedModal && unifiedModalItem && (
+        <UnifiedGenerateModal
+          item={unifiedModalItem}
+          loading={loadingType === unifiedModalItem.id}
+          docs={docs}
+          activeDocIds={activeDocIds}
+          weeks={weeks}
+          initialWeekId={weekGeneratingFor}
+          onClose={() => { setShowUnifiedModal(false); setUnifiedModalItem(null); setWeekGeneratingFor(null); }}
+          onGenerate={(cfg, weekId) => handleUnifiedGenerate(unifiedModalItem.id, cfg, weekId)}
+        />
       )}
 
       {/* Header */}
