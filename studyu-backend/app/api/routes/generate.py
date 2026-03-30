@@ -421,3 +421,47 @@ async def generate_data_table_route(
         "rows": rows,
         "item_id": item_id,
     }
+
+
+class VideoGenerateRequest(BaseModel):
+    doc_ids: list[str]
+    language: str = "ko"
+    length: str = "default"
+    model: Optional[str] = "gpt-4o-mini"
+    item_title: Optional[str] = None
+    notebook_id: Optional[str] = None
+
+
+@router.post("/generate/video")
+async def generate_video_route(
+    req: VideoGenerateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """문서 내용을 바탕으로 Remotion 비디오용 슬라이드+오디오 데이터를 생성."""
+    if not req.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
+
+    from app.services.rag import generate_video
+    try:
+        slides, title = generate_video(
+            doc_ids=req.doc_ids,
+            language=req.language,
+            length=req.length,
+            model=req.model or "gpt-4o-mini",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"동영상 스크립트 생성 실패: {str(e)}")
+
+    item_id = _save_studio_item(
+        user_id=user["id"],
+        item_type="video",
+        title=title,
+        subtitle=f"동영상 · 소스 {len(req.doc_ids)}개",
+        content={"slides": slides},
+        notebook_id=req.notebook_id,
+    )
+    return {
+        "slides": slides,
+        "title": title,
+        "item_id": item_id,
+    }

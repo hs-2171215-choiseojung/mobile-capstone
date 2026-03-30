@@ -9,6 +9,7 @@
 import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
+import StudyULogo from '@/components/StudyULogo'
 
 export default function SignupPage() {
   const [loading, setLoading] = useState(false)
@@ -80,9 +81,7 @@ export default function SignupPage() {
         {/* 로고 */}
         <div className="text-center mb-8">
           <Link href="/" className="inline-flex items-center gap-2">
-            <div className="w-10 h-10 rounded-xl bg-brand-600 flex items-center justify-center">
-              <span className="text-white font-bold text-lg">S</span>
-            </div>
+            <StudyULogo size={40} />
             <span className="font-bold text-xl tracking-tight">
               STUDY<span className="text-brand-600">:U</span>
             </span>

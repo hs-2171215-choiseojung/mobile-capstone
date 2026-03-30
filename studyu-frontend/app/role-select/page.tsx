@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import StudyULogo from '@/components/StudyULogo'
 
 export default async function RoleSelectPage() {
   const supabase = await createClient()
@@ -13,9 +14,7 @@ export default async function RoleSelectPage() {
         {/* 로고 */}
         <div className="text-center mb-10">
           <div className="inline-flex items-center gap-2 mb-4">
-            <div className="w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold">S</span>
-            </div>
+            <StudyULogo size={36} />
             <span className="font-bold text-xl">STUDY<span className="text-blue-600">:U</span></span>
           </div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">어떤 화면으로 이동할까요?</h1>

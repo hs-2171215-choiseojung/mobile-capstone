@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import StudyULogo from "@/components/StudyULogo";
 import Image from "next/image";
 import { useState, useEffect } from "react";
 
@@ -202,9 +203,7 @@ export default function StudentsPageClient({ notebookData, errorMsg, notebookLis
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center">
-              <span className="text-white font-bold text-xs">S</span>
-            </div>
+            <StudyULogo size={28} />
             <span className="text-sm font-bold text-gray-800">
               STUDY<span className="text-blue-600">:U</span>
             </span>
