@@ -11,6 +11,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
+import StudyULogo from '@/components/StudyULogo'
 
 type UserRole = 'instructor' | 'student'
 
@@ -53,9 +54,7 @@ export default function OnboardingPage() {
         {/* 헤더 */}
         <div className="text-center mb-12">
           <Link href="/" className="inline-flex items-center gap-2 mb-6">
-            <div className="w-10 h-10 rounded-xl bg-brand-600 flex items-center justify-center">
-              <span className="text-white font-bold text-lg">S</span>
-            </div>
+            <StudyULogo size={40} />
             <span className="font-bold text-xl tracking-tight">
               STUDY<span className="text-brand-600">:U</span>
             </span>

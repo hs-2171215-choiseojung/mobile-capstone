@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
+import StudyULogo from '@/components/StudyULogo'
 
 export default async function HomePage() {
   // 이미 로그인한 사용자는 바로 대시보드로
@@ -16,9 +17,7 @@ export default async function HomePage() {
       {/* 헤더 */}
       <header className="px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center">
-            <span className="text-white font-bold text-sm">S</span>
-          </div>
+          <StudyULogo size={32} />
           <span className="font-bold text-lg tracking-tight">
             STUDY<span className="text-brand-600">:U</span>
           </span>

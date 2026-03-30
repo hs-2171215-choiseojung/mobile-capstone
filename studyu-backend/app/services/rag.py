@@ -1429,3 +1429,189 @@ def generate_data_table(
     columns = result.get("columns", [])
     rows = result.get("rows", [])
     return title, description, columns, rows
+
+
+# ─────────────────────────────────────────────
+# 영상 생성 (Remotion + TTS)
+# ─────────────────────────────────────────────
+
+def _extract_marker_timings(notes_raw: str, n_bullets: int) -> tuple[str, list[float]]:
+    """[N] 마커를 파싱하고 문자 위치 기반 타이밍을 계산한다.
+
+    핵심 원리:
+    - TTS 발화 시간은 텍스트 길이에 비례 → 마커 이전 문자 수 / 전체 문자 수 = 타이밍 비율
+    - 스프링 애니메이션 지연을 보정하기 위해 전체 길이의 6%를 앞서 트리거
+
+    Returns: (마커 제거된 clean text, 타이밍 리스트 0.0~1.0)
+    """
+    pattern = re.compile(r'\[(\d+)\]')
+
+    clean = pattern.sub('', notes_raw)
+    clean = re.sub(r'  +', ' ', clean).strip()
+    total_len = max(1, len(clean))
+
+    if n_bullets <= 0:
+        return clean, []
+
+    marker_list = [(m.start(), int(m.group(1)), len(m.group(0))) for m in pattern.finditer(notes_raw)]
+
+    timing_map: dict[int, float] = {}
+    removed_chars = 0
+    for raw_pos, num, mlen in marker_list:
+        clean_pos = raw_pos - removed_chars
+        frac = clean_pos / total_len
+        frac = max(0.03, frac - 0.06)
+        timing_map[num] = round(min(0.90, frac), 3)
+        removed_chars += mlen
+
+    if not timing_map:
+        return clean, [round((i + 1) / (n_bullets + 1), 3) for i in range(n_bullets)]
+
+    timings: list[float] = []
+    sorted_map = sorted(timing_map.items())
+    for i in range(n_bullets):
+        if (i + 1) in timing_map:
+            timings.append(timing_map[i + 1])
+        else:
+            prev = max((t for k, t in sorted_map if k <= i),     default=0.03)
+            nxt  = min((t for k, t in sorted_map if k >= i + 2), default=0.90)
+            timings.append(round((prev + nxt) / 2, 3))
+
+    return clean, timings
+
+
+def generate_video(
+    doc_ids: list[str],
+    language: str = "ko",
+    length: str = "default",
+    model: str = "gpt-4o-mini",
+) -> tuple[list[dict], str]:
+    """문서 내용을 바탕으로 Remotion 비디오용 슬라이드 데이터(TTS 오디오 포함)를 생성."""
+    import base64 as _base64
+
+    length_map = {"short": (4, 5), "default": (5, 7), "long": (7, 10)}
+    min_slides, max_slides = length_map.get(length, (5, 7))
+
+    lang_map = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
+    lang_label = lang_map.get(language, "한국어")
+
+    context = _sanitize(_get_context(doc_ids, max_chars=14000))
+
+    prompt_text = f"""당신은 대학 강의를 진행하는 강사입니다.
+아래 문서를 바탕으로, 실제 강의실에서 학생들에게 설명하듯 {lang_label} 강의 슬라이드 스크립트를 작성해주세요.
+
+슬라이드 수: {min_slides}~{max_slides}장 (첫 장 타이틀, 마지막 장 정리)
+
+━━━ 핵심 원칙 ━━━
+각 슬라이드는 하나의 주제만 다룹니다.
+강의 전체가 자연스럽게 이어지도록, 앞 내용과 연결하거나 흐름을 만들어주세요.
+
+━━━ speaker_notes 작성 규칙 ━━━
+어조: 강사가 학생들에게 말하는 자연스러운 구어체 강의 말투
+  - "~습니다", "~입니다" 로 끝나는 부드럽고 친근한 경어체
+  - 딱딱하게 정의를 나열하지 말고, 강사가 실제로 입으로 말하듯 풀어서 설명
+  - 청중이 따라오기 쉽도록 짧고 명확하게, 그러나 자연스러운 호흡으로
+  - "~라고 볼 수 있습니다", "~인 셈입니다", "쉽게 말하면" 같은 표현도 자연스럽게 사용 가능
+
+문장 수: 정확히 1 + bullets 개수 문장
+  - 1번째 문장: 이 슬라이드 주제를 강사답게 도입 (앞 내용과 연결하거나, 왜 중요한지 한 문장으로)
+  - 2번째~ 문장: bullets[0], bullets[1]... 순서대로 각각 1문장씩, 학생 눈높이에 맞게 설명
+
+슬라이드 흐름: 강의 전체가 하나의 이야기처럼 이어지도록 작성합니다.
+  - 앞 슬라이드 내용을 짧게 받아서 이 슬라이드로 자연스럽게 넘어오는 도입도 좋습니다.
+  - 단, 이 슬라이드의 본론(bullets 설명)이 흐려지지 않도록 도입은 1문장 이내로 짧게.
+연결어 적극 활용: "또한", "그리고", "반면에", "특히", "따라서", "이를 통해" 등으로 문장 흐름을 자연스럽게 연결
+[N] 마커: 각 bullet 설명 문장 맨 앞에 [1], [2], [3]... 삽입 (렌더링 시 자동 제거)
+
+예시 (bullets 3개 → 정확히 4문장):
+"TCP가 왜 중요한지 이해하려면, 우선 데이터가 어떻게 전달되는지를 알아야 합니다. [1]연결을 시작할 때는 3-way handshake라는 과정을 거쳐서, 서로 준비됐는지 확인하고 통신을 시작합니다. [2]전송 중 패킷이 사라지면 자동으로 다시 보내줘서, 데이터가 빠짐없이 도착하도록 보장합니다. [3]통신이 끝날 때도 4-way handshake로 안전하게 연결을 끊어줍니다."
+
+━━━ layout 선택 ━━━
+"steps"  → 순서·절차·단계 (3~5개)
+"cards"  → 독립된 개념·기능 (3~4개)
+"table"  → 비교·대조
+"list"   → 그 외 일반 내용
+
+━━━ 나머지 필드 ━━━
+[title] 슬라이드 주제 (10자 이내, 명사형)
+[summary] 이 슬라이드의 핵심 결론 한 줄 (25자 이내, "~이다" 형식)
+[bullets] "핵심어 | 한 줄 설명" 형식, 3~4개
+  - 핵심어: 2~5자의 키워드
+  - 설명: speaker_notes 해당 문장과 동일한 내용을 압축한 한 문장
+
+━━━━━━━━━━━━━━━━━━
+
+문서 내용:
+{context}
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{{
+  "title": "동영상 제목",
+  "slides": [
+    {{
+      "layout": "list",
+      "title": "슬라이드 제목",
+      "summary": "핵심 결론 한 줄",
+      "bullets": ["핵심어 | 설명", "핵심어2 | 설명2"],
+      "speaker_notes": "핵심 도입 문장. [1]bullet1 설명 문장. [2]bullet2 설명 문장."
+    }}
+  ]
+}}"""
+
+    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=safe_model,
+        messages=[{"role": "user", "content": prompt_text}],
+        response_format={"type": "json_object"},
+        temperature=0.6,
+        max_tokens=4000,
+    )
+
+    result = json.loads(response.choices[0].message.content or "{}")
+    video_title = result.get("title", "동영상 개요")
+    raw_slides = result.get("slides", [])
+
+    FPS = 30
+    MIN_SLIDE_FRAMES = 150
+    CHARS_PER_SEC = 5.0
+
+    slides_with_audio: list[dict] = []
+    for slide in raw_slides:
+        notes_raw = slide.get("speaker_notes", "").strip()
+        bullets   = slide.get("bullets", [])
+
+        notes, bullet_timings = _extract_marker_timings(notes_raw, len(bullets))
+        notes = _sanitize(notes)
+
+        try:
+            tts_resp = client.audio.speech.create(
+                model="tts-1-hd",
+                voice="nova",
+                input=notes or _sanitize(slide.get("title", "")),
+                response_format="wav",
+            )
+            audio_b64 = _base64.b64encode(tts_resp.content).decode()
+            audio_sec = max(4.0, (len(tts_resp.content) - 44) / 48000)
+            estimated_sec = audio_sec + 1.0
+        except Exception as e:
+            print(f"[video] TTS 실패, 무음으로 대체: {e}")
+            audio_b64 = ""
+            audio_sec = max(4.0, len(notes) / CHARS_PER_SEC)
+            estimated_sec = audio_sec + 1.0
+
+        duration_frames = max(MIN_SLIDE_FRAMES, int(estimated_sec * FPS))
+
+        slides_with_audio.append({
+            "title": slide.get("title", ""),
+            "layout": slide.get("layout", "list"),
+            "summary": slide.get("summary", ""),
+            "bullets": bullets,
+            "bulletTimings": bullet_timings,
+            "audioSec": round(audio_sec, 2),
+            "speakerNotes": notes,
+            "audioBase64": audio_b64,
+            "durationInFrames": duration_frames,
+        })
+
+    return slides_with_audio, video_title

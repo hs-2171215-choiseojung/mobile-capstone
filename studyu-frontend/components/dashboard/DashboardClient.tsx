@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import LogoutButton from "@/components/auth/LogoutButton";
+import StudyULogo from "@/components/StudyULogo";
 import InstructorDashboard from "./InstructorDashboard";
 import StudentDashboard from "./StudentDashboard";
 
@@ -41,9 +42,7 @@ export default function DashboardClient({ role, instructorNotebooks, studentNote
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
           {/* 로고 */}
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold text-sm">S</span>
-            </div>
+            <StudyULogo size={32} />
             <span className="font-bold text-lg">
               STUDY<span className="text-blue-600">:U</span>
             </span>

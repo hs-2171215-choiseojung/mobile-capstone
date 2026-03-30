@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useRouter } from "next/navigation";
+import StudyULogo from "@/components/StudyULogo";
 
 interface TopNavBarProps {
   title?: string;
@@ -24,7 +25,7 @@ export function TopNavBar({ title }: TopNavBarProps) {
             <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
-        <span className="text-blue-600 font-bold" style={{ fontSize: "1.05rem", letterSpacing: "-0.5px" }}>STUDY:U</span>
+        <StudyULogo size={28} />
         <span className="text-gray-300 text-lg">|</span>
         <span className="text-blue-500 font-semibold truncate max-w-[240px]" style={{ fontSize: "0.9rem" }}>
           {title || "노트북 제목 불러오는 중..."}
@@ -33,7 +34,7 @@ export function TopNavBar({ title }: TopNavBarProps) {
       </div>
 
       <div className="flex items-center gap-3">
-        <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white font-bold text-xs">S</div>
+        <StudyULogo size={28} />
       </div>
     </header>
   );

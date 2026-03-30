@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import StudioPanel from "@/components/workspace/StudioPanel";
 import type { Doc } from "@/components/workspace/SourcePanel";
+import StudyULogo from "@/components/StudyULogo";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -196,6 +197,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlValue, setUrlValue] = useState("");
   const [urlLoading, setUrlLoading] = useState(false);
+  const [showAddSourceMenu, setShowAddSourceMenu] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceFileInputRef = useRef<HTMLInputElement>(null);
   const [sourceSubmitting, setSourceSubmitting] = useState(false);
@@ -284,6 +286,16 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   useEffect(() => {
     if (chatOpen) chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, chatLoading, chatOpen]);
+
+  useEffect(() => {
+    if (!showAddSourceMenu) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest("[data-add-source-menu]")) setShowAddSourceMenu(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showAddSourceMenu]);
 
   // ── Upload handlers ───────────────────────────────────────────────
   async function handleUpload(file: File) {
@@ -703,7 +715,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
               <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
-          <span className="text-blue-600 font-bold" style={{ fontSize: "1.05rem", letterSpacing: "-0.5px" }}>STUDY:U</span>
+          <StudyULogo size={28} />
           <span className="text-gray-300 text-lg">|</span>
           <span className="text-blue-500 font-semibold truncate max-w-[240px]" style={{ fontSize: "0.9rem" }}>
             {notebook.title}
@@ -822,20 +834,81 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                     {/* 소스 X/X + 소스 추가 */}
                     <div className="flex items-center justify-between mb-2 px-4 shrink-0">
                       <span className="text-[#99a1af]" style={{ fontSize: "11.52px" }}>소스 {docs.length}/{docs.length}</span>
-                      <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="h-[24px] rounded-[10px] flex items-center gap-1 px-2.5 text-white shrink-0"
-                        style={{ fontSize: "10.88px", fontWeight: 500, background: "linear-gradient(135deg, #2b7fff, #1d6eee)" }}
-                      >
-                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                          <path d="M5 1.5V8.5" stroke="white" strokeWidth="1.3" strokeLinecap="round" />
-                          <path d="M1.5 5H8.5" stroke="white" strokeWidth="1.3" strokeLinecap="round" />
-                        </svg>
-                        소스 추가
-                      </button>
+                      <div className="relative" data-add-source-menu>
+                        <button
+                          onClick={() => { setShowAddSourceMenu((v) => !v); setShowUrlInput(false); }}
+                          className="h-[24px] rounded-[10px] flex items-center gap-1 px-2.5 text-white shrink-0"
+                          style={{ fontSize: "10.88px", fontWeight: 500, background: "linear-gradient(135deg, #2b7fff, #1d6eee)" }}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                            <path d="M5 1.5V8.5" stroke="white" strokeWidth="1.3" strokeLinecap="round" />
+                            <path d="M1.5 5H8.5" stroke="white" strokeWidth="1.3" strokeLinecap="round" />
+                          </svg>
+                          소스 추가
+                        </button>
+                        {showAddSourceMenu && (
+                          <div className="absolute right-0 top-[28px] z-50 bg-white border border-gray-200 rounded-xl shadow-lg py-1 min-w-[140px]">
+                            <button
+                              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-700 hover:bg-gray-50"
+                              onClick={() => { setShowAddSourceMenu(false); fileInputRef.current?.click(); }}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" />
+                                <path d="M14 2v6h6" />
+                              </svg>
+                              파일 업로드
+                            </button>
+                            <button
+                              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-700 hover:bg-gray-50"
+                              onClick={() => { setShowAddSourceMenu(false); setShowUrlInput(true); setUrlValue(""); }}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                <circle cx="12" cy="12" r="10" />
+                                <path d="M2 12h20M12 2a15.3 15.3 0 010 20M12 2a15.3 15.3 0 000 20" />
+                              </svg>
+                              URL 추가
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
-                    {/* hidden file input for drag-drop */}
+                    {/* URL input */}
+                    {showUrlInput && (
+                      <div className="mx-3 mb-2 shrink-0">
+                        <div className="flex items-center gap-1.5 p-2 bg-gray-50 border border-gray-200 rounded-xl">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                            <circle cx="12" cy="12" r="10" /><path d="M2 12h20M12 2a15.3 15.3 0 010 20M12 2a15.3 15.3 0 000 20" />
+                          </svg>
+                          <input
+                            autoFocus
+                            type="text"
+                            value={urlValue}
+                            onChange={(e) => setUrlValue(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") handleIngestUrl(); if (e.key === "Escape") setShowUrlInput(false); }}
+                            placeholder="유튜브 또는 웹페이지 URL"
+                            className="flex-1 bg-transparent text-xs text-gray-700 placeholder-gray-400 outline-none min-w-0"
+                          />
+                          {urlLoading ? (
+                            <svg className="w-3 h-3 text-blue-500 animate-spin shrink-0" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40" strokeDashoffset="10"/></svg>
+                          ) : (
+                            <button
+                              onClick={handleIngestUrl}
+                              disabled={!urlValue.trim()}
+                              className="text-[10px] font-medium text-white px-2 py-0.5 rounded-md shrink-0 disabled:opacity-40"
+                              style={{ background: "linear-gradient(135deg, #2b7fff, #1d6eee)" }}
+                            >
+                              추가
+                            </button>
+                          )}
+                          <button onClick={() => setShowUrlInput(false)} className="text-gray-400 hover:text-gray-600 shrink-0 ml-0.5">
+                            <svg width="11" height="11" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* hidden file input */}
                     <input
                       ref={fileInputRef}
                       type="file"
