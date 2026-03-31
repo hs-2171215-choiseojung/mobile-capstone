@@ -9,8 +9,8 @@ import {
   ReportView,
   SummaryView,
   MemoView,
-  MindMapView,
 } from "../StudioViews";
+import MindMapView from "../MindMapView";
 
 function downloadCsv(headers: string[], rows: string[][], filename: string) {
   const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;

@@ -28,6 +28,27 @@ function getFileCategory(filename: string): string {
   return "file";
 }
 
+export function inferDocType(fileType: string | null | undefined, filename: string, storagePath?: string): string {
+  const normalizedType = (fileType || "").toLowerCase();
+  if (normalizedType === "url" || (storagePath || "").startsWith("http")) return "url";
+  if (normalizedType.startsWith("image/")) return "image";
+  if (["jpg", "jpeg", "png", "gif", "webp"].includes(normalizedType)) return "image";
+  if (["mp4", "mov", "avi", "mkv", "webm"].includes(normalizedType)) return "video";
+  if (["pptx", "ppt"].includes(normalizedType)) return "ppt";
+  if (normalizedType === "docx") return "docx";
+  if (["hwp", "hwpx"].includes(normalizedType)) return "hwp";
+  if (normalizedType === "pdf") return "pdf";
+
+  const ext = filename.toLowerCase().split(".").pop() ?? "";
+  if (["jpg", "jpeg", "png", "gif", "webp"].includes(ext)) return "image";
+  if (["mp4", "mov", "avi", "mkv", "webm"].includes(ext)) return "video";
+  if (["pptx", "ppt"].includes(ext)) return "ppt";
+  if (["docx"].includes(ext)) return "docx";
+  if (["hwp", "hwpx"].includes(ext)) return "hwp";
+  if (ext === "pdf") return "pdf";
+  return ext || "file";
+}
+
 interface Props {
   notebookId: string;
   docs: Doc[];
