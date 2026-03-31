@@ -33,6 +33,53 @@ export const STUDIO_TASK_ITEMS: StudioTaskItem[] = [
 ];
 
 const END_STUDY_BTN_CLASS = "text-sm font-semibold text-red-500 hover:text-red-600";
+
+// ── Download utilities ─────────────────────────────────────────────────────
+function downloadText(text: string, filename: string) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+function downloadJson(data: unknown, filename: string) {
+  downloadText(JSON.stringify(data, null, 2), filename);
+}
+
+function downloadBase64(base64: string, filename: string, mimeType: string) {
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+async function downloadUrl(url: string, filename: string) {
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl; a.download = filename; a.click();
+    URL.revokeObjectURL(objUrl);
+  } catch {
+    window.open(url, "_blank");
+  }
+}
+function DownloadBtn({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="다운로드"
+      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      저장
+    </button>
+  );
+}
 const OPTION_ALPHA = ["A", "B", "C", "D"];
 const FORMAT_LABEL: Record<string, string> = {
   briefing: "브리핑 문서",
@@ -246,7 +293,10 @@ export function SummaryView({ content, onBack }: { content: string; onBack: () =
     <div className="flex flex-col h-full overflow-y-auto">
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700">요약</span>
-        <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        <div className="flex items-center gap-2">
+          <DownloadBtn onClick={() => downloadText(content, "요약.txt")} />
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
       </div>
       <div className="p-5">
         <div className="rounded-2xl p-4 bg-white border border-gray-200 text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
@@ -291,6 +341,7 @@ export function MemoView({
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 shrink-0">
         <span className="text-sm font-medium text-gray-700">메모</span>
         <div className="flex items-center gap-2">
+          <DownloadBtn onClick={() => downloadText(`${title}\n\n${content}`, `${title || "메모"}.txt`)} />
           {!readOnly && (
             <button
               onClick={handleSave}
@@ -411,11 +462,26 @@ export function QuizView({ quiz, onBack }: { quiz: any; onBack: () => void }) {
     );
   }
 
+  function quizDownload() {
+    const text = questions.map((q: any, i: number) => {
+      const lines = [`Q${i + 1}. ${q.question ?? ""}`];
+      if (Array.isArray(q.options)) q.options.forEach((o: string, j: number) => lines.push(`  ${OPTION_ALPHA[j]}. ${o}`));
+      const ans = resolveQuizAnswerIndex(q);
+      if (ans >= 0 && q.options?.[ans]) lines.push(`정답: ${OPTION_ALPHA[ans]}. ${q.options[ans]}`);
+      if (q.explanation) lines.push(`해설: ${q.explanation}`);
+      return lines.join("\n");
+    }).join("\n\n");
+    downloadText(text, `${toText(quiz?.title, "퀴즈")}.txt`);
+  }
+
   return (
     <div className="h-full bg-white flex flex-col">
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700">{toText(quiz?.title, "퀴즈")} {idx + 1}/{total}</span>
-        <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        <div className="flex items-center gap-2">
+          <DownloadBtn onClick={quizDownload} />
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
       </div>
       <div className="p-4 flex-1 overflow-y-auto">
         <div className="rounded-2xl p-4 mb-3 bg-white border border-gray-200">
@@ -509,7 +575,36 @@ export function AudioView({ audioBase64, audioUrl: propAudioUrl, script, title, 
     <div className="flex flex-col h-full overflow-y-auto bg-white">
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
-        <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        <div className="flex items-center gap-2">
+          {(audioBase64 || propAudioUrl) && (
+            <button
+              onClick={() => {
+                if (audioBase64) downloadBase64(audioBase64, `${title || "오디오"}.mp3`, "audio/mpeg");
+                else if (propAudioUrl) downloadUrl(propAudioUrl, `${title || "오디오"}.mp3`);
+              }}
+              title="오디오 다운로드"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              오디오
+            </button>
+          )}
+          {script && (
+            <button
+              onClick={() => downloadText(script, `${title || "오디오"}_스크립트.txt`)}
+              title="스크립트 다운로드"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              스크립트
+            </button>
+          )}
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
       </div>
       <div className="p-4 space-y-4">
         <div className="rounded-2xl p-4 bg-gradient-to-br from-teal-50 to-cyan-50 border border-teal-100">
@@ -630,7 +725,10 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
     <div className="h-full bg-white flex flex-col">
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700">{title}</span>
-        <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        <div className="flex items-center gap-2">
+          <DownloadBtn onClick={() => downloadText(cards.map((c, i) => `[카드 ${i + 1}]\n앞면: ${toText(c.front)}\n뒷면: ${toText(c.back)}${toText(c.hint) ? `\n힌트: ${toText(c.hint)}` : ""}`).join("\n\n"), `${title || "플래시카드"}.txt`)} />
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
       </div>
       <div className="px-4 pt-3 pb-1 shrink-0">
         <div className="flex justify-between text-xs text-gray-400 mb-1.5">
@@ -764,6 +862,7 @@ export function SlideView({ slides, title, coverImageB64, onBack }: { slides: an
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700 truncate max-w-[280px]">{title}</span>
         <div className="flex items-center gap-3">
+          <DownloadBtn onClick={() => downloadText(slides.map((s, i) => `[슬라이드 ${i + 1}] ${toText(s.title)}\n${(s.bullets || []).join("\n")}${toText(s.speaker_notes) ? `\n[발표자 노트] ${toText(s.speaker_notes)}` : ""}`).join("\n\n"), `${title || "슬라이드"}.txt`)} />
           <button
             onClick={() => setShowNotes((v) => !v)}
             className="text-xs px-2.5 py-1 rounded-full border transition-colors"
@@ -1076,7 +1175,10 @@ export function MindMapView({ nodes, title, onBack }: { nodes: any[]; title: str
     <div className="flex flex-col h-full overflow-hidden bg-white">
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between shrink-0">
         <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
-        <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        <div className="flex items-center gap-2">
+          <DownloadBtn onClick={() => downloadJson(nodes, `${title || "마인드맵"}.json`)} />
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
       </div>
 
       <div
@@ -1132,7 +1234,10 @@ export function ReportView({ sections, title, format, onBack }: { sections: any[
     <div className="h-full bg-white flex flex-col overflow-y-auto">
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <p className="text-sm font-medium text-gray-700 truncate">{title}</p>
-        <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        <div className="flex items-center gap-2">
+          <DownloadBtn onClick={() => downloadText([title, "", ...sections.map((s, i) => `[${i + 1}. ${toText(s.heading)}]\n${toText(s.content)}`)].join("\n\n"), `${title || "보고서"}.txt`)} />
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
       </div>
       <div className="p-4 space-y-4">
         <div className="rounded-2xl p-4 bg-gradient-to-br from-green-50 to-emerald-50 border border-green-100">
