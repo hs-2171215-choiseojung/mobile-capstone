@@ -79,7 +79,7 @@ async def upload_document(
 
     doc_id = str(uuid.uuid4())
 
-    # 1. Supabase Storage에 업로드 (PDF·이미지·비디오만 지원)
+    # 1. Supabase Storage에 업로드 (PDF·이미지·비디오·오디오)
     if ext in STORABLE_EXTENSIONS:
         storage_path = f"{user['id']}/{doc_id}.{ext}"
         content_type = STORAGE_CONTENT_TYPES[ext]
@@ -94,6 +94,7 @@ async def upload_document(
     else:
         # DOCX·PPTX·HWP 등 오피스 문서는 Storage 저장 없이 텍스트 추출만 진행
         storage_path = ""
+
 
     # 2. documents 테이블에 메타데이터 저장
     try:
@@ -289,6 +290,46 @@ async def get_document_access_url(
         raise HTTPException(status_code=500, detail="문서 URL 생성에 실패했습니다.")
 
     return {"url": signed_url, "kind": "signed", "expires_in": 3600}
+
+
+@router.get("/documents/{document_id}/chunks")
+async def get_document_chunks(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """문서 청크 텍스트 반환 (미리보기용)."""
+    doc_res = (
+        supabase_admin.table("documents")
+        .select("user_id, notebook_id")
+        .eq("id", document_id)
+        .single()
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    # 소유자 또는 수강생 확인
+    if doc_res.data["user_id"] != user["id"]:
+        enrolled = (
+            supabase_admin.table("notebook_enrollments")
+            .select("id")
+            .eq("notebook_id", doc_res.data["notebook_id"])
+            .eq("student_id", user["id"])
+            .execute()
+            .data
+        )
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    chunks_res = (
+        supabase_admin.table("document_chunks")
+        .select("content")
+        .eq("doc_id", document_id)
+        .order("chunk_index")
+        .execute()
+    )
+    text = "\n\n".join(c["content"] for c in (chunks_res.data or []))
+    return {"text": text}
 
 
 @router.patch("/documents/{document_id}")

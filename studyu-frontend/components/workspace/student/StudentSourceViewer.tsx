@@ -1,7 +1,27 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
-import { ExternalLink, Loader2, X } from "lucide-react";
+import { Download, ExternalLink, Loader2, X } from "lucide-react";
+
+async function downloadUrl(url: string, filename: string) {
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl; a.download = filename; a.click();
+    URL.revokeObjectURL(objUrl);
+  } catch {
+    window.open(url, "_blank");
+  }
+}
+function downloadText(text: string, filename: string) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
 
 interface SourceInfo {
   id: string;
@@ -15,6 +35,7 @@ interface StudentSourceViewerProps {
   loading?: boolean;
   error?: string;
   onClose: () => void;
+  transcriptText?: string;
 }
 
 export function StudentSourceViewer({
@@ -23,6 +44,7 @@ export function StudentSourceViewer({
   loading = false,
   error,
   onClose,
+  transcriptText,
 }: StudentSourceViewerProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -96,6 +118,26 @@ export function StudentSourceViewer({
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-4">
+          {sourceUrl && !isEmbeddableYoutube && lowerType !== "url" && (
+            <button
+              onClick={() => downloadUrl(sourceUrl, source.filename)}
+              title="다운로드"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200"
+            >
+              <Download className="w-4 h-4" />
+              저장
+            </button>
+          )}
+          {!sourceUrl && transcriptText && (
+            <button
+              onClick={() => downloadText(transcriptText, `${source.filename}.txt`)}
+              title="텍스트 다운로드"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200"
+            >
+              <Download className="w-4 h-4" />
+              저장
+            </button>
+          )}
           {sourceUrl && (
             <a
               href={sourceUrl}
@@ -152,8 +194,18 @@ export function StudentSourceViewer({
             <video ref={videoRef} src={sourceUrl} controls className="max-w-full max-h-full rounded-lg shadow-sm bg-black" />
           </div>
         ) : isAudio ? (
-          <div className="h-full flex items-center justify-center">
-            <audio ref={audioRef} src={sourceUrl} controls className="w-full max-w-xl" />
+          <div className="h-full flex flex-col gap-4 p-4 overflow-y-auto">
+            <div className="flex justify-center">
+              <audio ref={audioRef} src={sourceUrl} controls className="w-full max-w-xl" />
+            </div>
+            {transcriptText && (
+              <div>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">변환된 텍스트</p>
+                <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">
+                  {transcriptText}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <iframe

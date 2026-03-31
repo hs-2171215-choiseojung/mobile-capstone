@@ -6,8 +6,30 @@ import { createClient } from "@/lib/supabase/client";
 import StudioPanel from "@/components/workspace/StudioPanel";
 import type { Doc } from "@/components/workspace/SourcePanel";
 import StudyULogo from "@/components/StudyULogo";
+import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer";
+import { StudentChatPanel } from "@/components/workspace/student/StudentChatPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+async function downloadUrl(url: string, filename: string) {
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl; a.download = filename; a.click();
+    URL.revokeObjectURL(objUrl);
+  } catch {
+    window.open(url, "_blank");
+  }
+}
+function downloadText(text: string, filename: string) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
 
 // ── Types ─────────────────────────────────────────────────────────────
 interface Notebook {
@@ -198,6 +220,14 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [urlValue, setUrlValue] = useState("");
   const [urlLoading, setUrlLoading] = useState(false);
   const [showAddSourceMenu, setShowAddSourceMenu] = useState(false);
+
+  // Document viewer
+  const [viewerDoc, setViewerDoc] = useState<{ id: string; name: string; type: string } | null>(null);
+  const [viewerUrl, setViewerUrl] = useState<string | null>(null);
+  const [viewerText, setViewerText] = useState<string | null>(null);
+  const [viewerLoading, setViewerLoading] = useState(false);
+  // Studio item viewer
+  const [viewerStudioItem, setViewerStudioItem] = useState<any | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceFileInputRef = useRef<HTMLInputElement>(null);
   const [sourceSubmitting, setSourceSubmitting] = useState(false);
@@ -355,6 +385,66 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       alert(`URL 추가 실패: ${e instanceof Error ? e.message : "알 수 없는 오류"}`);
     } finally {
       setUrlLoading(false);
+    }
+  }
+
+  async function handleViewDoc(doc: { id: string; name: string; type: string }) {
+    setViewerStudioItem(null);
+    setViewerDoc(doc);
+    setViewerUrl(null);
+    setViewerText(null);
+    setViewerLoading(true);
+    try {
+      const token = await getToken();
+      const ext = doc.name.toLowerCase().split(".").pop() ?? doc.type;
+      const AUDIO_EXTS = new Set(["mp3", "m4a"]);
+      const TEXT_ONLY_EXTS = new Set(["docx", "pptx", "ppt", "hwp", "hwpx"]);
+
+      // URL 타입은 access-url 불필요
+      if (doc.type === "url") {
+        // chunks로 텍스트만 가져옴
+        const res = await fetch(`${API}/api/documents/${doc.id}/chunks`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        setViewerText(data.text ?? "");
+        return;
+      }
+
+      // 텍스트 전용 파일 (DOCX 등)
+      if (TEXT_ONLY_EXTS.has(ext)) {
+        const res = await fetch(`${API}/api/documents/${doc.id}/chunks`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        setViewerText(data.text ?? "");
+        return;
+      }
+
+      // 오디오: URL + 텍스트 둘 다
+      if (AUDIO_EXTS.has(ext)) {
+        const [urlRes, textRes] = await Promise.all([
+          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        const urlData = await urlRes.json();
+        const textData = await textRes.json();
+        setViewerUrl(urlData.url ?? null);
+        setViewerText(textData.text ?? "");
+        return;
+      }
+
+      // PDF, 이미지, 비디오: URL만
+      const res = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      setViewerUrl(data.url ?? null);
+    } catch (e) {
+      alert(`파일 불러오기 실패: ${e instanceof Error ? e.message : "알 수 없는 오류"}`);
+      setViewerDoc(null);
+    } finally {
+      setViewerLoading(false);
     }
   }
 
@@ -955,11 +1045,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                             <div key={doc.id} className="rounded-[10px] overflow-hidden">
                               <div
                                 className="flex items-center gap-2 pl-2 pr-2 py-2 rounded-[10px] hover:bg-gray-50 cursor-pointer group"
-                                onClick={() => setExpandedDocIds((prev) => {
-                                  const next = new Set(prev);
-                                  next.has(doc.id) ? next.delete(doc.id) : next.add(doc.id);
-                                  return next;
-                                })}
+                                onClick={() => handleViewDoc({ id: doc.id, name: doc.name ?? "", type: doc.type ?? "" })}
                               >
                                 <input
                                   type="checkbox"
@@ -1006,7 +1092,11 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                     <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M1.5 1.5L8.5 8.5M8.5 1.5L1.5 8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
                                   </button>
                                 </div>
-                                <span className="shrink-0 flex items-center justify-center w-4 h-4 transition-transform duration-200" style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)" }}>
+                                <span
+                                  className="shrink-0 flex items-center justify-center w-4 h-4 transition-transform duration-200"
+                                  style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)" }}
+                                  onClick={(e) => { e.stopPropagation(); setExpandedDocIds((prev) => { const next = new Set(prev); next.has(doc.id) ? next.delete(doc.id) : next.add(doc.id); return next; }); }}
+                                >
                                   <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                                     <path d="M2 3.5L5 6.5L8 3.5" stroke="#99A1AF" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
                                   </svg>
@@ -1079,8 +1169,177 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
               </button>
             </div>
 
+            {/* Studio Item Viewer */}
+            {viewerStudioItem && !viewerDoc && (
+              <div className="flex-1 flex flex-col overflow-hidden bg-white">
+                <div className="h-10 border-b border-gray-100 flex items-center gap-3 px-4 shrink-0">
+                  <button
+                    onClick={() => setViewerStudioItem(null)}
+                    className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 transition-colors"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M19 12H5M12 5l-7 7 7 7"/>
+                    </svg>
+                    돌아가기
+                  </button>
+                  <span className="text-gray-300">|</span>
+                  <span className="text-xs text-gray-600 font-medium truncate">{viewerStudioItem.title}</span>
+                </div>
+                <div className="flex-1 overflow-hidden">
+                  <StudioItemViewer item={viewerStudioItem} onClose={() => setViewerStudioItem(null)} />
+                </div>
+              </div>
+            )}
+
+            {/* Document Viewer */}
+            {viewerDoc && (
+              <div className="flex-1 flex flex-col overflow-hidden bg-white">
+                {/* Viewer header */}
+                <div className="h-10 border-b border-gray-100 flex items-center gap-3 px-4 shrink-0">
+                  <button
+                    onClick={() => { setViewerDoc(null); setViewerUrl(null); setViewerText(null); }}
+                    className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 transition-colors"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M19 12H5M12 5l-7 7 7 7"/>
+                    </svg>
+                    돌아가기
+                  </button>
+                  <span className="text-gray-300">|</span>
+                  <span className="text-xs text-gray-600 font-medium truncate flex-1 min-w-0">{viewerDoc.name}</span>
+                  {viewerDoc.type !== "url" && viewerUrl && (
+                    <button
+                      onClick={() => downloadUrl(viewerUrl, viewerDoc.name)}
+                      title="다운로드"
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs shrink-0"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                      </svg>
+                      저장
+                    </button>
+                  )}
+                  {!viewerUrl && viewerText && (
+                    <button
+                      onClick={() => downloadText(viewerText, `${viewerDoc.name}.txt`)}
+                      title="텍스트 다운로드"
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs shrink-0"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                      </svg>
+                      저장
+                    </button>
+                  )}
+                </div>
+
+                {/* Viewer content */}
+                <div className="flex-1 overflow-y-auto min-h-0">
+                  {viewerLoading ? (
+                    <div className="flex items-center justify-center h-full gap-2 text-gray-400">
+                      <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40" strokeDashoffset="10"/></svg>
+                      <span className="text-sm">불러오는 중...</span>
+                    </div>
+                  ) : (() => {
+                    const ext = (viewerDoc.name.toLowerCase().split(".").pop() ?? viewerDoc.type) as string;
+                    const IMAGE_EXTS = new Set(["jpg","jpeg","png","gif","webp"]);
+                    const AUDIO_EXTS = new Set(["mp3","m4a"]);
+                    const VIDEO_EXTS = new Set(["mp4","mov","avi","mkv","webm"]);
+
+                    if (IMAGE_EXTS.has(ext) && viewerUrl) {
+                      return (
+                        <div className="flex items-center justify-center p-6 min-h-full">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={viewerUrl} alt={viewerDoc.name} className="max-w-full max-h-full rounded-xl shadow-md object-contain" />
+                        </div>
+                      );
+                    }
+
+                    if (AUDIO_EXTS.has(ext)) {
+                      return (
+                        <div className="p-6 flex flex-col gap-6">
+                          {viewerUrl && (
+                            <div className="bg-gray-50 rounded-2xl p-5 flex flex-col items-center gap-3">
+                              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#2b7fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M9 18V5l12-2v13"/>
+                                <circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+                              </svg>
+                              <p className="text-xs text-gray-500 font-medium">{viewerDoc.name}</p>
+                              <audio controls src={viewerUrl} className="w-full max-w-md" />
+                            </div>
+                          )}
+                          {viewerText && (
+                            <div>
+                              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">변환된 텍스트</p>
+                              <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-100">
+                                {viewerText}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    if (VIDEO_EXTS.has(ext) && viewerUrl) {
+                      return (
+                        <div className="flex items-center justify-center p-6 min-h-full bg-black">
+                          <video controls src={viewerUrl} className="max-w-full max-h-full rounded-xl" style={{ maxHeight: "calc(100vh - 200px)" }} />
+                        </div>
+                      );
+                    }
+
+                    if (ext === "pdf" && viewerUrl) {
+                      return (
+                        <iframe src={viewerUrl} className="w-full h-full border-0" title={viewerDoc.name} />
+                      );
+                    }
+
+                    if (viewerDoc.type === "url") {
+                      return (
+                        <div className="p-6 flex flex-col gap-4">
+                          <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex items-center gap-3">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2b7fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                              <circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 010 20M12 2a15.3 15.3 0 000 20"/>
+                            </svg>
+                            <span className="text-sm text-blue-600 font-medium">{viewerDoc.name}</span>
+                          </div>
+                          {viewerText && (
+                            <div>
+                              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">추출된 텍스트</p>
+                              <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-100">
+                                {viewerText}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    // DOCX / HWP / PPTX 등 텍스트 전용
+                    return (
+                      <div className="p-6">
+                        {viewerText ? (
+                          <>
+                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">추출된 텍스트</p>
+                            <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-100">
+                              {viewerText}
+                            </div>
+                          </>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center h-40 text-gray-400 gap-2">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z"/><path d="M14 2v6h6"/></svg>
+                            <span className="text-sm">미리보기를 지원하지 않는 파일입니다</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
+
             {/* Scrollable Study Plan */}
-            <div className="flex-1 overflow-y-auto min-h-0">
+            {!viewerDoc && !viewerStudioItem && <div className="flex-1 overflow-y-auto min-h-0">
               <div className="px-8 py-7 bg-white min-h-full">
                 <h1 className="mb-7" style={{ fontFamily: "Manrope, sans-serif", fontSize: "1.3rem", fontWeight: 700, color: "#001c39" }}>
                   Instructor Study Plan Sequence
@@ -1297,10 +1556,10 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                   </button>
                 </div>
               </div>
-            </div>
+            </div>}
 
             {/* AI Chat Bar (collapsed) */}
-            {!chatOpen && (
+            {!chatOpen && !viewerDoc && !viewerStudioItem && (
               <div className="shrink-0 flex items-center justify-between px-6 py-3 bg-white border-t border-gray-100 shadow-sm">
                 <span className="text-gray-400" style={{ fontSize: "0.82rem" }}>AI에게 강의 설계 도움 요청...</span>
                 <button
@@ -1315,7 +1574,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
             )}
 
             {/* AI Chat Panel (expanded) */}
-            {chatOpen && (
+            {chatOpen && !viewerDoc && !viewerStudioItem && (
               <div className="shrink-0 flex flex-col border-t border-gray-200" style={{ height: "48%", background: "#f7f9fc" }}>
                 {/* Chat header */}
                 <div className="shrink-0 flex items-center justify-between px-6 py-2.5 border-b" style={{ background: "#f7f9fc", borderColor: "#e9edf4" }}>
@@ -1421,8 +1680,36 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
           </div>
         )}
 
-        {/* ─── Right: Studio Panel ─── */}
-        {studioSidebarOpen && (
+        {/* ─── Right: Context Chat (viewer mode) or Studio Panel ─── */}
+        {studioSidebarOpen && (viewerDoc || viewerStudioItem) && (
+          <div style={{ width: studioWidth, flexShrink: 0 }} className="h-full overflow-hidden flex flex-col border-l border-gray-200">
+            <div className="shrink-0 px-4 py-2.5 border-b border-gray-100 flex items-center justify-between bg-white">
+              <div className="flex items-center gap-2">
+                <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center">
+                  <svg className="w-2.5 h-2.5 text-blue-500" fill="none" viewBox="0 0 24 24"><path d="M12 3l1.2 3.6L17 8.4l-3.8 2.4L12 14.4l-1.2-3.6L7 8.4l3.8-2.4z" fill="currentColor"/></svg>
+                </div>
+                <span className="text-xs font-semibold text-gray-700">AI 채팅</span>
+                <span className="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-500 rounded-full">
+                  {viewerDoc ? "소스 컨텍스트" : "콘텐츠 컨텍스트"}
+                </span>
+              </div>
+              <button
+                onClick={() => { setViewerDoc(null); setViewerUrl(null); setViewerText(null); setViewerStudioItem(null); }}
+                className="w-6 h-6 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-400"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <StudentChatPanel
+                notebookId={notebook.id}
+                activeDocIds={viewerDoc ? [viewerDoc.id] : activeDocIds}
+                docs={docs}
+              />
+            </div>
+          </div>
+        )}
+        {studioSidebarOpen && !viewerDoc && !viewerStudioItem && (
           <div style={{ width: studioWidth, flexShrink: 0 }} className="h-full overflow-hidden">
             <StudioPanel
               notebookId={notebook.id}
@@ -1448,6 +1735,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
               openCreateType={studioCreateType}
               openCreateWeekId={studioCreateWeekId}
               onOpenCreateHandled={() => setStudioCreateType(null)}
+              onViewItem={(item) => { setViewerDoc(null); setViewerUrl(null); setViewerText(null); setViewerStudioItem(item); if (!studioSidebarOpen) setStudioSidebarOpen(true); }}
             />
           </div>
         )}
