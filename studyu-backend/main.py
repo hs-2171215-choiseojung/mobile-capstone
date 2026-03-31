@@ -10,16 +10,38 @@ uvicorn main:app --reload 로 실행합니다.
 3. 라우터 등록 (각 기능별 API 엔드포인트 연결)
 """
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
+from app.core.supabase import supabase_admin
 from app.api.routes import stt
 from app.api.routes import tts
+
+BUCKET_ALLOWED_MIME_TYPES = [
+    "application/pdf",
+    "image/jpeg", "image/png", "image/gif", "image/webp",
+    "video/mp4", "video/quicktime", "video/x-msvideo", "video/x-matroska", "video/webm",
+    "audio/mpeg", "audio/mp4",
+]
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 버킷 허용 MIME 타입 업데이트 (오디오 타입 포함)
+    try:
+        supabase_admin.storage.update_bucket(
+            "documents",
+            {"allowed_mime_types": BUCKET_ALLOWED_MIME_TYPES},
+        )
+    except Exception as e:
+        print(f"[warn] 버킷 MIME 타입 업데이트 실패: {e}")
+    yield
 
 # ─────────────────────────────────────────────
 # 1. FastAPI 앱 생성
 # ─────────────────────────────────────────────
 app = FastAPI(
+    lifespan=lifespan,
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="STUDY:U - 문서 기반 AI 학습 코치 API",

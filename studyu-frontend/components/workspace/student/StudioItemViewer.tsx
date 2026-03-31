@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import { useState, useEffect } from "react";
 import {
   QuizView,
   AudioView,
@@ -10,6 +11,16 @@ import {
   MemoView,
 } from "../StudioViews";
 import MindMapView from "../MindMapView";
+
+function downloadCsv(headers: string[], rows: string[][], filename: string) {
+  const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
+  const csv = [headers.map(esc).join(","), ...rows.map(r => r.map(esc).join(","))].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
 
 const normalizeStudioType = (rawType: string) => {
   const typeMap: Record<string, string> = {
@@ -136,9 +147,21 @@ export function StudioItemViewer({ item, onClose }: StudioItemViewerProps) {
             <h2 className="text-lg font-bold text-gray-900">{toText(item.title, "데이터 표")}</h2>
             <p className="text-xs text-gray-500 mt-1">AI가 생성한 표 형식 학습 자료</p>
           </div>
-          <button onClick={onClose} className="px-3 py-1.5 rounded-lg bg-gray-100 text-sm text-gray-700 hover:bg-gray-200">
-            학습 종료
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => downloadCsv(fallbackHeaders, normalizedRows, `${toText(item.title, "데이터표")}.csv`)}
+              title="CSV 다운로드"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              저장
+            </button>
+            <button onClick={onClose} className="px-3 py-1.5 rounded-lg bg-gray-100 text-sm text-gray-700 hover:bg-gray-200">
+              학습 종료
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-auto p-6 bg-gray-50">
@@ -177,12 +200,89 @@ export function StudioItemViewer({ item, onClose }: StudioItemViewerProps) {
     );
   }
 
+  if (t === "video") {
+    return <VideoItemViewer item={item} c={c} toText={toText} onClose={onClose} />;
+  }
+
   return (
     <div className="p-10 flex flex-col items-center justify-center h-full text-center">
       <p className="text-gray-500 mb-4">현재 화면에서 지원하지 않는 항목입니다.</p>
       <button onClick={onClose} className="px-4 py-2 bg-gray-100 rounded-lg text-sm text-gray-700 hover:bg-gray-200">
         학습 종료
       </button>
+    </div>
+  );
+}
+
+function VideoItemViewer({ item, c, toText, onClose }: { item: any; c: any; toText: (v: unknown, f?: string) => string; onClose: () => void }) {
+  const slides = c.slides || item.videoData?.slides || [];
+  const title = toText(item.title, "동영상 개요");
+  const [rendering, setRendering] = useState(false);
+  const [videoSrc, setVideoSrc] = useState<string | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!slides.length) return;
+    setRendering(true);
+    setRenderError(null);
+    fetch("/api/render-video", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slides }),
+    })
+      .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        if (!ok) throw new Error(data.error ?? "렌더링 실패");
+        setVideoSrc(`data:video/mp4;base64,${data.videoBase64}`);
+      })
+      .catch((e: unknown) => setRenderError(e instanceof Error ? e.message : "렌더링 실패"))
+      .finally(() => setRendering(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="h-full bg-white flex flex-col overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between shrink-0">
+        <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
+        <button onClick={onClose} className="text-sm font-semibold text-red-500 hover:text-red-600">학습 종료</button>
+      </div>
+
+      <div className="flex-1 flex items-center justify-center bg-black">
+        {videoSrc ? (
+          <video controls autoPlay src={videoSrc} className="max-w-full max-h-full" style={{ maxHeight: "calc(100vh - 120px)" }} />
+        ) : renderError ? (
+          <div className="text-center text-white space-y-3">
+            <p className="text-sm text-red-400">{renderError}</p>
+            <button
+              onClick={() => {
+                setRenderError(null);
+                setRendering(true);
+                fetch("/api/render-video", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ slides }),
+                })
+                  .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
+                  .then(({ ok, data }) => {
+                    if (!ok) throw new Error(data.error ?? "렌더링 실패");
+                    setVideoSrc(`data:video/mp4;base64,${data.videoBase64}`);
+                  })
+                  .catch((e: unknown) => setRenderError(e instanceof Error ? e.message : "렌더링 실패"))
+                  .finally(() => setRendering(false));
+              }}
+              className="px-4 py-2 rounded-lg bg-white text-gray-800 text-sm font-medium hover:bg-gray-100"
+            >
+              다시 시도
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-3 text-white">
+            <svg className="w-8 h-8 animate-spin text-white/60" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40" strokeDashoffset="10"/>
+            </svg>
+            <p className="text-sm text-white/70">동영상 렌더링 중... (최대 3분 소요)</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

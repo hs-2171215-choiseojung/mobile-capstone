@@ -12,6 +12,7 @@ import { WeeklyPlanCard } from "@/components/workspace/student/WeeklyPlanCard";
 import { StudentStudioPanel } from "@/components/workspace/student/StudentStudioPanel";
 import { StudentChatPanel } from "@/components/workspace/student/StudentChatPanel";
 import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer"; 
+import { StudentSourceViewer } from "@/components/workspace/student/StudentSourceViewer";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -50,6 +51,11 @@ export default function StudentWorkspacePage() {
   const [studioItems, setStudioItems] = useState<any[]>([]); 
   const [weekPlans, setWeekPlans] = useState<WeekPlan[]>([]);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
+  const [selectedSource, setSelectedSource] = useState<DocumentInfo | null>(null);
+  const [selectedSourceUrl, setSelectedSourceUrl] = useState("");
+  const [selectedSourceError, setSelectedSourceError] = useState("");
+  const [isSourceLoading, setIsSourceLoading] = useState(false);
+  const [selectedSourceTranscript, setSelectedSourceTranscript] = useState<string | undefined>(undefined);
 
   const [selectedLLM, setSelectedLLM] = useState('gpt-4o');
   const [selectedDifficulty, setSelectedDifficulty] = useState('intermediate');
@@ -309,41 +315,64 @@ export default function StudentWorkspacePage() {
   }, [notebookId, expandedCenterWeeks, centerWeeksHydrated]);
 
   useEffect(() => {
-    if (selectedItem !== null) return;
+    if (selectedItem !== null || selectedSource !== null) return;
     if (!shouldRestoreCenterScrollRef.current) return;
     const target = centerScrollRef.current;
     if (!target) return;
     target.scrollTop = centerScrollTopRef.current;
     shouldRestoreCenterScrollRef.current = false;
-  }, [selectedItem]);
+  }, [selectedItem, selectedSource]);
+
+  const AUDIO_EXTS = new Set(["mp3", "m4a", "wav"]);
+  const TEXT_ONLY_EXTS = new Set(["docx", "pptx", "ppt", "hwp", "hwpx"]);
 
   const openSourceDocument = async (doc: DocumentInfo) => {
+    setActiveDocIds([doc.id]);
+    setLeftOpenBefore(isLeftOpen);
+    setIsLeftOpen(false);
+    if (!isRightOpen) setIsRightOpen(true);
+    setSelectedItem(null);
+    setSelectedSource(doc);
+    setSelectedSourceUrl("");
+    setSelectedSourceError("");
+    setSelectedSourceTranscript(undefined);
+    setIsSourceLoading(true);
     try {
       const supabase = createClient();
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token;
-      if (!token) {
-        alert("로그인이 필요합니다.");
-        return;
+      if (!token) { setSelectedSourceError("로그인이 필요합니다."); return; }
+
+      const ext = doc.filename.toLowerCase().split(".").pop() ?? doc.file_type;
+      const needsUrl = !TEXT_ONLY_EXTS.has(ext);
+      const needsText = AUDIO_EXTS.has(ext) || TEXT_ONLY_EXTS.has(ext);
+
+      const fetches: Promise<void>[] = [];
+
+      if (needsUrl) {
+        fetches.push(
+          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => r.json().catch(() => ({})))
+            .then((data) => {
+              if (data?.url) setSelectedSourceUrl(data.url);
+              else setSelectedSourceError(data?.detail || "문서 URL을 가져오지 못했습니다.");
+            })
+        );
       }
 
-      const res = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        alert(data?.detail || "문서 열기에 실패했습니다.");
-        return;
+      if (needsText) {
+        fetches.push(
+          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => r.json().catch(() => ({})))
+            .then((data) => { if (data?.text) setSelectedSourceTranscript(data.text); })
+        );
       }
 
-      const url = data?.url;
-      if (!url) {
-        alert("문서 URL을 가져오지 못했습니다.");
-        return;
-      }
-      window.open(url, "_blank", "noopener,noreferrer");
+      await Promise.all(fetches);
     } catch {
-      alert("문서를 여는 중 오류가 발생했습니다.");
+      setSelectedSourceError("문서를 여는 중 오류가 발생했습니다.");
+    } finally {
+      setIsSourceLoading(false);
     }
   };
 
@@ -376,7 +405,13 @@ export default function StudentWorkspacePage() {
           } ${isLeftOpen ? "border-r" : "border-r-0 overflow-hidden"}`}
         >
           <div className="w-full h-full flex flex-col min-w-[200px]">
-            <StudentSourcePanel sources={displayDocs} onOpenSource={openSourceDocument} />
+            <StudentSourcePanel
+              sources={displayDocs}
+              onOpenSource={openSourceDocument}
+              selectedSourceId={selectedSource?.id ?? null}
+              isOpen={isLeftOpen}
+              onToggleOpen={() => setIsLeftOpen((prev) => !prev)}
+            />
           </div>
         </Resizable>
 
@@ -424,6 +459,24 @@ export default function StudentWorkspacePage() {
                 }} 
               />
             </div>
+          ) : selectedSource ? (
+            <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative">
+              <StudentSourceViewer
+                source={selectedSource}
+                sourceUrl={selectedSourceUrl}
+                loading={isSourceLoading}
+                error={selectedSourceError}
+                transcriptText={selectedSourceTranscript}
+                onClose={() => {
+                  setSelectedSource(null);
+                  setSelectedSourceUrl("");
+                  setSelectedSourceError("");
+                  setSelectedSourceTranscript(undefined);
+                  setIsLeftOpen(leftOpenBefore);
+                  shouldRestoreCenterScrollRef.current = true;
+                }}
+              />
+            </div>
           ) : (
             <>
               <div ref={centerScrollRef} className="flex-1 overflow-y-auto px-[32px] py-[32px]">
@@ -459,6 +512,9 @@ export default function StudentWorkspacePage() {
                           }}
                           onOpenItem={(item) => {
                             centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
+                            setSelectedSource(null);
+                            setSelectedSourceUrl("");
+                            setSelectedSourceError("");
                             setSelectedItem(item);
                             setLeftOpenBefore(isLeftOpen);
                             setIsLeftOpen(false);
@@ -469,6 +525,7 @@ export default function StudentWorkspacePage() {
                             if (!targetDocId) return;
                             const targetDoc = displayDocs.find((candidate) => candidate.id === targetDocId);
                             if (!targetDoc) return;
+                            centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
                             setActiveDocIds([targetDoc.id]);
                             setIsLeftOpen(true);
                             void openSourceDocument(targetDoc);
@@ -539,7 +596,7 @@ export default function StudentWorkspacePage() {
           } ${isRightOpen ? "border-l" : "border-l-0 overflow-hidden"}`}
         >
           <div className="w-full h-full flex flex-col min-w-[250px]">
-            {selectedItem ? (
+            {selectedItem || selectedSource ? (
               <StudentChatPanel 
                 activeDocIds={activeDocIds} 
                 docs={docs} 

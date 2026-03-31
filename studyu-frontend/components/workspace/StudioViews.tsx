@@ -33,6 +33,53 @@ export const STUDIO_TASK_ITEMS: StudioTaskItem[] = [
 ];
 
 const END_STUDY_BTN_CLASS = "text-sm font-semibold text-red-500 hover:text-red-600";
+
+// ── Download utilities ─────────────────────────────────────────────────────
+function downloadText(text: string, filename: string) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+function downloadJson(data: unknown, filename: string) {
+  downloadText(JSON.stringify(data, null, 2), filename);
+}
+
+function downloadBase64(base64: string, filename: string, mimeType: string) {
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+async function downloadUrl(url: string, filename: string) {
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl; a.download = filename; a.click();
+    URL.revokeObjectURL(objUrl);
+  } catch {
+    window.open(url, "_blank");
+  }
+}
+function DownloadBtn({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="다운로드"
+      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      저장
+    </button>
+  );
+}
 const OPTION_ALPHA = ["A", "B", "C", "D"];
 const FORMAT_LABEL: Record<string, string> = {
   briefing: "브리핑 문서",
@@ -246,7 +293,10 @@ export function SummaryView({ content, onBack }: { content: string; onBack: () =
     <div className="flex flex-col h-full overflow-y-auto">
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700">요약</span>
-        <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        <div className="flex items-center gap-2">
+          <DownloadBtn onClick={() => downloadText(content, "요약.txt")} />
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
       </div>
       <div className="p-5">
         <div className="rounded-2xl p-4 bg-white border border-gray-200 text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
@@ -291,6 +341,7 @@ export function MemoView({
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 shrink-0">
         <span className="text-sm font-medium text-gray-700">메모</span>
         <div className="flex items-center gap-2">
+          <DownloadBtn onClick={() => downloadText(`${title}\n\n${content}`, `${title || "메모"}.txt`)} />
           {!readOnly && (
             <button
               onClick={handleSave}
@@ -411,11 +462,26 @@ export function QuizView({ quiz, onBack }: { quiz: any; onBack: () => void }) {
     );
   }
 
+  function quizDownload() {
+    const text = questions.map((q: any, i: number) => {
+      const lines = [`Q${i + 1}. ${q.question ?? ""}`];
+      if (Array.isArray(q.options)) q.options.forEach((o: string, j: number) => lines.push(`  ${OPTION_ALPHA[j]}. ${o}`));
+      const ans = resolveQuizAnswerIndex(q);
+      if (ans >= 0 && q.options?.[ans]) lines.push(`정답: ${OPTION_ALPHA[ans]}. ${q.options[ans]}`);
+      if (q.explanation) lines.push(`해설: ${q.explanation}`);
+      return lines.join("\n");
+    }).join("\n\n");
+    downloadText(text, `${toText(quiz?.title, "퀴즈")}.txt`);
+  }
+
   return (
     <div className="h-full bg-white flex flex-col">
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700">{toText(quiz?.title, "퀴즈")} {idx + 1}/{total}</span>
-        <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        <div className="flex items-center gap-2">
+          <DownloadBtn onClick={quizDownload} />
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
       </div>
       <div className="p-4 flex-1 overflow-y-auto">
         <div className="rounded-2xl p-4 mb-3 bg-white border border-gray-200">
@@ -509,7 +575,36 @@ export function AudioView({ audioBase64, audioUrl: propAudioUrl, script, title, 
     <div className="flex flex-col h-full overflow-y-auto bg-white">
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
-        <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        <div className="flex items-center gap-2">
+          {(audioBase64 || propAudioUrl) && (
+            <button
+              onClick={() => {
+                if (audioBase64) downloadBase64(audioBase64, `${title || "오디오"}.mp3`, "audio/mpeg");
+                else if (propAudioUrl) downloadUrl(propAudioUrl, `${title || "오디오"}.mp3`);
+              }}
+              title="오디오 다운로드"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              오디오
+            </button>
+          )}
+          {script && (
+            <button
+              onClick={() => downloadText(script, `${title || "오디오"}_스크립트.txt`)}
+              title="스크립트 다운로드"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              스크립트
+            </button>
+          )}
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
       </div>
       <div className="p-4 space-y-4">
         <div className="rounded-2xl p-4 bg-gradient-to-br from-teal-50 to-cyan-50 border border-teal-100">
@@ -630,7 +725,10 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
     <div className="h-full bg-white flex flex-col">
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700">{title}</span>
-        <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        <div className="flex items-center gap-2">
+          <DownloadBtn onClick={() => downloadText(cards.map((c, i) => `[카드 ${i + 1}]\n앞면: ${toText(c.front)}\n뒷면: ${toText(c.back)}${toText(c.hint) ? `\n힌트: ${toText(c.hint)}` : ""}`).join("\n\n"), `${title || "플래시카드"}.txt`)} />
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
       </div>
       <div className="px-4 pt-3 pb-1 shrink-0">
         <div className="flex justify-between text-xs text-gray-400 mb-1.5">
@@ -641,28 +739,28 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
           <div className="h-1.5 rounded-full transition-all" style={{ width: `${total > 0 ? (idx / total) * 100 : 0}%`, background: "#be123c" }} />
         </div>
       </div>
-      <div className="p-6 space-y-4 flex-1 flex flex-col justify-center">
+      <div className="p-6 space-y-4 flex-1 flex flex-col justify-center items-center">
         {card ? (
           <>
             <div
-              className="w-full cursor-pointer select-none"
+              className="w-full max-w-3xl cursor-pointer select-none"
               style={{ perspective: "1200px" }}
               onClick={() => { setFlipped((v) => !v); setShowHint(false); }}
             >
               <div
-                className="relative transition-transform duration-500"
-                style={{ transformStyle: "preserve-3d", transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)", minHeight: "280px" }}
+                className="relative transition-transform duration-500 aspect-[16/10] min-h-[280px]"
+                style={{ transformStyle: "preserve-3d", transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)" }}
               >
                 <div
                   className="absolute inset-0 rounded-2xl flex flex-col items-center justify-center p-10 text-center shadow-md border border-gray-100"
-                  style={{ backfaceVisibility: "hidden", background: "#1e1e2e", minHeight: "280px" }}
+                  style={{ backfaceVisibility: "hidden", background: "#1e1e2e" }}
                 >
                   <p className="text-white text-2xl font-semibold leading-relaxed">{toText(card.front)}</p>
                   {!flipped && <p className="text-gray-400 text-sm mt-5">정답 보기</p>}
                 </div>
                 <div
                   className="absolute inset-0 rounded-2xl flex flex-col items-center justify-center p-10 text-center shadow-md border border-pink-100"
-                  style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)", background: "white", minHeight: "280px" }}
+                  style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)", background: "white" }}
                 >
                   <p className="text-gray-800 text-xl font-medium leading-relaxed">{toText(card.back)}</p>
                   {toText(card.hint) && (
@@ -681,7 +779,7 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
             </div>
 
             {flipped ? (
-              <div className="flex items-center gap-3 w-full">
+              <div className="flex items-center gap-3 w-full max-w-3xl">
                 <button
                   onClick={() => handleKnow(false)}
                   className="flex-1 py-3 rounded-xl text-sm font-semibold border-2 border-red-200 text-red-500 hover:bg-red-50 transition-colors"
@@ -696,7 +794,7 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-3 justify-center">
+              <div className="flex items-center gap-3 justify-center w-full max-w-3xl">
                 <button
                   onClick={() => {
                     if (idx === 0) return;
@@ -764,6 +862,7 @@ export function SlideView({ slides, title, coverImageB64, onBack }: { slides: an
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700 truncate max-w-[280px]">{title}</span>
         <div className="flex items-center gap-3">
+          <DownloadBtn onClick={() => downloadText(slides.map((s, i) => `[슬라이드 ${i + 1}] ${toText(s.title)}\n${(s.bullets || []).join("\n")}${toText(s.speaker_notes) ? `\n[발표자 노트] ${toText(s.speaker_notes)}` : ""}`).join("\n\n"), `${title || "슬라이드"}.txt`)} />
           <button
             onClick={() => setShowNotes((v) => !v)}
             className="text-xs px-2.5 py-1 rounded-full border transition-colors"
@@ -910,6 +1009,207 @@ export function SlideView({ slides, title, coverImageB64, onBack }: { slides: an
   );
 }
 
+type MindmapNode = {
+  id: string;
+  text: string;
+  parent?: string;
+  children?: MindmapNode[];
+};
+
+function buildMindmapTree(flatNodes: MindmapNode[]): MindmapNode[] {
+  const map: Record<string, MindmapNode & { children: MindmapNode[] }> = {};
+  flatNodes.forEach((n) => {
+    map[n.id] = { ...n, children: [] };
+  });
+  const roots: MindmapNode[] = [];
+  flatNodes.forEach((n) => {
+    if (n.parent && map[n.parent]) map[n.parent].children.push(map[n.id]);
+    else roots.push(map[n.id]);
+  });
+  return roots;
+}
+
+function MindmapNodeItem({
+  node,
+  level,
+  expandedNodes,
+  onToggle,
+}: {
+  node: MindmapNode;
+  level: number;
+  expandedNodes: Set<string>;
+  onToggle: (id: string) => void;
+}) {
+  const isExpanded = expandedNodes.has(node.id);
+  const hasChildren = (node.children?.length ?? 0) > 0;
+  const colorClass =
+    level === 0
+      ? "bg-indigo-100 text-indigo-700 border-indigo-300 font-black text-sm"
+      : level === 1
+      ? "bg-blue-50 text-blue-700 border-blue-200 font-bold text-sm"
+      : "bg-emerald-50 text-emerald-700 border-emerald-200 text-xs font-medium";
+
+  return (
+    <div className="flex items-center">
+      <div
+        id={`studio-node-${node.id}`}
+        onClick={() => hasChildren && onToggle(node.id)}
+        className={`min-w-[110px] max-w-[170px] p-2.5 rounded-xl border-2 transition-all text-center select-none mx-6 ${
+          hasChildren ? "cursor-pointer hover:brightness-95 active:scale-95" : "cursor-default"
+        } ${colorClass}`}
+      >
+        <span className="break-words leading-snug block">{node.text}</span>
+        {hasChildren && <span className="opacity-30 text-[9px] ml-1">{isExpanded ? "-" : "+"}</span>}
+      </div>
+
+      {isExpanded && hasChildren && (
+        <div className="flex flex-col justify-center gap-5">
+          {(node.children ?? []).map((child) => (
+            <MindmapNodeItem
+              key={child.id}
+              node={child}
+              level={level + 1}
+              expandedNodes={expandedNodes}
+              onToggle={onToggle}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function MindMapView({ nodes, title, onBack }: { nodes: any[]; title: string; onBack: () => void }) {
+  const typedNodes = (nodes || []) as MindmapNode[];
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(["root"]));
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [lines, setLines] = useState<string[]>([]);
+  const [isGrabbing, setIsGrabbing] = useState(false);
+  const isDragging = useRef(false);
+  const dragStart = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
+
+  const treeData = buildMindmapTree(typedNodes);
+
+  const updateLines = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    const nextLines: string[] = [];
+
+    expandedNodes.forEach((parentId) => {
+      const parentEl = document.getElementById(`studio-node-${parentId}`);
+      if (!parentEl) return;
+      const pr = parentEl.getBoundingClientRect();
+      const px = pr.right - containerRect.left + container.scrollLeft;
+      const py = pr.top + pr.height / 2 - containerRect.top + container.scrollTop;
+
+      typedNodes
+        .filter((n) => n.parent === parentId)
+        .forEach((child) => {
+          const childEl = document.getElementById(`studio-node-${child.id}`);
+          if (!childEl) return;
+          const cr = childEl.getBoundingClientRect();
+          const cx = cr.left - containerRect.left + container.scrollLeft;
+          const cy = cr.top + cr.height / 2 - containerRect.top + container.scrollTop;
+          const cpx = px + (cx - px) / 2;
+          nextLines.push(`M ${px} ${py} C ${cpx} ${py}, ${cpx} ${cy}, ${cx} ${cy}`);
+        });
+    });
+
+    setLines(nextLines);
+  }, [expandedNodes, typedNodes]);
+
+  useEffect(() => {
+    const timer = setTimeout(updateLines, 120);
+    window.addEventListener("resize", updateLines);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("resize", updateLines);
+    };
+  }, [updateLines]);
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current || !containerRef.current) return;
+      const dx = e.clientX - dragStart.current.x;
+      const dy = e.clientY - dragStart.current.y;
+      containerRef.current.scrollLeft = dragStart.current.scrollLeft - dx;
+      containerRef.current.scrollTop = dragStart.current.scrollTop - dy;
+    };
+    const onMouseUp = () => {
+      if (!isDragging.current) return;
+      isDragging.current = false;
+      setIsGrabbing(false);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('[id^="studio-node-"]')) return;
+    isDragging.current = true;
+    setIsGrabbing(true);
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      scrollLeft: containerRef.current?.scrollLeft ?? 0,
+      scrollTop: containerRef.current?.scrollTop ?? 0,
+    };
+    e.preventDefault();
+  };
+
+  const toggleNode = (nodeId: string) => {
+    setExpandedNodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  };
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between shrink-0">
+        <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
+        <div className="flex items-center gap-2">
+          <DownloadBtn onClick={() => downloadJson(nodes, `${title || "마인드맵"}.json`)} />
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
+      </div>
+
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-auto bg-white p-12 flex items-start relative"
+        style={{ cursor: isGrabbing ? "grabbing" : "grab", userSelect: "none" }}
+        onMouseDown={handleCanvasMouseDown}
+        onScroll={updateLines}
+      >
+        <svg className="absolute top-0 left-0 pointer-events-none z-0" style={{ width: "100%", height: "100%" }}>
+          {lines.map((path, i) => (
+            <path key={i} d={path} fill="none" stroke="#cbd5e1" strokeWidth="2" strokeLinecap="round" />
+          ))}
+        </svg>
+
+        <div className="relative z-10 flex items-center">
+          {treeData.map((rootNode) => (
+            <MindmapNodeItem
+              key={rootNode.id}
+              node={rootNode}
+              level={0}
+              expandedNodes={expandedNodes}
+              onToggle={toggleNode}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ReportView({ sections, title, format, onBack }: { sections: any[]; title: string; format: string; onBack: () => void }) {
   function renderContent(text: string) {
     return text.split("\n").map((line, i) => {
@@ -934,7 +1234,10 @@ export function ReportView({ sections, title, format, onBack }: { sections: any[
     <div className="h-full bg-white flex flex-col overflow-y-auto">
       <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <p className="text-sm font-medium text-gray-700 truncate">{title}</p>
-        <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        <div className="flex items-center gap-2">
+          <DownloadBtn onClick={() => downloadText([title, "", ...sections.map((s, i) => `[${i + 1}. ${toText(s.heading)}]\n${toText(s.content)}`)].join("\n\n"), `${title || "보고서"}.txt`)} />
+          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
+        </div>
       </div>
       <div className="p-4 space-y-4">
         <div className="rounded-2xl p-4 bg-gradient-to-br from-green-50 to-emerald-50 border border-green-100">

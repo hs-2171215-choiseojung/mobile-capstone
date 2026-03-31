@@ -157,6 +157,7 @@ interface Props {
   openCreateType?: string | null;
   openCreateWeekId?: number | null;
   onOpenCreateHandled?: () => void;
+  onViewItem?: (item: any) => void;
 }
 
 const COUNT_MAP: Record<string, number> = { fewer: 3, standard: 5, more: 10 };
@@ -2085,7 +2086,7 @@ function VideoView({ videoBase64, title, onBack }: { videoBase64: string; title:
 }
 
 // ── Main StudioPanel ───────────────────────────────────────────────────────
-export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, weeks = [], onAddWeekTask, onRenameItem, onDeleteItem, openItemId, onOpenItemHandled, openCreateType, openCreateWeekId, onOpenCreateHandled }: Props) {
+export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, weeks = [], onAddWeekTask, onRenameItem, onDeleteItem, openItemId, onOpenItemHandled, openCreateType, openCreateWeekId, onOpenCreateHandled, onViewItem }: Props) {
   const [loadingType, setLoadingType] = useState<string | null>(null);
   const [showQuizModal, setShowQuizModal] = useState(false);
   const [showAudioModal, setShowAudioModal] = useState(false);
@@ -2251,6 +2252,13 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
             sections: (item.content?.sections as ReportSection[]) || [],
             format: (item.content?.format as string) || "briefing",
           } : undefined,
+          dataTable: item.type === "data" ? {
+            title: (item.content?.title as string) || item.title,
+            description: (item.content?.description as string) || "",
+            columns: (item.content?.columns as any[]) || (item.content?.headers as any[]) || [],
+            rows: (item.content?.rows as any[]) || (item.content?.data as any[]) || [],
+          } : undefined,
+          content: item.content,
         }));
         setSavedItems(loaded);
       } catch { /* 로드 실패 시 빈 목록 유지 */ }
@@ -3048,6 +3056,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
                 {/* Play button */}
                 <button
                   onClick={() => {
+                    if (onViewItem) { onViewItem(item); return; }
                     if (item.type === "quiz" && item.quiz) setActiveQuiz(item.quiz);
                     else if (item.type === "audio") setActiveAudio({ base64: item.audio?.base64, audioUrl: item.audioUrl, script: item.audio?.script || "", title: item.title });
                     else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });

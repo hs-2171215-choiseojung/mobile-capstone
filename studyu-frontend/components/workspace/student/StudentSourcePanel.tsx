@@ -1,6 +1,6 @@
 "use client";
 
-import { FileText, Link as LinkIcon, Image as ImageIcon, Video, Presentation } from 'lucide-react';
+import { FileText, Link as LinkIcon, Image as ImageIcon, PanelLeftClose, PanelLeftOpen, Video, Presentation } from 'lucide-react';
 
 interface DocumentInfo {
   id: string;
@@ -14,9 +14,18 @@ interface DocumentInfo {
 interface StudentSourcePanelProps {
   sources?: DocumentInfo[];
   onOpenSource?: (source: DocumentInfo) => void;
+  selectedSourceId?: string | null;
+  isOpen?: boolean;
+  onToggleOpen?: () => void;
 }
 
-export function StudentSourcePanel({ sources = [], onOpenSource }: StudentSourcePanelProps) {
+export function StudentSourcePanel({
+  sources = [],
+  onOpenSource,
+  selectedSourceId,
+  isOpen = true,
+  onToggleOpen,
+}: StudentSourcePanelProps) {
   
   const getIcon = (type: string) => {
     const lowerType = type.toLowerCase();
@@ -37,6 +46,13 @@ export function StudentSourcePanel({ sources = [], onOpenSource }: StudentSource
         <span className="text-gray-800 whitespace-nowrap uppercase tracking-wider" style={{ fontSize: "0.85rem", fontWeight: 700 }}>
           SOURCES
         </span>
+        <button
+          onClick={onToggleOpen}
+          className="p-1 text-gray-400 hover:text-[#155dfc] hover:bg-blue-50 rounded-lg transition-colors"
+          aria-label={isOpen ? "Close source panel" : "Open source panel"}
+        >
+          {isOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto py-2">
@@ -44,7 +60,9 @@ export function StudentSourcePanel({ sources = [], onOpenSource }: StudentSource
           <div 
             key={source.id} 
             onClick={() => onOpenSource?.(source)}
-            className="flex items-center gap-2.5 px-4 py-2 hover:bg-gray-50 transition-colors cursor-pointer group"
+            className={`flex items-center gap-2.5 px-4 py-2 transition-colors cursor-pointer group ${
+              selectedSourceId === source.id ? "bg-blue-50" : "hover:bg-gray-50"
+            }`}
           >
             <div 
               className="w-6 h-6 rounded flex items-center justify-center shrink-0" 
