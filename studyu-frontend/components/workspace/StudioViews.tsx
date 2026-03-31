@@ -641,28 +641,28 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
           <div className="h-1.5 rounded-full transition-all" style={{ width: `${total > 0 ? (idx / total) * 100 : 0}%`, background: "#be123c" }} />
         </div>
       </div>
-      <div className="p-6 space-y-4 flex-1 flex flex-col justify-center">
+      <div className="p-6 space-y-4 flex-1 flex flex-col justify-center items-center">
         {card ? (
           <>
             <div
-              className="w-full cursor-pointer select-none"
+              className="w-full max-w-3xl cursor-pointer select-none"
               style={{ perspective: "1200px" }}
               onClick={() => { setFlipped((v) => !v); setShowHint(false); }}
             >
               <div
-                className="relative transition-transform duration-500"
-                style={{ transformStyle: "preserve-3d", transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)", minHeight: "280px" }}
+                className="relative transition-transform duration-500 aspect-[16/10] min-h-[280px]"
+                style={{ transformStyle: "preserve-3d", transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)" }}
               >
                 <div
                   className="absolute inset-0 rounded-2xl flex flex-col items-center justify-center p-10 text-center shadow-md border border-gray-100"
-                  style={{ backfaceVisibility: "hidden", background: "#1e1e2e", minHeight: "280px" }}
+                  style={{ backfaceVisibility: "hidden", background: "#1e1e2e" }}
                 >
                   <p className="text-white text-2xl font-semibold leading-relaxed">{toText(card.front)}</p>
                   {!flipped && <p className="text-gray-400 text-sm mt-5">정답 보기</p>}
                 </div>
                 <div
                   className="absolute inset-0 rounded-2xl flex flex-col items-center justify-center p-10 text-center shadow-md border border-pink-100"
-                  style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)", background: "white", minHeight: "280px" }}
+                  style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)", background: "white" }}
                 >
                   <p className="text-gray-800 text-xl font-medium leading-relaxed">{toText(card.back)}</p>
                   {toText(card.hint) && (
@@ -681,7 +681,7 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
             </div>
 
             {flipped ? (
-              <div className="flex items-center gap-3 w-full">
+              <div className="flex items-center gap-3 w-full max-w-3xl">
                 <button
                   onClick={() => handleKnow(false)}
                   className="flex-1 py-3 rounded-xl text-sm font-semibold border-2 border-red-200 text-red-500 hover:bg-red-50 transition-colors"
@@ -696,7 +696,7 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-3 justify-center">
+              <div className="flex items-center gap-3 justify-center w-full max-w-3xl">
                 <button
                   onClick={() => {
                     if (idx === 0) return;
