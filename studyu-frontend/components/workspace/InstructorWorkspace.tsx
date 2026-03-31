@@ -4,7 +4,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import StudioPanel from "@/components/workspace/StudioPanel";
-import type { Doc } from "@/components/workspace/SourcePanel";
+import { inferDocType, type Doc } from "@/components/workspace/SourcePanel";
 import StudyULogo from "@/components/StudyULogo";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -133,7 +133,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       id: d.id,
       name: d.filename,
       chunks: d.chunk_count ?? 0,
-      type: (d.file_type === "url" || d.storage_path?.startsWith("http")) ? "url" : "pdf",
+      type: inferDocType(d.file_type, d.filename, d.storage_path ?? undefined),
     }))
   );
   const [activeDocIds, setActiveDocIds] = useState<string[]>(initialDocs.map((d) => d.id));

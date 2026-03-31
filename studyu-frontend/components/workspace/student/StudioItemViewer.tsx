@@ -8,8 +8,8 @@ import {
   ReportView,
   SummaryView,
   MemoView,
-  MindMapView,
 } from "../StudioViews";
+import MindMapView from "../MindMapView";
 
 const normalizeStudioType = (rawType: string) => {
   const typeMap: Record<string, string> = {

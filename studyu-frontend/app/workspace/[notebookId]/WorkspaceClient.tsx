@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import SourcePanel, { type Doc } from "@/components/workspace/SourcePanel";
+import SourcePanel, { inferDocType, type Doc } from "@/components/workspace/SourcePanel";
 import ChatPanel from "@/components/workspace/ChatPanel";
 import StudioPanel from "@/components/workspace/StudioPanel";
 import InstructorWorkspace from "@/components/workspace/InstructorWorkspace";
@@ -55,7 +55,7 @@ export default function WorkspaceClient({ notebook, initialDocs, backUrl, role =
       id: d.id,
       name: d.filename,
       chunks: d.chunk_count ?? 0,
-      type: (d.file_type === "url" || d.storage_path?.startsWith("http")) ? "url" : "pdf",
+      type: inferDocType(d.file_type, d.filename, d.storage_path ?? undefined),
     }))
   );
   const [activeDocIds, setActiveDocIds] = useState<string[]>(
