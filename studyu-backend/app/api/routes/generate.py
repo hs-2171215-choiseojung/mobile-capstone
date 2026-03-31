@@ -67,6 +67,7 @@ class GenerateRequest(BaseModel):
     difficulty: Optional[str] = "intermediate"
     item_title: Optional[str] = None  # 스튜디오 저장 시 표시 제목
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate")
@@ -110,6 +111,7 @@ async def generate(
                 "title": quiz_title,
                 "questions": parsed.get("questions", []),
                 "difficulty": req.difficulty or "intermediate",
+                "week_id": req.week_id,
             },
             notebook_id=req.notebook_id,
         )
@@ -121,7 +123,7 @@ async def generate(
         item_type=req.type,
         title=req.item_title or "요약",
         subtitle=f"요약 · 소스 {len(doc_ids)}개",
-        content={"text": result},
+        content={"text": result, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
     return {"result": result, "type": req.type, "item_id": item_id}
@@ -136,6 +138,7 @@ class AudioGenerateRequest(BaseModel):
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None  # 스튜디오 저장 시 표시 제목
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate/audio")
@@ -165,7 +168,7 @@ async def generate_audio(
         item_type="audio",
         title=title,
         subtitle=f"오디오 · 소스 {len(req.doc_ids)}개",
-        content={"script": script},
+        content={"script": script, "week_id": req.week_id},
         audio_bytes=audio_bytes,
         notebook_id=req.notebook_id,
     )
@@ -183,6 +186,7 @@ class MindmapGenerateRequest(BaseModel):
     focus: str = ""
     model: Optional[str] = "gpt-4o-mini"
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate/mindmap")
@@ -210,7 +214,7 @@ async def generate_mindmap_route(
         item_type="mindmap",
         title=title,
         subtitle=f"마인드맵 · 소스 {len(req.doc_ids)}개",
-        content={"nodes": nodes},
+        content={"nodes": nodes, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
     return {
@@ -229,6 +233,7 @@ class FlashcardGenerateRequest(BaseModel):
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate/flashcard")
@@ -258,7 +263,7 @@ async def generate_flashcard(
         item_type="flashcard",
         title=title,
         subtitle=f"플래시카드 · 소스 {len(req.doc_ids)}개",
-        content={"cards": cards, "difficulty": req.difficulty},
+        content={"cards": cards, "difficulty": req.difficulty, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
     return {
@@ -277,6 +282,7 @@ class SlideGenerateRequest(BaseModel):
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate/slides")
@@ -306,7 +312,7 @@ async def generate_slides_route(
         item_type="slides",
         title=title,
         subtitle=f"슬라이드 · 소스 {len(req.doc_ids)}개",
-        content={"slides": slides, "format": req.format, "cover_image_b64": cover_image_b64},
+        content={"slides": slides, "format": req.format, "cover_image_b64": cover_image_b64, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
     return {
@@ -327,6 +333,7 @@ class ReportGenerateRequest(BaseModel):
     model: Optional[str] = "gpt-4o-mini"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
 
 
 @router.post("/generate/report")
@@ -357,11 +364,104 @@ async def generate_report_route(
         item_type="report",
         title=title,
         subtitle=f"보고서 · 소스 {len(req.doc_ids)}개",
-        content={"sections": sections, "format": req.format},
+        content={"sections": sections, "format": req.format, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
     return {
         "sections": sections,
+        "title": title,
+        "item_id": item_id,
+    }
+
+
+class DataTableGenerateRequest(BaseModel):
+    doc_ids: list[str]
+    format: str = "summary_table"   # summary_table | comparison_table | concept_definition | learning_checklist | progress_tracking
+    language: str = "ko"            # ko | en | ja | zh
+    instructions: str = ""          # 사용자 커스텀 지시사항
+    model: Optional[str] = "gpt-4o-mini"
+    item_title: Optional[str] = None
+    notebook_id: Optional[str] = None
+    week_id: Optional[int] = None
+
+
+@router.post("/generate/data")
+async def generate_data_table_route(
+    req: DataTableGenerateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """문서 내용을 바탕으로 구조화된 데이터 표를 생성."""
+    if not req.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
+
+    from app.services.rag import generate_data_table
+    try:
+        title, description, columns, rows = generate_data_table(
+            doc_ids=req.doc_ids,
+            format=req.format,
+            language=req.language,
+            instructions=req.instructions,
+            model=req.model or "gpt-4o-mini",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"데이터 표 생성 실패: {str(e)}")
+
+    item_id = _save_studio_item(
+        user_id=user["id"],
+        item_type="data",
+        title=title,
+        subtitle=f"데이터표 · 소스 {len(req.doc_ids)}개",
+        content={"title": title, "description": description, "columns": columns, "rows": rows, "week_id": req.week_id},
+        notebook_id=req.notebook_id,
+    )
+    return {
+        "title": title,
+        "description": description,
+        "columns": columns,
+        "rows": rows,
+        "item_id": item_id,
+    }
+
+
+class VideoGenerateRequest(BaseModel):
+    doc_ids: list[str]
+    language: str = "ko"
+    length: str = "default"
+    model: Optional[str] = "gpt-4o-mini"
+    item_title: Optional[str] = None
+    notebook_id: Optional[str] = None
+
+
+@router.post("/generate/video")
+async def generate_video_route(
+    req: VideoGenerateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """문서 내용을 바탕으로 Remotion 비디오용 슬라이드+오디오 데이터를 생성."""
+    if not req.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
+
+    from app.services.rag import generate_video
+    try:
+        slides, title = generate_video(
+            doc_ids=req.doc_ids,
+            language=req.language,
+            length=req.length,
+            model=req.model or "gpt-4o-mini",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"동영상 스크립트 생성 실패: {str(e)}")
+
+    item_id = _save_studio_item(
+        user_id=user["id"],
+        item_type="video",
+        title=title,
+        subtitle=f"동영상 · 소스 {len(req.doc_ids)}개",
+        content={"slides": slides},
+        notebook_id=req.notebook_id,
+    )
+    return {
+        "slides": slides,
         "title": title,
         "item_id": item_id,
     }

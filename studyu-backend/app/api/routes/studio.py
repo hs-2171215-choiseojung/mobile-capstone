@@ -23,14 +23,40 @@ async def list_studio_items(
     user: dict = Depends(get_current_user),
 ):
     """사용자의 스튜디오 아이템을 최신순으로 반환. notebook_id로 필터링."""
-    query = (
-        supabase_admin
-        .table("studio_items")
-        .select("*")
-        .eq("user_id", user["id"])
-    )
+    query = supabase_admin.table("studio_items").select("*")
     if notebook_id:
+        nb = (
+            supabase_admin.table("notebooks")
+            .select("id, user_id")
+            .eq("id", notebook_id)
+            .single()
+            .execute()
+            .data
+        )
+        if not nb:
+            raise HTTPException(status_code=404, detail="노트북을 찾을 수 없습니다.")
+
+        owner_id = nb.get("user_id")
+        is_owner = owner_id == user["id"]
+        if not is_owner:
+            enrolled = (
+                supabase_admin.table("notebook_enrollments")
+                .select("id")
+                .eq("notebook_id", notebook_id)
+                .eq("student_id", user["id"])
+                .execute()
+                .data
+            )
+            if not enrolled:
+                raise HTTPException(status_code=403, detail="스튜디오 접근 권한이 없습니다.")
+
         query = query.eq("notebook_id", notebook_id)
+        if is_owner:
+            query = query.eq("user_id", owner_id)
+        else:
+            query = query.or_(f"user_id.eq.{owner_id},user_id.eq.{user['id']}")
+    else:
+        query = query.eq("user_id", user["id"])
     rows = query.order("created_at", desc=True).execute().data or []
     # 오디오 파일이 있는 항목은 1시간짜리 서명 URL 생성
     for item in rows:

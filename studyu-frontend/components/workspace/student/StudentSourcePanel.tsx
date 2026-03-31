@@ -8,14 +8,15 @@ interface DocumentInfo {
   file_type: string;
   byte_size?: number;
   storage_path?: string;
-  created_at: string;
+  created_at?: string;
 }
 
 interface StudentSourcePanelProps {
   sources?: DocumentInfo[];
+  onOpenSource?: (source: DocumentInfo) => void;
 }
 
-export function StudentSourcePanel({ sources = [] }: StudentSourcePanelProps) {
+export function StudentSourcePanel({ sources = [], onOpenSource }: StudentSourcePanelProps) {
   
   const getIcon = (type: string) => {
     const lowerType = type.toLowerCase();
@@ -42,6 +43,7 @@ export function StudentSourcePanel({ sources = [] }: StudentSourcePanelProps) {
         {sources.map((source) => (
           <div 
             key={source.id} 
+            onClick={() => onOpenSource?.(source)}
             className="flex items-center gap-2.5 px-4 py-2 hover:bg-gray-50 transition-colors cursor-pointer group"
           >
             <div 

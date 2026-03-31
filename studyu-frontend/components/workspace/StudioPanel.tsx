@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import type { Doc } from "./SourcePanel";
 
 const MindMapView = dynamic(() => import("./MindMapView"), { ssr: false });
+const DataTableView = dynamic(() => import("./DataTableView").then(m => ({ default: m.DataTableView })), { ssr: false });
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -92,9 +93,14 @@ interface MindmapNode {
   parent?: string;
 }
 
+interface VideoConfig {
+  language: string;
+  length: string;
+}
+
 interface SavedItem {
   id: string;
-  type: "summary" | "quiz" | "audio" | "mindmap" | "memo" | "flashcard" | "slides" | "report";
+  type: "summary" | "quiz" | "audio" | "mindmap" | "memo" | "flashcard" | "slides" | "report" | "data" | "video";
   title: string;
   subtitle: string;
   createdAt: Date;
@@ -107,6 +113,8 @@ interface SavedItem {
   flashcard?: { cards: FlashCard[]; difficulty: string };
   slides?: { slides: Slide[]; format: string; cover_image_b64?: string };
   report?: { sections: ReportSection[]; format: string };
+  dataTable?: { title: string; description?: string; columns: any[]; rows: any[] };
+  videoData?: { slides: any[] };
 }
 
 interface WeekSource {
@@ -220,6 +228,8 @@ const STUDIO_TASK_ITEMS: StudioTaskItem[] = [
     presets: ["단어·정의 카드","Q&A 카드","빈칸 채우기 카드","이미지 연상 카드","공식 암기 카드","사례 카드"] },
   { id: "quiz",      label: "퀴즈",             icon: "✅",
     presets: ["객관식 퀴즈","O/X 퀴즈","단답형 퀴즈","빈칸 채우기","서술형 퀴즈","사례 분석 퀴즈"] },
+  { id: "table",     label: "데이터 표",       icon: "📋",
+    presets: ["핵심 내용 정리표","비교 분석 표","개념 정의 표","학습 점검표","진도 추적 표","요약 데이터표"] },
 ];
 
 interface UnifiedConfig {
@@ -2012,6 +2022,68 @@ function ReportView({
   );
 }
 
+// ── VideoModal ─────────────────────────────────────────────────────────────
+function VideoModal({ loading, onClose, onGenerate }: { loading: boolean; onClose: () => void; onGenerate: (cfg: VideoConfig) => void }) {
+  const [cfg, setCfg] = useState<VideoConfig>({ language: "ko", length: "default" });
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6 flex flex-col gap-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-bold text-gray-800">AI 강의 영상 생성</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+        </div>
+        <div className="flex flex-col gap-3">
+          <div>
+            <label className="text-xs font-semibold text-gray-500 mb-1 block">언어</label>
+            <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" value={cfg.language} onChange={e => setCfg(c => ({ ...c, language: e.target.value }))}>
+              <option value="ko">한국어</option>
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+              <option value="zh">中文</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-gray-500 mb-1 block">길이</label>
+            <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" value={cfg.length} onChange={e => setCfg(c => ({ ...c, length: e.target.value }))}>
+              <option value="short">짧게 (4~5장)</option>
+              <option value="default">기본 (5~7장)</option>
+              <option value="long">길게 (7~10장)</option>
+            </select>
+          </div>
+        </div>
+        <button
+          disabled={loading}
+          onClick={() => onGenerate(cfg)}
+          className="w-full py-2.5 rounded-xl text-sm font-bold text-white transition-colors"
+          style={{ background: loading ? "#9ca3af" : "#6d28d9" }}
+        >
+          {loading ? "생성 중..." : "영상 생성"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── VideoView ───────────────────────────────────────────────────────────────
+function VideoView({ videoBase64, title, onBack }: { videoBase64: string; title: string; onBack: () => void }) {
+  return (
+    <div className="flex flex-col h-full bg-gray-950">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-800">
+        <button onClick={onBack} className="text-gray-400 hover:text-white text-sm">← 뒤로</button>
+        <span className="text-white font-semibold text-sm truncate">{title}</span>
+      </div>
+      <div className="flex-1 flex items-center justify-center p-4">
+        <video
+          controls
+          autoPlay
+          className="max-w-full max-h-full rounded-xl shadow-2xl"
+          src={`data:video/mp4;base64,${videoBase64}`}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ── Main StudioPanel ───────────────────────────────────────────────────────
 export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, weeks = [], onAddWeekTask, onRenameItem, onDeleteItem, openItemId, onOpenItemHandled, openCreateType, openCreateWeekId, onOpenCreateHandled }: Props) {
   const [loadingType, setLoadingType] = useState<string | null>(null);
@@ -2029,6 +2101,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
   const [activeFlashcard, setActiveFlashcard] = useState<{ cards: FlashCard[]; title: string } | null>(null);
   const [activeSlides, setActiveSlides] = useState<{ slides: Slide[]; title: string; cover_image_b64?: string } | null>(null);
   const [activeReport, setActiveReport] = useState<{ sections: ReportSection[]; title: string; format: string } | null>(null);
+  const [activeDataTable, setActiveDataTable] = useState<{ title: string; description?: string; columns: any[]; rows: any[] } | null>(null);
   const [summaryContent, setSummaryContent] = useState<string | null>(null);
   const [activeMemo, setActiveMemo] = useState<{ id: string | null; title: string; content: string } | null>(null);
   const [savedItems, setSavedItems] = useState<SavedItem[]>([]);
@@ -2053,6 +2126,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
     else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
     else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
+    else if (item.type === "data" && item.dataTable) setActiveDataTable({ title: item.dataTable.title, description: item.dataTable.description, columns: item.dataTable.columns, rows: item.dataTable.rows });
     else if (item.summaryContent) setSummaryContent(item.summaryContent);
     setIsExpanded(true);
     onOpenItemHandled?.();
@@ -2070,6 +2144,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
     else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
     else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
+    else if (item.type === "data" && item.dataTable) setActiveDataTable({ title: item.dataTable.title, description: item.dataTable.description, columns: item.dataTable.columns, rows: item.dataTable.rows });
     else if (item.summaryContent) setSummaryContent(item.summaryContent);
     setIsExpanded(true);
     setPendingOpenItemId(null);
@@ -2099,6 +2174,9 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     setCollapsedWeeks((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
   const [weekGeneratingFor, setWeekGeneratingFor] = useState<number | null>(null);
   const [showWeekTypePickerForId, setShowWeekTypePickerForId] = useState<number | null>(null);
+  const [showVideoModal, setShowVideoModal] = useState(false);
+  const [activeVideo, setActiveVideo] = useState<{ videoBase64: string; title: string } | null>(null);
+  const [videoRenderProgress, setVideoRenderProgress] = useState<string | null>(null);
 
   function getEffectiveDocIds(): string[] {
     if (weekGeneratingFor !== null) {
@@ -2681,6 +2759,28 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
         if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("report", title, `보고서 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
         else { setActiveReport({ sections: data.sections || [], title, format: cfg.format }); }
+      } else if (typeId === "table") {
+        const tableFormatMap: Record<string, string> = {
+          "핵심 내용 정리표": "summary_table",
+          "비교 분석 표": "comparison_table",
+          "개념 정의 표": "concept_definition",
+          "학습 점검표": "learning_checklist",
+          "진도 추적 표": "progress_tracking",
+          "요약 데이터표": "summary_table",
+        };
+        const tableFormat = tableFormatMap[cfg.format] || "summary_table";
+        const res = await fetch(`${API}/api/generate/data`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: docIds, format: tableFormat, language: lang, instructions: cfg.instructions, item_title: docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ") || "데이터표", notebook_id: notebookId }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+        const title = data.title || "데이터표";
+        const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "data", title, subtitle: `데이터표 · 소스 ${docIds.length}개`, createdAt: new Date(), dataTable: { title: data.title || "데이터표", description: data.description || "", columns: data.columns || [], rows: data.rows || [] } };
+        setSavedItems((prev) => [newItem, ...prev]);
+        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("data", title, `데이터표 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        else { setActiveDataTable({ title: data.title || "데이터표", description: data.description || "", columns: data.columns || [], rows: data.rows || [] }); }
       }
       setShowUnifiedModal(false);
       setUnifiedModalItem(null);
@@ -2688,6 +2788,54 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
       alert(`생성 실패: ${e instanceof Error ? e.message : "오류가 발생했습니다"}`);
     } finally {
       setLoadingType(null);
+    }
+  }
+
+  async function handleVideoGenerate(cfg: VideoConfig) {
+    const docIds = getEffectiveDocIds();
+    setLoadingType("video");
+    setVideoRenderProgress("슬라이드 스크립트 및 오디오 생성 중...");
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API}/api/generate/video`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          doc_ids: docIds,
+          language: cfg.language,
+          length: cfg.length,
+          notebook_id: notebookId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      const videoTitle = data.title || "동영상 개요";
+
+      setVideoRenderProgress("동영상 렌더링 중... (최대 3분 소요)");
+      const renderRes = await fetch("/api/render-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slides: data.slides }),
+      });
+      const renderData = await renderRes.json();
+      if (!renderRes.ok) throw new Error(renderData.error ?? "렌더링 실패");
+
+      const newItem: SavedItem = {
+        id: data.item_id || Date.now().toString(),
+        type: "video",
+        title: videoTitle,
+        subtitle: `동영상 · 소스 ${docIds.length}개`,
+        createdAt: new Date(),
+        videoData: { slides: data.slides },
+      };
+      setSavedItems((prev) => [newItem, ...prev]);
+      setActiveVideo({ videoBase64: renderData.videoBase64, title: videoTitle });
+      setShowVideoModal(false);
+    } catch (e: unknown) {
+      alert(`동영상 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
+    } finally {
+      setLoadingType(null);
+      setVideoRenderProgress(null);
     }
   }
 
@@ -2703,6 +2851,10 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
       setWeekGeneratingFor(forWeekId);
     }
     setShowWeekTypePickerForId(null);
+    if (typeId === "video") {
+      setShowVideoModal(true);
+      return;
+    }
     const taskItem = STUDIO_TASK_ITEMS.find((i) => i.id === typeId);
     if (taskItem) {
       setUnifiedModalItem(taskItem);
@@ -2753,6 +2905,8 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     activeFlashcard ? <FlashcardView cards={activeFlashcard.cards} title={activeFlashcard.title} onBack={() => handleSubviewBack(() => setActiveFlashcard(null))} /> :
     activeSlides ? <SlideView slides={activeSlides.slides} title={activeSlides.title} coverImageB64={activeSlides.cover_image_b64} onBack={() => handleSubviewBack(() => setActiveSlides(null))} /> :
     activeReport ? <ReportView sections={activeReport.sections} title={activeReport.title} format={activeReport.format} onBack={() => handleSubviewBack(() => setActiveReport(null))} /> :
+    activeDataTable ? <DataTableView data={activeDataTable} onBack={() => handleSubviewBack(() => setActiveDataTable(null))} /> :
+    activeVideo ? <VideoView videoBase64={activeVideo.videoBase64} title={activeVideo.title} onBack={() => setActiveVideo(null)} /> :
     null;
 
   if (subviewContent) {
@@ -2767,6 +2921,27 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
 
   return (
     <aside className={`flex flex-col bg-white overflow-hidden ${isExpanded ? "fixed inset-0 z-50" : "w-full h-full"}`}>
+      {showVideoModal && (
+        <VideoModal
+          loading={loadingType === "video"}
+          onClose={() => { setShowVideoModal(false); setWeekGeneratingFor(null); }}
+          onGenerate={handleVideoGenerate}
+        />
+      )}
+      {loadingType === "video" && videoRenderProgress && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl px-8 py-6 flex flex-col items-center gap-4 max-w-sm mx-4">
+            <div className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: "#dcf5dc" }}>
+              <svg className="w-6 h-6 text-green-700 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+            </div>
+            <p className="text-sm font-semibold text-gray-800 text-center">동영상 생성 중</p>
+            <p className="text-xs text-gray-500 text-center">{videoRenderProgress}</p>
+          </div>
+        </div>
+      )}
       {showUnifiedModal && unifiedModalItem && (
         <UnifiedGenerateModal
           item={unifiedModalItem}
@@ -2880,6 +3055,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
                     else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
                     else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
                     else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
+                    else if (item.type === "data" && item.dataTable) setActiveDataTable({ title: item.dataTable.title, description: item.dataTable.description, columns: item.dataTable.columns, rows: item.dataTable.rows });
                     else if (item.summaryContent) setSummaryContent(item.summaryContent);
                   }}
                   className="w-5 h-5 rounded-md bg-blue-500 flex items-center justify-center shrink-0 hover:bg-blue-600 transition-colors opacity-0 group-hover:opacity-100"
@@ -2970,7 +3146,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
                   {showWeekTypePickerForId === week.id && (
                     <div className="px-2 pb-2">
                       <div className="grid grid-cols-3 gap-1 rounded-xl p-1.5" style={{ background: "#EFF6FF" }}>
-                        {CONTENT_TYPES.filter((ct) => !["video", "infographic", "table"].includes(ct.id)).map((ct) => (
+                        {CONTENT_TYPES.filter((ct) => ct.id !== "infographic").map((ct) => (
                           <button
                             key={ct.id}
                             onClick={() => handleCardClick(ct.id, week.id)}

@@ -206,17 +206,32 @@ async def get_notebook(
         supabase_admin.table("notebooks")
         .select("*, documents(*)")
         .eq("id", notebook_id)
-        .eq("user_id", user["id"])
         .single()
         .execute()
     )
-
-    if not result.data:
+    notebook = result.data
+    if not notebook:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="노트북을 찾을 수 없습니다.",
         )
-    return result.data
+
+    is_owner = notebook.get("user_id") == user["id"]
+    if not is_owner:
+        enrolled = (
+            supabase_admin.table("notebook_enrollments")
+            .select("id")
+            .eq("notebook_id", notebook_id)
+            .eq("student_id", user["id"])
+            .execute()
+        )
+        if not enrolled.data:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="노트북 접근 권한이 없습니다.",
+            )
+
+    return notebook
 
 
 # ── 노트북 수정 ──

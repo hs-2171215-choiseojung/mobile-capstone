@@ -13,6 +13,7 @@ FastAPI가 자동으로 검증하고, 잘못된 데이터가 오면 에러를 �
 
 from pydantic import BaseModel, Field
 from datetime import datetime
+from typing import Any
 
 
 # ── 요청 스키마 ──
@@ -48,6 +49,7 @@ class NotebookResponse(BaseModel):
     notebook_type: str = "student"
     invite_code: str | None = None
     is_starred: bool = False
+    plan_data: list[dict[str, Any]] | None = None
     created_at: datetime
     updated_at: datetime
 

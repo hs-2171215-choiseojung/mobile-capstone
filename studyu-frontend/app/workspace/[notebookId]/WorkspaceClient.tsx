@@ -3,10 +3,11 @@
 import { useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import SourcePanel, { type Doc } from "@/components/workspace/SourcePanel";
+import SourcePanel, { inferDocType, type Doc } from "@/components/workspace/SourcePanel";
 import ChatPanel from "@/components/workspace/ChatPanel";
 import StudioPanel from "@/components/workspace/StudioPanel";
 import InstructorWorkspace from "@/components/workspace/InstructorWorkspace";
+import StudyULogo from "@/components/StudyULogo";
 
 interface Notebook {
   id: string;
@@ -54,7 +55,7 @@ export default function WorkspaceClient({ notebook, initialDocs, backUrl, role =
       id: d.id,
       name: d.filename,
       chunks: d.chunk_count ?? 0,
-      type: (d.file_type === "url" || d.storage_path?.startsWith("http")) ? "url" : "pdf",
+      type: inferDocType(d.file_type, d.filename, d.storage_path ?? undefined),
     }))
   );
   const [activeDocIds, setActiveDocIds] = useState<string[]>(
@@ -110,9 +111,7 @@ export default function WorkspaceClient({ notebook, initialDocs, backUrl, role =
             <span className="text-sm font-semibold text-gray-800 truncate max-w-[200px]">{notebook.title}</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center">
-              <span className="text-white font-bold text-xs">S</span>
-            </div>
+            <StudyULogo size={28} />
             <span className="text-sm font-bold text-gray-800">
               STUDY<span className="text-blue-600">:U</span>
             </span>
