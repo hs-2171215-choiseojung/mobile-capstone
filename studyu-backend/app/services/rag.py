@@ -1635,3 +1635,121 @@ def generate_video(
         })
 
     return slides_with_audio, video_title
+
+
+def generate_infographic(
+    doc_ids: list[str],
+    format: str = "overview",
+    language: str = "ko",
+    instructions: str = "",
+    model: str = "gpt-4o-mini",
+) -> tuple[str, str, list[dict]]:
+    """문서 내용을 바탕으로 인포그래픽을 생성.
+
+    반환: (title, description, sections)
+    - sections: 각각 title, icon, color, stat, stat_label, points를 가진 섹션 객체 리스트
+    """
+    context = _get_context(doc_ids, max_chars=6000)
+
+    colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#98D8C8", "#F7DC6F", "#BB8FCE"]
+
+    format_specs = {
+        "overview": {
+            "label": "개요형",
+            "instruction": "문서의 주요 내용을 5개의 주제별 섹션으로 요약합니다. 각 섹션은 제목, 이모지 아이콘, 색상, 핵심 포인트 3~4개를 포함합니다.",
+            "section_count": 5,
+            "stat_rule": "stat은 선택사항입니다. 문서에 명확한 수치나 통계가 있을 때만 포함하세요. 없으면 stat과 stat_label을 생략하세요.",
+        },
+        "process": {
+            "label": "프로세스형",
+            "instruction": "문서에서 설명하는 단계적 프로세스나 절차를 순서대로 4~5개의 섹션으로 나타냅니다.",
+            "section_count": 5,
+            "stat_rule": "stat은 필수입니다. 각 섹션마다 '1단계', '2단계', '3단계' 등의 형식으로 순서 번호를 포함하세요. stat_label에는 해당 단계의 핵심 행동을 한 줄로 적으세요.",
+        },
+        "comparison": {
+            "label": "비교형",
+            "instruction": "문서의 주요 개념이나 대상들의 특징과 차이를 비교 분석합니다. 4개의 섹션으로 나누어 각각의 장점, 특징, 사용 시기를 설명합니다.",
+            "section_count": 4,
+            "stat_rule": "stat은 선택사항입니다. 비교 대상의 수치 차이나 비율 데이터가 있을 때만 포함하세요. 명확한 수치가 없으면 생략해도 괜찮습니다.",
+        },
+        "statistics": {
+            "label": "통계형",
+            "instruction": "문서에서 강조하는 수치, 통계, 비율을 중심으로 4~5개의 섹션을 만듭니다.",
+            "section_count": 5,
+            "stat_rule": "stat은 필수입니다. 각 섹션마다 문서에서 가장 임팩트 있는 숫자나 비율을 포함하세요 (예: '85%', '3배', '1억명'). stat_label에는 그 수치의 맥락을 설명하세요. 모든 섹션에 stat이 있어야 합니다.",
+        },
+        "timeline": {
+            "label": "타임라인형",
+            "instruction": "문서가 다루는 역사적, 발전적, 또는 시간 순서의 흐름을 4~5개의 섹션으로 표현합니다.",
+            "section_count": 5,
+            "stat_rule": "stat은 필수입니다. 각 섹션의 시간을 명확히 표시하세요 (예: '2024년', '1990년대', '3월'). stat_label에는 그 시기의 핵심 사건이나 변화를 적으세요.",
+        },
+    }
+
+    spec = format_specs.get(format, format_specs["overview"])
+    language_label = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}.get(language, "한국어")
+    color_palette = ", ".join(colors)
+
+    prompt_text = f"""당신은 전문적인 교육 콘텐츠 크리에이터입니다.
+
+다음 문서 내용을 바탕으로 '{spec["label"]}' 형태의 인포그래픽을 생성하세요.
+
+【문서 내용】
+{context}
+
+【요청사항】
+- 형식: {spec["label"]}
+- {spec["instruction"]}
+- 섹션 개수: 약 {spec["section_count"]}개
+- 언어: {language_label}
+{f'- 추가 지시사항: {instructions}' if instructions else ''}
+
+【stat 필드 규칙】
+{spec["stat_rule"]}
+
+【JSON 응답 형식】
+각 섹션은 다음 구조를 가져야 합니다:
+- title: 섹션 제목 (문자열)
+- icon: 이모지 아이콘 (1개 이모지 문자)
+- color: 섹션 배경색 (hex 컬러 코드, 권장 팔레트: {color_palette})
+- stat: 위의 stat 필드 규칙에 따라 포함 또는 생략
+- stat_label: stat이 있을 때만 포함 (문자열)
+- points: 핵심 포인트 배열 (3~5개의 문자열)
+
+전체 응답:
+{{
+  "title": "전체 제목",
+  "description": "간단한 설명 (1~2문장)",
+  "sections": [
+    {{
+      "title": "섹션 제목",
+      "icon": "🎯",
+      "color": "#FF6B6B",
+      "stat": "85%",
+      "stat_label": "통계 설명",
+      "points": ["포인트 1", "포인트 2", "포인트 3"]
+    }}
+  ]
+}}
+
+올바른 JSON 형식으로만 응답하세요."""
+
+    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=safe_model,
+        messages=[{"role": "user", "content": prompt_text}],
+        response_format={"type": "json_object"},
+        temperature=0.7,
+    )
+
+    result = json.loads(response.choices[0].message.content or "{}")
+    title = result.get("title", "인포그래픽")
+    description = result.get("description", "")
+    sections = result.get("sections", [])
+
+    for idx, section in enumerate(sections):
+        if not section.get("color"):
+            section["color"] = colors[idx % len(colors)]
+
+    return title, description, sections

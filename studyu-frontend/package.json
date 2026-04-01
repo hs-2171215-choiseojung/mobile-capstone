@@ -13,6 +13,7 @@
     "@remotion/renderer": "^4.0.441",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.99.1",
+    "html2canvas": "^1.4.1",
     "lucide-react": "^0.383.0",
     "mind-elixir": "^5.9.3",
     "next": "^14.2.0",
