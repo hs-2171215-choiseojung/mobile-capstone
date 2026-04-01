@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
-import { BotMessageSquare, Mic, Send, Bot, Paperclip, Loader2, Trash2 } from 'lucide-react';
+import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 
 interface Doc {
@@ -28,21 +28,33 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // 자료별 채팅 키: 선택된 doc ID 기반 (없으면 노트북 전체)
+  const chatKey = activeDocIds.length > 0
+    ? `studyu_chat_${notebookId}_doc_${[...activeDocIds].sort().join('_')}`
+    : `studyu_chat_${notebookId}`;
+
+  const chatKeyRef = useRef(chatKey);
+
+  // activeDocIds 변경 시 해당 자료의 채팅 히스토리 로드
   useEffect(() => {
-    const savedMessages = localStorage.getItem(`studyu_chat_${notebookId}`);
+    chatKeyRef.current = chatKey;
+    setIsLoaded(false);
+    const savedMessages = localStorage.getItem(chatKey);
     if (savedMessages) {
       try {
         setMessages(JSON.parse(savedMessages));
       } catch (e) {
-        console.error("채팅 내역을 불러오는데 실패했습니다.", e);
+        setMessages([]);
       }
+    } else {
+      setMessages([]);
     }
     setIsLoaded(true);
-  }, [notebookId]);
+  }, [chatKey]);
 
   useEffect(() => {
     if (isLoaded) {
-      localStorage.setItem(`studyu_chat_${notebookId}`, JSON.stringify(messages));
+      localStorage.setItem(chatKeyRef.current, JSON.stringify(messages));
     }
     
     if (messagesEndRef.current) {
@@ -51,13 +63,13 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
         scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
       }
     }
-  }, [messages, isLoaded, notebookId]);
+  }, [messages, isLoaded]);
 
   // 대화 내역 초기화 기능
   const handleClearChat = () => {
     if (confirm("대화 내역을 모두 지우시겠습니까?")) {
       setMessages([]);
-      localStorage.removeItem(`studyu_chat_${notebookId}`);
+      localStorage.removeItem(chatKeyRef.current);
     }
   };
 
@@ -136,14 +148,38 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
       {/* 메시지 리스트 영역 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
         {messages.length === 0 && (
-          <div className="text-center py-10 flex flex-col items-center justify-center h-full opacity-60">
-            <Bot className="w-12 h-12 text-[#99a1af] mb-4" />
-            <p className="text-[14px] text-[#414751]">
-              학습 중 궁금한 점을 질문해 보세요.
-            </p>
-            <p className="text-[12px] text-[#99a1af] mt-1">
-              강사가 공유한 {docs.length}개의 소스를 기반으로 답변해 드립니다.
-            </p>
+          <div className="flex flex-col h-full">
+            {/* 인트로 */}
+            <div className="flex flex-col items-start gap-2 mb-4">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="text-[#155dfc]">
+                <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6L12 2z" fill="currentColor"/>
+              </svg>
+              <p className="text-[13px] text-[#414751] leading-relaxed">
+                안녕하세요! 학습 중 궁금한 점이 있으신가요?<br />
+                최선을 다해 도와드리겠습니다.
+              </p>
+              <p className="text-[11px] text-[#99a1af]">
+                어떻게 질문해야 할지 모르겠다면 아래 예시를 눌러보세요.
+              </p>
+            </div>
+            {/* 추천 질문 칩 */}
+            <div className="flex flex-col items-end gap-2">
+              {[
+                "이 자료를 요약해줘",
+                "핵심 개념을 설명해줘",
+                "어려운 부분을 쉽게 설명해줘",
+                "중요한 용어를 정리해줘",
+                "퀴즈 문제를 내줘",
+              ].map((q) => (
+                <button
+                  key={q}
+                  onClick={() => { setInputValue(q); }}
+                  className="px-3 py-1.5 rounded-full border border-[#e7e9ed] bg-white text-[12px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-colors text-right"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         
