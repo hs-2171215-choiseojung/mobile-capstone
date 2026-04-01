@@ -190,8 +190,18 @@ export function StudentSourceViewer({
             </div>
           </div>
         ) : isVideo ? (
-          <div className="h-full flex items-center justify-center">
-            <video ref={videoRef} src={sourceUrl} controls className="max-w-full max-h-full rounded-lg shadow-sm bg-black" />
+          <div className="h-full flex flex-col gap-4 p-4 overflow-y-auto">
+            <div className="bg-black rounded-xl overflow-hidden flex items-center justify-center">
+              <video ref={videoRef} src={sourceUrl} controls className="max-w-full rounded-lg" style={{ maxHeight: "calc(100vh - 320px)" }} />
+            </div>
+            {transcriptText && (
+              <div>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">변환된 텍스트</p>
+                <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">
+                  {transcriptText}
+                </div>
+              </div>
+            )}
           </div>
         ) : isAudio ? (
           <div className="h-full flex flex-col gap-4 p-4 overflow-y-auto">

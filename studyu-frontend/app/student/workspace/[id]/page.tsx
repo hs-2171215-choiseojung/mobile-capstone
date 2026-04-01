@@ -212,7 +212,9 @@ export default function StudentWorkspacePage() {
       .filter(Boolean) as string[]
   );
 
-  const cards = weekPlans.map((week, index) => {
+  const cards = weekPlans
+    .filter((week) => (week as any).status === "ACTIVE")
+    .map((week, index) => {
     const weekSources = week.sources ?? [];
     const weekDocs = mergeUniqueDocuments(
       weekSources
@@ -344,8 +346,9 @@ export default function StudentWorkspacePage() {
       if (!token) { setSelectedSourceError("로그인이 필요합니다."); return; }
 
       const ext = doc.filename.toLowerCase().split(".").pop() ?? doc.file_type;
+      const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
       const needsUrl = !TEXT_ONLY_EXTS.has(ext);
-      const needsText = AUDIO_EXTS.has(ext) || TEXT_ONLY_EXTS.has(ext);
+      const needsText = AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext) || TEXT_ONLY_EXTS.has(ext);
 
       const fetches: Promise<void>[] = [];
 
@@ -608,7 +611,7 @@ export default function StudentWorkspacePage() {
               <StudentStudioPanel 
                 studioItems={studioItems} 
                 docs={displayDocs}
-                weeks={weekPlans}
+                weeks={weekPlans.filter((w) => (w as any).status === "ACTIVE")}
                 notebookId={notebookId}
                 currentUserId={currentUserId}
                 onRefresh={() => fetchData()}

@@ -263,13 +263,7 @@ export function StudentStudioPanel({
         return hasVisibleTitle(item.title);
       });
 
-      if (unassignedStudioItems.length > 0) {
-        sections.push({
-          id: 0,
-          title: "주차 미지정",
-          allItems: unassignedStudioItems,
-        });
-      }
+      // 주차 미지정 항목은 학생에게 표시하지 않음
 
       return sections;
     },

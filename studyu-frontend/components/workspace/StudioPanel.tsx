@@ -3025,7 +3025,29 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
               <span className="text-gray-400" style={{ fontSize: "0.65rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>생성된 자료</span>
             </div>
             {savedItems.map((item) => (
-              <div key={item.id} className="flex items-center gap-2 px-4 py-1.5 hover:bg-gray-50 transition-colors cursor-pointer group">
+              <div
+                key={item.id}
+                className="flex items-center gap-2 px-4 py-1.5 hover:bg-gray-50 transition-colors cursor-grab group"
+                draggable={true}
+                onDragStart={(e) => {
+                  const ICONS: Record<string, { icon: string; iconBg: string }> = {
+                    audio: { icon: "🎧", iconBg: "#d0f5f1" },
+                    slides: { icon: "📊", iconBg: "#fef0da" },
+                    video: { icon: "🎬", iconBg: "#dcf5dc" },
+                    mindmap: { icon: "🗺️", iconBg: "#f0e6ff" },
+                    report: { icon: "📝", iconBg: "#dcf2e8" },
+                    flashcard: { icon: "🃏", iconBg: "#fde0ea" },
+                    quiz: { icon: "❓", iconBg: "#dbeafe" },
+                    infographic: { icon: "📈", iconBg: "#ede8ff" },
+                    data: { icon: "📋", iconBg: "#f1f3f4" },
+                  };
+                  const { icon, iconBg } = ICONS[item.type] ?? { icon: "📄", iconBg: "#f1f3f4" };
+                  e.dataTransfer.setData("application/studio-item", JSON.stringify({
+                    id: item.id, type: item.type, title: item.title, subtitle: item.subtitle, icon, iconBg,
+                  }));
+                  e.dataTransfer.effectAllowed = "copy";
+                }}
+              >
                 {/* Type icon — week4 style: small blue square */}
                 <div
                   className="w-5 h-5 rounded flex items-center justify-center shrink-0 text-blue-500"

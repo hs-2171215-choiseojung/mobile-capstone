@@ -302,11 +302,16 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple
     if not text:
         return 0, page_count
 
+    # 비디오/오디오 파일은 청크 앞에 전사(STT) 태그를 붙여 AI가 인식할 수 있게 함
+    is_video_audio = ext in VIDEO_AUDIO_EXTENSIONS
+
     chunks: list[str] = []
     step = CHUNK_SIZE - CHUNK_OVERLAP
     for i in range(0, len(text), step):
         chunk = _hard_sanitize(_sanitize(text[i: i + CHUNK_SIZE]))
         if chunk.strip():
+            if is_video_audio:
+                chunk = f"[음성 전사 내용 - {filename}]\n{chunk}"
             chunks.append(chunk)
 
     if not chunks:
@@ -742,15 +747,30 @@ def chat_with_docs(
 
     level_hint = LEVEL_PROMPTS.get(level, LEVEL_PROMPTS["intermediate"])
 
+    # 비디오/오디오 파일 여부 확인 (시스템 프롬프트에 안내 추가용)
+    video_audio_exts = VIDEO_AUDIO_EXTENSIONS
+    doc_filenames = _get_filenames(doc_ids)
+    has_video = any(
+        name.lower().rsplit(".", 1)[-1] in video_audio_exts
+        for name in doc_filenames
+        if "." in name
+    )
+    video_note = (
+        "\n\n중요: 비디오 또는 오디오 파일이 포함되어 있습니다. "
+        "[음성 전사 내용 - 파일명] 태그가 붙은 내용은 해당 영상/음성의 음성을 텍스트로 변환한 것입니다. "
+        "'동영상이 뭘 말하나요?', '영상 내용 요약해줘' 같은 질문에는 이 전사 내용을 바탕으로 답변하세요."
+        if has_video else ""
+    )
+
     if is_multi:
-        doc_names = _get_filenames(doc_ids)
+        doc_names = doc_filenames
         names_str = ", ".join(f"'{n}'" for n in doc_names)
         system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
 총 {len(doc_ids)}개의 문서({names_str})가 제공됩니다.
 반드시 각 문서를 모두 참조하여 답변하세요.
 '**[문서명]** 에서는 ~', '**[문서명]** 에 따르면 ~' 형식으로 각 문서의 내용을 명확히 구분하여 서술하세요.
 답변 시 {level_hint}
-제공된 문서 내용에서 최대한 찾아서 답변하세요.
+제공된 문서 내용에서 최대한 찾아서 답변하세요.{video_note}
 
 <context>
 {context}
@@ -759,7 +779,7 @@ def chat_with_docs(
         system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
 아래 문서 내용을 바탕으로 질문에 답변하세요.
 답변 시 {level_hint}
-제공된 문서 내용에서 최대한 찾아서 답변하세요. 정말로 알 수 없을 때만 "문서에서 찾을 수 없습니다"라고 하세요.
+제공된 문서 내용에서 최대한 찾아서 답변하세요. 정말로 알 수 없을 때만 "문서에서 찾을 수 없습니다"라고 하세요.{video_note}
 
 <context>
 {context}
