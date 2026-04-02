@@ -66,12 +66,15 @@ export default function StudentWorkspacePage() {
   const [expandedCenterWeeks, setExpandedCenterWeeks] = useState<number[]>([]);
   const [centerWeeksHydrated, setCenterWeeksHydrated] = useState(false);
 
+  const [isDataLoading, setIsDataLoading] = useState(true);
+
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatWidth, setChatWidth] = useState(380);
 
   const centerScrollRef = useRef<HTMLDivElement | null>(null);
   const centerScrollTopRef = useRef(0);
   const shouldRestoreCenterScrollRef = useRef(false);
+  const weekCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   const toText = (value: unknown, fallback = ""): string => {
     if (typeof value === "string") return value;
@@ -129,6 +132,8 @@ export default function StudentWorkspacePage() {
   };
 
   const fetchData = async () => {
+    setIsDataLoading(true);
+    try {
     const supabase = createClient();
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData.session?.access_token;
@@ -174,6 +179,9 @@ export default function StudentWorkspacePage() {
       setStudioItems(Array.isArray(studioData) ? studioData : []);
     } else {
       setStudioItems([]);
+    }
+    } finally {
+      setIsDataLoading(false);
     }
   };
 
@@ -381,6 +389,21 @@ export default function StudentWorkspacePage() {
     }
   };
 
+  const scrollToWeek = (weekNumber: number) => {
+    setExpandedCenterWeeks((prev) =>
+      prev.includes(weekNumber) ? prev : [...prev, weekNumber]
+    );
+    setTimeout(() => {
+      const el = weekCardRefs.current.get(weekNumber);
+      if (el && centerScrollRef.current) {
+        const container = centerScrollRef.current;
+        const elRect = el.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        container.scrollTo({ top: container.scrollTop + elRect.top - containerRect.top - 16, behavior: "smooth" });
+      }
+    }, 50);
+  };
+
   const closeSource = () => {
     if (selectedSourceUrl.startsWith("blob:")) {
       URL.revokeObjectURL(selectedSourceUrl);
@@ -496,55 +519,156 @@ export default function StudentWorkspacePage() {
               </div>
             </div>
 
+            {/* 진도현황 고정 헤더 */}
+            <div className="shrink-0 bg-white border-b border-[#e7e9ed] px-[20px] py-3 z-10">
+              <div className="max-w-[900px] mx-auto">
+                {isDataLoading ? (
+                  <div className="animate-pulse">
+                    <div className="h-3 w-16 bg-[#d1d5db] rounded mb-2" />
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(16, 1fr)', gap: '6px' }}>
+                      {Array.from({ length: 16 }).map((_, i) => (
+                        <div key={i} className="flex flex-col items-center gap-1">
+                          <div className="w-7 h-7 rounded-full bg-[#e7e9ed]" />
+                          <div className="h-2 w-3 bg-[#e7e9ed] rounded" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (() => {
+                  const totalWeeks = Math.max(16, weekPlans.length);
+                  const weekNums = Array.from({ length: totalWeeks }, (_, i) => i + 1);
+                  const cols = totalWeeks <= 16 ? 16 : Math.ceil(totalWeeks / Math.ceil(totalWeeks / 16));
+                  return (
+                    <>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[12px] font-semibold text-[#2d3748]">진도현황</span>
+                        <div className="flex items-center gap-3">
+                          <span className="flex items-center gap-1 text-[10px] text-[#414751]">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#155dfc] inline-block" />
+                            활성 {cards.length}주차
+                          </span>
+                          <span className="flex items-center gap-1 text-[10px] text-[#414751]">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#d1d5db] inline-block" />
+                            미공개 {totalWeeks - cards.length}주차
+                          </span>
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: '4px' }}>
+                        {weekNums.map((weekNum) => {
+                          const isActive = cards.some((c) => c.weekNumber === weekNum);
+                          return (
+                            <button
+                              key={weekNum}
+                              onClick={() => isActive && scrollToWeek(weekNum)}
+                              disabled={!isActive}
+                              className={`flex flex-col items-center gap-0.5 ${isActive ? "group cursor-pointer" : "cursor-default"}`}
+                              title={isActive ? `${weekNum}주차로 이동` : `${weekNum}주차`}
+                            >
+                              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold border-2 transition-all ${isActive ? "group-hover:scale-110" : ""} ${
+                                isActive
+                                  ? "bg-[#155dfc] border-[#155dfc] text-white shadow-sm"
+                                  : "bg-white border-[#d1d5db] text-[#9ca3af]"
+                              }`}>
+                                {weekNum}
+                              </div>
+                              <span className={`text-[8px] font-medium leading-none ${isActive ? "text-[#155dfc]" : "text-[#9ca3af]"}`}>
+                                {isActive ? `${weekNum}주` : "-"}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+
             {/* 콘텐츠 + 우측 채팅 패널 */}
             <div className="flex flex-1 overflow-hidden">
-              <div ref={centerScrollRef} className="flex-1 overflow-y-auto px-[32px] py-[32px]">
-                <div className="max-w-[800px] mx-auto">
-                  <div className="mb-[32px]">
-                    <h1 className="font-['Inter'] text-[30px] font-semibold text-[#1a1d26] tracking-[-0.75px] leading-[36px]">
+              <div ref={centerScrollRef} className="flex-1 overflow-y-auto px-[20px] py-[20px]">
+                <div className="max-w-[900px] mx-auto">
+                  <div className="mb-[16px]">
+                    <h1 className="font-['Inter'] text-[22px] font-semibold text-[#1a1d26] tracking-[-0.5px] leading-[28px]">
                       Weekly Study Plan
                     </h1>
-                    <p className="font-['Inter'] text-[16px] text-[#99a1af] mt-[4px] leading-[24px]">
+                    <p className="font-['Inter'] text-[13px] text-[#99a1af] mt-[2px] leading-[20px]">
                       {toText(notebookTitle, "노트북")} • Student Mode
                     </p>
                   </div>
-                  <div className="flex flex-col gap-[48px] pb-10">
-                    {cards.length === 0 ? (
-                      <div className="text-sm text-gray-400 bg-gray-50 border border-dashed border-gray-200 rounded-xl px-5 py-6 text-center">
-                        강사가 추가한 주차가 아직 없습니다.
-                      </div>
-                    ) : (
-                      cards.map((card) => (
-                        <WeeklyPlanCard
-                          key={card.key}
-                          weekNumber={card.weekNumber}
-                          weekTitle={card.weekTitle}
-                          instruct={card.instruct}
-                          items={card.items}
-                          isExpanded={expandedCenterWeeks.includes(card.weekNumber)}
-                          onToggleExpanded={() => {
-                            setExpandedCenterWeeks((prev) =>
-                              prev.includes(card.weekNumber)
-                                ? prev.filter((id) => id !== card.weekNumber)
-                                : [...prev, card.weekNumber]
-                            );
-                          }}
-                          onOpenItem={(item) => {
-                            centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
-                            setSelectedItem(item);
-                          }}
-                          onOpenDoc={(doc) => {
-                            const targetDocId = doc?.resolvedDocId || doc?.sourceDocId || doc?.id;
-                            if (!targetDocId) return;
-                            const targetDoc = displayDocs.find((candidate) => candidate.id === targetDocId);
-                            if (!targetDoc) return;
-                            centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
-                            void openSourceDocument(targetDoc);
-                          }}
-                        />
-                      ))
-                    )}
-                  </div>
+
+                  {/* 카드 로딩 스켈레톤 */}
+                  {isDataLoading && (
+                    <div className="animate-pulse">
+                      {Array.from({ length: 3 }).map((_, i) => (
+                        <div key={i} className="mb-[28px]">
+                          <div className="flex items-center gap-2.5 pb-2.5 border-b border-gray-200 mb-3">
+                            <div className="w-4 h-4 rounded bg-[#e7e9ed]" />
+                            <div className="h-4 w-32 bg-[#e7e9ed] rounded" />
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            {Array.from({ length: 2 }).map((_, j) => (
+                              <div key={j} className="flex items-center px-3 py-2.5 border border-gray-200 rounded-lg">
+                                <div className="w-8 h-8 rounded-lg bg-[#e7e9ed] mr-3 shrink-0" />
+                                <div className="flex-1">
+                                  <div className="h-3.5 w-40 bg-[#e7e9ed] rounded mb-1.5" />
+                                  <div className="h-2.5 w-24 bg-[#f3f4f6] rounded" />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 카드 */}
+                  {!isDataLoading && (
+                    <div className="flex flex-col gap-[28px] pb-10">
+                      {cards.length === 0 ? (
+                        <div className="text-sm text-gray-400 bg-gray-50 border border-dashed border-gray-200 rounded-xl px-5 py-6 text-center">
+                          강사가 추가한 주차가 아직 없습니다.
+                        </div>
+                      ) : (
+                        cards.map((card) => (
+                          <div
+                            key={card.key}
+                            ref={(el) => {
+                              if (el) weekCardRefs.current.set(card.weekNumber, el);
+                              else weekCardRefs.current.delete(card.weekNumber);
+                            }}
+                          >
+                            <WeeklyPlanCard
+                              weekNumber={card.weekNumber}
+                              weekTitle={card.weekTitle}
+                              instruct={card.instruct}
+                              items={card.items}
+                              isExpanded={expandedCenterWeeks.includes(card.weekNumber)}
+                              onToggleExpanded={() => {
+                                setExpandedCenterWeeks((prev) =>
+                                  prev.includes(card.weekNumber)
+                                    ? prev.filter((id) => id !== card.weekNumber)
+                                    : [...prev, card.weekNumber]
+                                );
+                              }}
+                              onOpenItem={(item) => {
+                                centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
+                                setSelectedItem(item);
+                              }}
+                              onOpenDoc={(doc) => {
+                                const targetDocId = doc?.resolvedDocId || doc?.sourceDocId || doc?.id;
+                                if (!targetDocId) return;
+                                const targetDoc = displayDocs.find((candidate) => candidate.id === targetDocId);
+                                if (!targetDoc) return;
+                                centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
+                                void openSourceDocument(targetDoc);
+                              }}
+                            />
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
