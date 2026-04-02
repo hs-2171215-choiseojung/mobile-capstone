@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
-import { BotMessageSquare, Mic, Send, Bot, Paperclip, Loader2, Trash2 } from 'lucide-react';
+import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 
 interface Doc {
@@ -25,24 +25,71 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  interface Suggestion { text: string; category: "이해" | "분석" | "적용"; }
+  const CATEGORY_STYLE: Record<string, { bg: string; text: string; border: string }> = {
+    이해: { bg: "bg-blue-50",   text: "text-blue-600",  border: "border-blue-200" },
+    분석: { bg: "bg-purple-50", text: "text-purple-600", border: "border-purple-200" },
+    적용: { bg: "bg-green-50",  text: "text-green-600",  border: "border-green-200" },
+  };
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([
+    { text: "이 자료의 핵심 개념을 설명해줘", category: "이해" },
+    { text: "주요 내용들 간의 관계를 분석해줘", category: "분석" },
+    { text: "실제로 어떻게 활용할 수 있을까?", category: "적용" },
+  ]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const askedQuestionsRef = useRef<string[]>([]);
+  const clickedIndexRef = useRef<number>(-1);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // 자료별 채팅 키: 선택된 doc ID 기반 (없으면 노트북 전체)
+  const chatKey = activeDocIds.length > 0
+    ? `studyu_chat_${notebookId}_doc_${[...activeDocIds].sort().join('_')}`
+    : `studyu_chat_${notebookId}`;
+
+  const chatKeyRef = useRef(chatKey);
+
+  // activeDocIds 변경 시 추천 질문 fetch
   useEffect(() => {
-    const savedMessages = localStorage.getItem(`studyu_chat_${notebookId}`);
+    const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
+    if (targetDocIds.length === 0) return;
+    let cancelled = false;
+    setSuggestionsLoading(true);
+    getToken().then((token) =>
+      fetch(`${API}/api/chat/suggestions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ doc_ids: targetDocIds, asked_questions: [] }),
+      })
+        .then((r) => r.json())
+        .then((data) => { if (!cancelled && data.questions?.length) setSuggestions(data.questions.slice(0, 3) as Suggestion[]); })
+        .catch(() => {})
+        .finally(() => { if (!cancelled) setSuggestionsLoading(false); })
+    );
+    askedQuestionsRef.current = [];
+    return () => { cancelled = true; };
+  }, [activeDocIds.join(","), docs.map(d => d.id).join(",")]);
+
+  // activeDocIds 변경 시 해당 자료의 채팅 히스토리 로드
+  useEffect(() => {
+    chatKeyRef.current = chatKey;
+    setIsLoaded(false);
+    const savedMessages = localStorage.getItem(chatKey);
     if (savedMessages) {
       try {
         setMessages(JSON.parse(savedMessages));
       } catch (e) {
-        console.error("채팅 내역을 불러오는데 실패했습니다.", e);
+        setMessages([]);
       }
+    } else {
+      setMessages([]);
     }
     setIsLoaded(true);
-  }, [notebookId]);
+  }, [chatKey]);
 
   useEffect(() => {
     if (isLoaded) {
-      localStorage.setItem(`studyu_chat_${notebookId}`, JSON.stringify(messages));
+      localStorage.setItem(chatKeyRef.current, JSON.stringify(messages));
     }
     
     if (messagesEndRef.current) {
@@ -51,13 +98,13 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
         scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
       }
     }
-  }, [messages, isLoaded, notebookId]);
+  }, [messages, isLoaded]);
 
   // 대화 내역 초기화 기능
   const handleClearChat = () => {
     if (confirm("대화 내역을 모두 지우시겠습니까?")) {
       setMessages([]);
-      localStorage.removeItem(`studyu_chat_${notebookId}`);
+      localStorage.removeItem(chatKeyRef.current);
     }
   };
 
@@ -106,6 +153,29 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
       const data = await res.json();
       setMessages(prev => [...prev, { type: 'ai', content: data.answer }]);
 
+      // 클릭한 인덱스 자리만 새 질문으로 교체
+      askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
+      const replacingIndex = clickedIndexRef.current;
+      if (replacingIndex >= 0) {
+        getToken().then((t) =>
+          fetch(`${API}/api/chat/suggestions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+            body: JSON.stringify({ doc_ids: targetDocIds, asked_questions: askedQuestionsRef.current }),
+          })
+            .then((r) => r.json())
+            .then((d) => {
+              if (d.questions?.length) {
+                setSuggestions((prev) => {
+                  const next = [...prev];
+                  next[replacingIndex] = d.questions[0] as Suggestion;
+                  return next;
+                });
+              }
+            })
+            .catch(() => {})
+        );
+      }
     } catch (error: any) {
       setMessages(prev => [...prev, { type: 'system', content: `[오류] ${error.message}` }]);
     } finally {
@@ -136,14 +206,36 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
       {/* 메시지 리스트 영역 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
         {messages.length === 0 && (
-          <div className="text-center py-10 flex flex-col items-center justify-center h-full opacity-60">
-            <Bot className="w-12 h-12 text-[#99a1af] mb-4" />
-            <p className="text-[14px] text-[#414751]">
-              학습 중 궁금한 점을 질문해 보세요.
-            </p>
-            <p className="text-[12px] text-[#99a1af] mt-1">
-              강사가 공유한 {docs.length}개의 소스를 기반으로 답변해 드립니다.
-            </p>
+          <div className="flex flex-col h-full">
+            <div className="flex flex-col items-start gap-2 mb-4">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="text-[#155dfc]">
+                <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6L12 2z" fill="currentColor"/>
+              </svg>
+              <p className="text-[13px] text-[#414751] leading-relaxed">
+                안녕하세요! 학습 중 궁금한 점이 있으신가요?<br />
+                최선을 다해 도와드리겠습니다.
+              </p>
+              <p className="text-[11px] text-[#99a1af]">
+                어떻게 질문해야 할지 모르겠다면 아래 예시를 눌러보세요.
+              </p>
+            </div>
+            <div className="flex flex-col items-end gap-2">
+              {[
+                "이 자료를 요약해줘",
+                "핵심 개념을 설명해줘",
+                "어려운 부분을 쉽게 설명해줘",
+                "중요한 용어를 정리해줘",
+                "퀴즈 문제를 내줘",
+              ].map((q) => (
+                <button
+                  key={q}
+                  onClick={() => setInputValue(q)}
+                  className="px-3 py-1.5 rounded-full border border-[#e7e9ed] bg-white text-[12px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-colors text-right"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         
@@ -174,8 +266,67 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
         <div ref={messagesEndRef} />
       </div>
 
+      {/* 추천 질문 — 채팅 시작 후에만 표시 */}
+      {messages.length > 0 && <div className="shrink-0 px-3 py-3 border-t border-[#e7e9ed] bg-[#f8f9fb]">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[11px] font-medium text-[#99a1af] flex items-center gap-1.5">
+            <span className="text-amber-400 text-xs">✦</span>
+            이런 건 어떠세요?
+          </span>
+          <button
+            onClick={() => {
+              const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
+              if (!targetDocIds.length || suggestionsLoading) return;
+              setSuggestionsLoading(true);
+              getToken().then((token) =>
+                fetch(`${API}/api/chat/suggestions`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                  body: JSON.stringify({ doc_ids: targetDocIds, asked_questions: askedQuestionsRef.current }),
+                })
+                  .then((r) => r.json())
+                  .then((d) => { if (d.questions?.length) setSuggestions(d.questions.slice(0, 3) as Suggestion[]); })
+                  .catch(() => {})
+                  .finally(() => setSuggestionsLoading(false))
+              );
+            }}
+            disabled={suggestionsLoading}
+            title="새 질문 추천받기"
+            className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
+          >
+            <svg className={`w-3.5 h-3.5 ${suggestionsLoading ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none">
+              <path d="M1 4v6h6M23 20v-6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          {suggestionsLoading
+            ? Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-8 rounded-lg bg-[#e7e9ed]/60 animate-pulse" />
+              ))
+            : suggestions.map((s, i) => {
+                const borderColor = ["border-l-blue-400", "border-l-purple-400", "border-l-emerald-400"][i] ?? "border-l-blue-400";
+                return (
+                  <button
+                    key={s.text}
+                    onClick={() => { clickedIndexRef.current = i; setInputValue(s.text); }}
+                    disabled={isLoading}
+                    className={`w-full flex items-center gap-2.5 pl-3 pr-2.5 py-2.5 bg-white rounded-lg border border-[#e7e9ed] border-l-2 ${borderColor} text-left hover:border-[#c8cdd5] hover:shadow-sm transition-all disabled:opacity-40 group`}
+                  >
+                    <span className="text-[12px] text-[#414751] flex-1 leading-snug">{s.text}</span>
+                    <svg className="w-3.5 h-3.5 text-[#c8cdd5] group-hover:text-[#155dfc] shrink-0 transition-colors" viewBox="0 0 24 24" fill="none">
+                      <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+                );
+              })
+          }
+        </div>
+      </div>}
+
       {/* 입력 영역 */}
-      <div className="p-3 bg-white flex flex-col gap-2 shrink-0 border-t border-[#e7e9ed]">
+      <div className="p-3 bg-white flex flex-col gap-2 shrink-0">
         <div className="relative flex items-end gap-2 bg-[#f8f9fb] rounded-xl p-1.5 focus-within:ring-2 focus-within:ring-[#155dfc]/20 transition-all border border-[#e7e9ed] focus-within:border-[#155dfc]/30 shadow-sm">
           <button className="p-2 text-[#99a1af] hover:text-[#155dfc] hover:bg-white rounded-lg transition-colors shrink-0">
             <Paperclip className="w-4 h-4" />

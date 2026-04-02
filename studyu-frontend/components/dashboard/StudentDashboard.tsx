@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import CreateNotebookButton from "@/components/dashboard/CreateNotebookButton";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -20,7 +19,7 @@ interface Notebook {
 }
 
 interface Props {
-  notebooks: Notebook[];
+  notebooks?: Notebook[];
   enrolledNotebooks: Notebook[];
   userName: string;
 }
@@ -60,102 +59,80 @@ function parseErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-export default function StudentDashboard({ notebooks: initial, enrolledNotebooks: initialEnrolled, userName }: Props) {
+export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, userName }: Props) {
   const router = useRouter();
-  const [notebooks, setNotebooks] = useState<Notebook[]>(() => initial.map(normalizeNotebook));
   const [enrolledNotebooks, setEnrolledNotebooks] = useState<Notebook[]>(() => initialEnrolled.map(normalizeNotebook));
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<"newest" | "oldest" | "name">("newest");
-  const [confirmId, setConfirmId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [editId, setEditId] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [savingId, setSavingId] = useState<string | null>(null);
   const [joinModalOpen, setJoinModalOpen] = useState(false);
   const [joinCode, setJoinCode] = useState("");
   const [joining, setJoining] = useState(false);
+  const [enrolledConfirmId, setEnrolledConfirmId] = useState<string | null>(null);
+  const [leavingId, setLeavingId] = useState<string | null>(null);
+  const [enrolledEditId, setEnrolledEditId] = useState<string | null>(null);
+  const [enrolledEditTitle, setEnrolledEditTitle] = useState("");
 
   const filtered = useMemo(() => {
     const searchText = search.toLowerCase();
-    return [...notebooks]
+    return [...enrolledNotebooks]
       .filter((nb) => toText(nb.title).toLowerCase().includes(searchText))
       .sort((a, b) => {
+        // 즐겨찾기가 항상 맨 앞
+        if (a.is_starred && !b.is_starred) return -1;
+        if (!a.is_starred && b.is_starred) return 1;
         if (sort === "newest") return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
         if (sort === "oldest") return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
         return toText(a.title).localeCompare(toText(b.title));
       });
-  }, [notebooks, search, sort]);
+  }, [enrolledNotebooks, search, sort]);
 
-  const recent = notebooks.slice(0, 3);
+  const recent = useMemo(() => {
+    return [...enrolledNotebooks]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 3);
+  }, [enrolledNotebooks]);
 
-  async function toggleStar(id: string) {
-    const target = notebooks.find((nb) => nb.id === id);
-    if (!target) return;
+  async function toggleEnrolledStar(id: string) {
+    setEnrolledNotebooks((prev) =>
+      prev.map((nb) => (nb.id === id ? { ...nb, is_starred: !nb.is_starred } : nb))
+    );
+  }
 
-    const newValue = !target.is_starred;
-    setNotebooks((prev) => prev.map((nb) => (nb.id === id ? { ...nb, is_starred: newValue } : nb)));
-
+  function handleEnrolledRename(id: string) {
+    if (!enrolledEditTitle.trim()) return;
+    const newTitle = enrolledEditTitle.trim();
+    setEnrolledNotebooks((prev) =>
+      prev.map((nb) => (nb.id === id ? { ...nb, title: newTitle } : nb))
+    );
     try {
-      const supabase = createClient();
-      const { data: session } = await supabase.auth.getSession();
-      const token = session.session?.access_token;
-      await fetch(`${API}/api/notebooks/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ is_starred: newValue }),
-      });
+      localStorage.setItem(`notebook-custom-title:${id}`, newTitle);
     } catch {
-      // ignore optimistic update sync failure
+      // ignore storage errors
     }
+    setEnrolledEditId(null);
   }
 
-  async function handleSaveTitle(id: string) {
-    if (!editTitle.trim()) return;
-
-    setSavingId(id);
+  async function handleLeave(id: string) {
+    setLeavingId(id);
     try {
       const supabase = createClient();
       const { data: session } = await supabase.auth.getSession();
       const token = session.session?.access_token;
       if (!token) throw new Error("로그인이 필요합니다.");
 
-      const res = await fetch(`${API}/api/notebooks/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ title: editTitle.trim() }),
-      });
-      if (!res.ok) throw new Error("수정에 실패했습니다.");
-
-      setNotebooks((prev) => prev.map((nb) => (nb.id === id ? { ...nb, title: editTitle.trim() } : nb)));
-      setEditId(null);
-    } catch (error: unknown) {
-      alert(`수정 실패: ${parseErrorMessage(error, "오류")}`);
-    } finally {
-      setSavingId(null);
-    }
-  }
-
-  async function handleDelete(id: string) {
-    setDeletingId(id);
-    try {
-      const supabase = createClient();
-      const { data: session } = await supabase.auth.getSession();
-      const token = session.session?.access_token;
-      if (!token) throw new Error("로그인이 필요합니다.");
-
-      const res = await fetch(`${API}/api/notebooks/${id}`, {
+      const res = await fetch(`${API}/api/notebooks/${id}/leave`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok && res.status !== 204) throw new Error("삭제에 실패했습니다.");
+      if (!res.ok && res.status !== 204) throw new Error("나가기에 실패했습니다.");
 
-      setNotebooks((prev) => prev.filter((nb) => nb.id !== id));
+      setEnrolledNotebooks((prev) => prev.filter((nb) => nb.id !== id));
       router.refresh();
     } catch (error: unknown) {
-      alert(`삭제 실패: ${parseErrorMessage(error, "오류")}`);
+      alert(`나가기 실패: ${parseErrorMessage(error, "오류")}`);
     } finally {
-      setDeletingId(null);
-      setConfirmId(null);
+      setLeavingId(null);
+      setEnrolledConfirmId(null);
     }
   }
 
@@ -232,17 +209,11 @@ export default function StudentDashboard({ notebooks: initial, enrolledNotebooks
     }
   }
 
-  const formatDate = (dateStr: string) =>
-    new Date(dateStr).toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric" });
-
-  const getDocCount = (nb: Notebook) =>
-    Array.isArray(nb.documents) ? nb.documents[0]?.count || 0 : 0;
-
   return (
     <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">안녕하세요, {userName}님</h1>
-        <p className="text-gray-500 mt-1">계속 공부할 거면 새 노트북을 만들어보세요.</p>
+        <p className="text-gray-500 mt-1">오늘도 열심히 학습해봐요!</p>
       </div>
 
       {recent.length > 0 && (
@@ -250,27 +221,6 @@ export default function StudentDashboard({ notebooks: initial, enrolledNotebooks
           <h2 className="text-base font-semibold text-gray-900 mb-4">최근에 연 노트북</h2>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {recent.map((nb) => (
-              <Link
-                key={nb.id}
-                href={`/workspace/${nb.id}?from=/dashboard/student`}
-                className="p-4 bg-gradient-to-br from-blue-50 to-blue-100 border border-blue-200 rounded-xl hover:shadow-md hover:border-blue-300 transition-all"
-              >
-                <h3 className="font-semibold text-blue-900 truncate">{toText(nb.title)}</h3>
-                <div className="flex items-center justify-between mt-2">
-                  <span className="text-xs text-blue-600">총 {getDocCount(nb)}개 자료</span>
-                  <span className="text-xs text-blue-500">바로 열기</span>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {enrolledNotebooks.length > 0 && (
-        <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
-          <h2 className="text-base font-semibold text-gray-900 mb-4">참여 중인 노트북</h2>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {enrolledNotebooks.map((nb) => (
               <Link
                 key={nb.id}
                 href={`/student/workspace/${nb.id}?from=/dashboard/student`}
@@ -289,17 +239,14 @@ export default function StudentDashboard({ notebooks: initial, enrolledNotebooks
 
       <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-base font-semibold text-gray-900">내 노트북 ({notebooks.length}개)</h2>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setJoinModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-2 border border-blue-300 text-blue-600 text-sm font-medium rounded-lg hover:bg-blue-50 transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-              코드로 참여
-            </button>
-            <CreateNotebookButton from="/dashboard/student" />
-          </div>
+          <h2 className="text-base font-semibold text-gray-900">참여 중인 노트북 ({enrolledNotebooks.length}개)</h2>
+          <button
+            onClick={() => setJoinModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 border border-purple-300 text-purple-600 text-sm font-medium rounded-lg hover:bg-purple-50 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            코드로 참여
+          </button>
         </div>
 
         <div className="flex items-center gap-3 mb-5">
@@ -312,13 +259,13 @@ export default function StudentDashboard({ notebooks: initial, enrolledNotebooks
               placeholder="노트북 검색..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
             />
           </div>
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
-            className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
           >
             <option value="newest">최신순</option>
             <option value="oldest">오래된순</option>
@@ -328,15 +275,15 @@ export default function StudentDashboard({ notebooks: initial, enrolledNotebooks
 
         {filtered.length === 0 ? (
           <div className="text-center py-12 text-gray-400 text-sm">
-            {search ? "검색 결과가 없습니다." : "노트북이 없습니다. 새 노트북을 만들어보세요!"}
+            {search ? "검색 결과가 없습니다." : "참여 중인 노트북이 없습니다. 강사에게 초대 코드를 받아보세요!"}
           </div>
         ) : (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {filtered.map((nb) => (
-              <div key={nb.id} className="relative group bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-md transition-shadow">
-                <div className="h-1.5 bg-blue-500" />
+              <div key={nb.id} className="relative group bg-white border border-purple-200 rounded-xl overflow-hidden hover:shadow-md transition-shadow">
+                <div className="h-1.5 bg-purple-400" />
                 <button
-                  onClick={() => toggleStar(nb.id)}
+                  onClick={() => toggleEnrolledStar(nb.id)}
                   className="absolute top-4 right-3 z-10 p-1 rounded hover:bg-gray-100 transition-colors"
                   title={nb.is_starred ? "즐겨찾기 해제" : "즐겨찾기"}
                 >
@@ -346,37 +293,33 @@ export default function StudentDashboard({ notebooks: initial, enrolledNotebooks
                   }
                 </button>
                 <div className="p-4">
-                  <Link href={`/workspace/${nb.id}?from=/dashboard/student`} className="block flex-1 min-w-0">
-                    <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors truncate pr-6">
+                  <Link href={`/student/workspace/${nb.id}?from=/dashboard/student`} className="block flex-1 min-w-0">
+                    <h3 className="font-semibold text-gray-900 group-hover:text-purple-600 transition-colors truncate pr-6">
                       {toText(nb.title)}
                     </h3>
                   </Link>
-                  {nb.description && (
-                    <p className="mt-1 text-xs text-gray-500 line-clamp-2">{nb.description}</p>
-                  )}
                   <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-xs">
-                    <span className="text-gray-500">총 {getDocCount(nb)}개</span>
-                    <span className="text-gray-400">{formatDate(nb.created_at)}</span>
+                    <span className="text-purple-500">강사 노트북</span>
                   </div>
                   <div className="flex items-center gap-1 absolute top-4 right-10">
                     <button
                       onClick={() => {
-                        setEditId(nb.id);
-                        setEditTitle(toText(nb.title));
+                        setEnrolledEditId(nb.id);
+                        setEnrolledEditTitle(toText(nb.title));
                       }}
-                      className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-blue-50"
+                      className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-purple-50"
                     >
-                      <svg className="w-3.5 h-3.5 text-gray-400 hover:text-blue-500" fill="none" viewBox="0 0 24 24">
+                      <svg className="w-3.5 h-3.5 text-gray-400 hover:text-purple-500" fill="none" viewBox="0 0 24 24">
                         <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                         <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                       </svg>
                     </button>
                     <button
-                      onClick={() => setConfirmId(nb.id)}
+                      onClick={() => setEnrolledConfirmId(nb.id)}
                       className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-red-50"
                     >
                       <svg className="w-3.5 h-3.5 text-gray-400 hover:text-red-500" fill="none" viewBox="0 0 24 24">
-                        <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                       </svg>
                     </button>
                   </div>
@@ -387,59 +330,55 @@ export default function StudentDashboard({ notebooks: initial, enrolledNotebooks
         )}
       </div>
 
-      {editId && (
+      {enrolledEditId && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setEditId(null);
-          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setEnrolledEditId(null); }}
         >
           <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl p-6">
             <h2 className="font-semibold text-gray-900 mb-4">노트북 이름 수정</h2>
             <input
               autoFocus
               type="text"
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
+              value={enrolledEditTitle}
+              onChange={(e) => setEnrolledEditTitle(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") handleSaveTitle(editId);
-                if (e.key === "Escape") setEditId(null);
+                if (e.key === "Enter") handleEnrolledRename(enrolledEditId);
+                if (e.key === "Escape") setEnrolledEditId(null);
               }}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 mb-4"
             />
             <div className="flex gap-2 justify-end">
-              <button onClick={() => setEditId(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100">취소</button>
+              <button onClick={() => setEnrolledEditId(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100">취소</button>
               <button
-                onClick={() => handleSaveTitle(editId)}
-                disabled={savingId === editId || !editTitle.trim()}
-                className="px-5 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+                onClick={() => handleEnrolledRename(enrolledEditId)}
+                disabled={!enrolledEditTitle.trim()}
+                className="px-5 py-2 rounded-lg text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-60"
               >
-                {savingId === editId ? "저장 중..." : "저장"}
+                저장
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {confirmId && (
+      {enrolledConfirmId && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setConfirmId(null);
-          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setEnrolledConfirmId(null); }}
         >
           <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl p-6">
-            <h2 className="font-semibold text-gray-900 mb-1">노트북 삭제</h2>
-            <p className="text-sm text-gray-500 mb-4">&ldquo;{toText(notebooks.find((n) => n.id === confirmId)?.title)}&rdquo;</p>
-            <p className="text-sm text-gray-600 mb-5">삭제하면 모든 자료와 학습 기록이 사라집니다.</p>
+            <h2 className="font-semibold text-gray-900 mb-1">노트북 나가기</h2>
+            <p className="text-sm text-gray-500 mb-4">&ldquo;{toText(enrolledNotebooks.find((n) => n.id === enrolledConfirmId)?.title)}&rdquo;</p>
+            <p className="text-sm text-gray-600 mb-5">이 노트북에서 나가면 더 이상 접근할 수 없습니다.</p>
             <div className="flex gap-2 justify-end">
-              <button onClick={() => setConfirmId(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100">취소</button>
+              <button onClick={() => setEnrolledConfirmId(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100">취소</button>
               <button
-                onClick={() => handleDelete(confirmId)}
-                disabled={deletingId === confirmId}
+                onClick={() => handleLeave(enrolledConfirmId)}
+                disabled={leavingId === enrolledConfirmId}
                 className="px-5 py-2 rounded-lg text-sm font-semibold bg-red-500 text-white hover:bg-red-600 disabled:opacity-60"
               >
-                {deletingId === confirmId ? "삭제 중..." : "삭제"}
+                {leavingId === enrolledConfirmId ? "나가는 중..." : "나가기"}
               </button>
             </div>
           </div>
@@ -473,14 +412,14 @@ export default function StudentDashboard({ notebooks: initial, enrolledNotebooks
                 }
               }}
               maxLength={6}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-center tracking-widest font-bold text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-center tracking-widest font-bold text-purple-600 focus:outline-none focus:ring-2 focus:ring-purple-500 mb-4"
             />
             <div className="flex gap-2 justify-end">
               <button onClick={() => { setJoinModalOpen(false); setJoinCode(""); }} className="px-4 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100">취소</button>
               <button
                 onClick={handleJoin}
                 disabled={joining || joinCode.trim().length < 1}
-                className="px-5 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+                className="px-5 py-2 rounded-lg text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-60"
               >
                 {joining ? "참여 중..." : "참여하기"}
               </button>

@@ -155,6 +155,25 @@ async def join_notebook(
     return notebook
 
 
+# ── 참여 노트북 나가기 ──
+@router.delete("/notebooks/{notebook_id}/leave")
+async def leave_notebook(
+    notebook_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """학생이 참여 중인 노트북에서 나갑니다."""
+    result = (
+        supabase_admin.table("notebook_enrollments")
+        .delete()
+        .eq("notebook_id", notebook_id)
+        .eq("student_id", user["id"])
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="참여 중인 노트북을 찾을 수 없습니다.")
+    return {"message": "노트북에서 나갔습니다."}
+
+
 # ── 노트북 수강 학생 목록 (고정 경로 → /{id} 보다 먼저 등록) ──
 @router.get("/notebooks/{notebook_id}/students")
 async def get_notebook_students(
