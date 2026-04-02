@@ -99,7 +99,7 @@ interface VideoConfig {
   length: string;
 }
 
-interface SavedItem {
+export interface SavedItem {
   id: string;
   type: "summary" | "quiz" | "audio" | "mindmap" | "memo" | "flashcard" | "slides" | "report" | "data" | "video" | "infographic";
   title: string;
@@ -159,7 +159,12 @@ interface Props {
   openCreateType?: string | null;
   openCreateWeekId?: number | null;
   onOpenCreateHandled?: () => void;
+  openMemoRequest?: number;
+  onOpenMemoHandled?: () => void;
+  forcePortalSubviews?: boolean;
   onViewItem?: (item: any) => void;
+  onSavedItemsChange?: (items: SavedItem[]) => void;
+  hideCollections?: boolean;
 }
 
 const COUNT_MAP: Record<string, number> = { fewer: 3, standard: 5, more: 10 };
@@ -1014,24 +1019,29 @@ function MemoView({
   initialId,
   initialTitle,
   initialContent,
+  weeks,
+  initialWeekId,
   onBack,
   onSave,
 }: {
   initialId: string | null;
   initialTitle: string;
   initialContent: string;
+  weeks: Week[];
+  initialWeekId: number | null;
   onBack: () => void;
-  onSave: (id: string | null, title: string, content: string) => Promise<string>;
+  onSave: (id: string | null, title: string, content: string, weekId: number | null) => Promise<string>;
 }) {
   const [title, setTitle] = useState(initialTitle);
   const [content, setContent] = useState(initialContent);
+  const [selectedWeekId, setSelectedWeekId] = useState<number | null>(initialWeekId);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
   async function handleSave() {
     setSaving(true);
     try {
-      await onSave(initialId, title, content);
+      await onSave(initialId, title, content, selectedWeekId);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } finally {
@@ -1052,27 +1062,41 @@ function MemoView({
           </svg>
           스튜디오
         </button>
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="px-4 py-1.5 rounded-full text-xs font-semibold transition-all flex items-center gap-1.5"
-          style={{
-            background: saved ? "#e6f4ea" : "#1a73e8",
-            color: saved ? "#137333" : "white",
-            opacity: saving ? 0.7 : 1,
-          }}
-        >
-          {saving ? (
-            <Spinner className="w-3 h-3" />
-          ) : saved ? (
-            <>
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-              저장됨
-            </>
-          ) : "저장"}
-        </button>
+        <div className="flex items-center gap-2">
+          <select
+            value={selectedWeekId === null ? "" : String(selectedWeekId)}
+            onChange={(e) => setSelectedWeekId(e.target.value ? Number(e.target.value) : null)}
+            className="px-3 py-1.5 rounded-full border border-gray-200 bg-white text-xs font-medium text-gray-600 outline-none"
+          >
+            <option value="">주차 없음</option>
+            {weeks.map((week, idx) => (
+              <option key={week.id} value={week.id}>
+                {week.title || `Week ${idx + 1}`}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-4 py-1.5 rounded-full text-xs font-semibold transition-all flex items-center gap-1.5"
+            style={{
+              background: saved ? "#e6f4ea" : "#1a73e8",
+              color: saved ? "#137333" : "white",
+              opacity: saving ? 0.7 : 1,
+            }}
+          >
+            {saving ? (
+              <Spinner className="w-3 h-3" />
+            ) : saved ? (
+              <>
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                저장됨
+              </>
+            ) : "저장"}
+          </button>
+        </div>
       </div>
 
       {/* 제목 */}
@@ -2090,7 +2114,7 @@ function VideoView({ videoBase64, title, onBack }: { videoBase64: string; title:
 }
 
 // ── Main StudioPanel ───────────────────────────────────────────────────────
-export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, weeks = [], onAddWeekTask, onRenameItem, onDeleteItem, openItemId, onOpenItemHandled, openCreateType, openCreateWeekId, onOpenCreateHandled, onViewItem }: Props) {
+export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, weeks = [], onAddWeekTask, onRenameItem, onDeleteItem, openItemId, onOpenItemHandled, openCreateType, openCreateWeekId, onOpenCreateHandled, openMemoRequest, onOpenMemoHandled, forcePortalSubviews = false, onViewItem, onSavedItemsChange, hideCollections = false }: Props) {
   const [loadingType, setLoadingType] = useState<string | null>(null);
   const [showQuizModal, setShowQuizModal] = useState(false);
   const [showAudioModal, setShowAudioModal] = useState(false);
@@ -2116,6 +2140,10 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [pendingOpenItemId, setPendingOpenItemId] = useState<string | null>(null);
 
+  useEffect(() => {
+    onSavedItemsChange?.(savedItems);
+  }, [onSavedItemsChange, savedItems]);
+
   // openItemId: 외부에서 특정 아이템을 전체화면으로 열도록 요청
   useEffect(() => {
     if (!openItemId) return;
@@ -2129,6 +2157,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     if (item.type === "quiz" && item.quiz) setActiveQuiz(item.quiz);
     else if (item.type === "audio") setActiveAudio({ base64: item.audio?.base64, audioUrl: item.audioUrl, script: item.audio?.script || "", title: item.title });
     else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });
+    else if (item.type === "memo") setActiveMemo({ id: item.id, title: item.title, content: item.memoContent ?? "" });
     else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
     else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
     else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
@@ -2175,6 +2204,12 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openCreateType]);
 
+  useEffect(() => {
+    if (!openMemoRequest) return;
+    setActiveMemo({ id: null, title: "", content: "" });
+    onOpenMemoHandled?.();
+  }, [onOpenMemoHandled, openMemoRequest]);
+
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [collapsedWeeks, setCollapsedWeeks] = useState<number[]>([]);
@@ -2202,6 +2237,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
       quiz: { icon: "❓", iconBg: "#dbeafe" },
       flashcard: { icon: "🃏", iconBg: "#fde0ea" },
       report: { icon: "📝", iconBg: "#dcf2e8" },
+      memo: { icon: "📝", iconBg: "#e8f0fe" },
     };
     const { icon, iconBg } = icons[type] || { icon: "📄", iconBg: "#f1f3f4" };
     const resolvedWeekId = weekId !== undefined ? weekId : weekGeneratingFor!;
@@ -2286,8 +2322,11 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     } catch { /* 삭제 실패 무시 */ }
   }
 
-  async function handleSaveMemo(id: string | null, title: string, content: string): Promise<string> {
+  async function handleSaveMemo(id: string | null, title: string, content: string, weekId: number | null): Promise<string> {
     const token = await getToken();
+    const resolvedTitle = title || "제목 없음";
+    const resolvedSubtitle = "메모";
+
     if (id) {
       // 기존 메모 수정
       await fetch(`${API}/api/studio/memo/${id}`, {
@@ -2297,9 +2336,14 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
       });
       setSavedItems((prev) =>
         prev.map((item) =>
-          item.id === id ? { ...item, title: title || "제목 없음", memoContent: content } : item
+          item.id === id ? { ...item, title: resolvedTitle, memoContent: content } : item
         )
       );
+      onRenameItem?.(id, resolvedTitle);
+      onDeleteItem?.(id);
+      if (weekId !== null) {
+        onAddWeekTask?.(weekId, buildWeekTask("memo", resolvedTitle, resolvedSubtitle, weekId, id));
+      }
       return id;
     } else {
       // 새 메모 생성
@@ -2313,12 +2357,15 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
       const newItem: SavedItem = {
         id: newId,
         type: "memo",
-        title: title || "제목 없음",
-        subtitle: "메모",
+        title: resolvedTitle,
+        subtitle: resolvedSubtitle,
         createdAt: new Date(),
         memoContent: content,
       };
       setSavedItems((prev) => [newItem, ...prev]);
+      if (weekId !== null) {
+        onAddWeekTask?.(weekId, buildWeekTask("memo", resolvedTitle, resolvedSubtitle, weekId, newId));
+      }
       // 새로 생성된 id로 activeMemo 업데이트 (이후 수정 시 PATCH 사용)
       setActiveMemo((prev) => prev ? { ...prev, id: newId } : null);
       return newId;
@@ -2931,6 +2978,8 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         initialId={activeMemo.id}
         initialTitle={activeMemo.title}
         initialContent={activeMemo.content}
+        initialWeekId={activeMemo.id ? (weeks.find((week) => week.tasks.some((task) => task.itemId === activeMemo.id))?.id ?? null) : null}
+        weeks={weeks}
         onBack={() => handleSubviewBack(() => setActiveMemo(null))}
         onSave={handleSaveMemo}
       />
@@ -2950,7 +2999,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         {expandToggleBtn}
       </div>
     );
-    return isExpanded ? createPortal(inner, document.body) : <div className="h-full w-full relative">{subviewContent}{expandToggleBtn}</div>;
+    return (isExpanded || forcePortalSubviews) ? createPortal(inner, document.body) : <div className="h-full w-full relative">{subviewContent}{expandToggleBtn}</div>;
   }
 
   return (
@@ -3045,7 +3094,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         </div>
 
         {/* Saved items list */}
-        {savedItems.length > 0 && (
+        {!hideCollections && savedItems.length > 0 && (
           <div className="pb-1">
             <div className="px-4 pt-2 pb-1">
               <span className="text-gray-400" style={{ fontSize: "0.65rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>생성된 자료</span>
@@ -3084,19 +3133,39 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
                 {/* Text */}
                 <div className="flex-1 min-w-0">
                   {renamingItemId === item.id ? (
-                    <input
-                      autoFocus
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onBlur={() => commitRename(item.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") { e.preventDefault(); commitRename(item.id); }
-                        if (e.key === "Escape") setRenamingItemId(null);
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      className="w-full bg-transparent border-b border-blue-400 outline-none truncate"
-                      style={{ fontSize: "0.72rem", fontWeight: 500 }}
-                    />
+                    <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { e.preventDefault(); commitRename(item.id); }
+                          if (e.key === "Escape") setRenamingItemId(null);
+                        }}
+                        className="w-full bg-transparent border-b border-blue-400 outline-none truncate"
+                        style={{ fontSize: "0.72rem", fontWeight: 500 }}
+                      />
+                      <button
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          commitRename(item.id);
+                        }}
+                        className="w-4 h-4 rounded bg-blue-500 text-white flex items-center justify-center shrink-0"
+                      >
+                        <svg width="8" height="8" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      </button>
+                      <button
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setRenamingItemId(null);
+                        }}
+                        className="w-4 h-4 rounded bg-gray-100 text-gray-500 flex items-center justify-center shrink-0"
+                      >
+                        <svg width="8" height="8" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                      </button>
+                    </div>
                   ) : (
                     <p className="text-gray-700 truncate" style={{ fontSize: "0.72rem", fontWeight: 500 }}>{item.title}</p>
                   )}
@@ -3161,7 +3230,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         )}
 
         {/* Week list */}
-        {weeks.length > 0 && (
+        {!hideCollections && weeks.length > 0 && (
           <div className="border-t border-gray-100">
             <div className="px-4 pt-2 pb-1">
               <span className="text-gray-400" style={{ fontSize: "0.65rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>주차별 자료</span>
