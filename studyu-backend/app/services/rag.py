@@ -24,6 +24,21 @@ CHUNK_SIZE = 900
 CHUNK_OVERLAP = 100
 TOP_K = 5  # 문서당 검색할 최대 청크 수
 
+# 이미지를 직접 가리키는 질문 패턴 — Python 레벨 사전 판단용
+_IMAGE_DIRECT_REF_RE = re.compile(
+    r'(이|저|그)\s+[가-힣]+'                      # 이 개, 저 꽃, 그 사람
+    r'|이\s*(사진|이미지|그림|첨부|파일)'           # 이 사진, 이 이미지
+    r'|사진\s*(속|에서|의|에|안)'                  # 사진 속, 사진에서
+    r'|이미지\s*(속|에서|의|에|안)'
+    r'|여기\s*(서|에|에서|나오는|에\s*있는)'
+    r'|이것|저것|그것'
+    r'|털\s*색|색상|색깔|무슨\s*색|어떤\s*색'      # 시각적 속성
+    r'|외형|생김새|외모|모습|모양새',
+    re.UNICODE,
+)
+
+_UNRELATED_IMG_PREFIX = "📌 이 질문은 업로드된 이미지와 직접적인 관련은 없지만, 알고 계시면 도움이 될 것 같아 답변드립니다."
+
 
 # ─────────────────────────────────────────────
 # 텍스트 정제
@@ -214,13 +229,36 @@ def _extract_text_from_hwp(file_bytes: bytes) -> tuple[str, int]:
 
 
 def _extract_text_from_image(file_bytes: bytes, filename: str) -> tuple[str, int]:
-    """이미지에서 GPT-4o Vision으로 텍스트/내용 추출. (text, 0) 반환."""
-    import base64
+    """이미지에서 GPT-4o Vision으로 텍스트/내용 + 구조화 메타데이터 추출.
+    메타데이터는 [IMAGE_META]...[/IMAGE_META] 태그로 텍스트 앞에 삽입된다.
+    Returns: (text_with_meta, 0)
+    """
+    import base64 as _base64
     ext = filename.lower().rsplit(".", 1)[-1]
     mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                 "gif": "image/gif", "webp": "image/webp"}
     mime_type = mime_map.get(ext, "image/jpeg")
-    b64 = base64.b64encode(file_bytes).decode("utf-8")
+    b64 = _base64.b64encode(file_bytes).decode("utf-8")
+
+    prompt = """이 이미지를 분석하여 아래 JSON 형식으로 응답하세요.
+
+{
+  "subjects": ["이미지에 등장하는 주요 대상들 (사람, 동물, 사물, 장소, 브랜드, 개념 등)"],
+  "image_type": "photo | chart | diagram | screenshot | document | illustration",
+  "visual_context": "이미지 전체 상황을 한 문장으로 (예: 실내에서 후드를 입고 있는 소형 강아지)",
+  "extracted_text": "이미지에 포함된 모든 텍스트를 그대로 추출 (없으면 빈 문자열)",
+  "description": "이미지 내용을 시각적 요소 중심으로 상세히 설명 (수치, 색상, 구조, 레이아웃 포함)"
+}
+
+image_type 선택 기준:
+- photo: 실제 사진 (인물, 동물, 풍경, 사물)
+- chart: 데이터 차트, 그래프, 표
+- diagram: 흐름도, 아키텍처, 마인드맵, 구조도
+- screenshot: 컴퓨터 화면 캡처 (UI, 코드, 웹페이지)
+- document: 스캔된 문서, 손글씨, 텍스트 위주 이미지
+- illustration: 그림, 일러스트, 아이콘
+
+반드시 JSON만 응답하세요."""
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
     response = client.chat.completions.create(
@@ -228,13 +266,38 @@ def _extract_text_from_image(file_bytes: bytes, filename: str) -> tuple[str, int
         messages=[{
             "role": "user",
             "content": [
-                {"type": "text", "text": "이 이미지에서 모든 텍스트를 그대로 추출하고, 이미지 내용을 상세히 설명해주세요."},
-                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}},
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}", "detail": "high"}},
             ],
         }],
+        response_format={"type": "json_object"},
         max_tokens=2000,
     )
-    return response.choices[0].message.content or "", 0
+
+    raw = response.choices[0].message.content or "{}"
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        parsed = {}
+
+    subjects = parsed.get("subjects", [])
+    image_type = parsed.get("image_type", "photo")
+    visual_context = parsed.get("visual_context", "")
+    extracted_text = parsed.get("extracted_text", "")
+    description = parsed.get("description", "")
+
+    # 메타데이터를 특수 태그로 인코딩하여 텍스트 앞에 삽입
+    meta_json = json.dumps({
+        "subjects": subjects,
+        "image_type": image_type,
+        "visual_context": visual_context,
+    }, ensure_ascii=False)
+    meta_block = f"[IMAGE_META]{meta_json}[/IMAGE_META]"
+
+    body = "\n\n".join(filter(None, [extracted_text, description]))
+    full_text = f"{meta_block}\n\n{body}" if body else meta_block
+
+    return full_text, 0
 
 
 def _extract_text_from_video(file_bytes: bytes, filename: str) -> tuple[str, int]:
@@ -732,6 +795,111 @@ LEVEL_PROMPTS = {
 }
 
 
+_IMAGE_MIME_MAP = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "png": "image/png", "gif": "image/gif", "webp": "image/webp",
+}
+
+def _get_image_docs(doc_ids: list[str]) -> list[dict]:
+    """doc_ids 중 이미지 파일인 것의 메타데이터 반환.
+    반환: [{"doc_id", "filename", "storage_path", "mime_type"}]
+    """
+    if not doc_ids:
+        return []
+    result = supabase_admin.table("documents") \
+        .select("id, filename, storage_path") \
+        .in_("id", doc_ids).execute()
+    image_docs = []
+    for row in result.data:
+        fn = row.get("filename", "")
+        ext = fn.lower().rsplit(".", 1)[-1] if "." in fn else ""
+        if ext in IMAGE_EXTENSIONS and row.get("storage_path"):
+            image_docs.append({
+                "doc_id": row["id"],
+                "filename": fn,
+                "storage_path": row["storage_path"],
+                "mime_type": _IMAGE_MIME_MAP.get(ext, "image/jpeg"),
+            })
+    return image_docs
+
+
+def _check_image_relevance(question: str, subjects: list[str], visual_context: str) -> bool:
+    """질문이 이미지 대상/내용과 관련 있는지 YES/NO로 판단. 관련 있으면 True."""
+    # ── Python 사전 판단 (API 호출 없음) ──────────────
+    # 지시어("이 개", "이 사진" 등) 또는 시각적 속성 키워드가 있으면 무조건 관련 있음
+    if _IMAGE_DIRECT_REF_RE.search(question):
+        return True
+    # 메타데이터 없으면 관련 있다고 가정 (안전 기본값)
+    if not subjects and not visual_context:
+        return True
+
+    subjects_str = ", ".join(subjects) if subjects else "불명확"
+    prompt = f"""이미지 정보:
+- 등장 대상: {subjects_str}
+- 상황: {visual_context}
+
+사용자 질문: "{question}"
+
+판단 기준:
+관련 있음(YES): 아래 중 하나라도 해당
+  - 이미지 대상의 외형·색상·자세·표정·크기 등 시각적 속성
+  - 이미지를 직접 가리키는 표현 ("이 개", "이 사진", "여기서" 등)
+  - 이미지 대상의 특성·습성·행동·수명·먹이 등 관련 지식
+  - 이미지 대상이 입고 있는 것, 들고 있는 것, 주변 환경
+  - 이미지 주제와 맥락적으로 연결되는 배경지식
+  - 판단이 애매한 경우
+
+관련 없음(NO): 이미지 속 어떤 대상과도 완전히 무관한 다른 주제
+  (예: 개 사진 → "파이썬 코드 짜줘" / 음식 사진 → "주식 투자 알려줘")
+
+"YES" 또는 "NO"만 대답하세요."""
+
+    try:
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=5,
+            temperature=0,
+        )
+        answer = (response.choices[0].message.content or "YES").strip().upper()
+        return answer != "NO"
+    except Exception:
+        return True  # 오류 시 관련 있다고 가정
+
+
+def _get_image_metadata(doc_ids: list[str]) -> dict[str, dict]:
+    """doc_ids에 해당하는 이미지 메타데이터를 청크에서 파싱해 반환.
+    반환: {doc_id: {"subjects": [...], "image_type": "...", "visual_context": "..."}}
+    """
+    if not doc_ids:
+        return {}
+    import re
+    result = supabase_admin.table("document_chunks") \
+        .select("doc_id, content") \
+        .in_("doc_id", doc_ids) \
+        .execute()
+    meta: dict[str, dict] = {}
+    for row in result.data:
+        doc_id = row["doc_id"]
+        content = row.get("content", "")
+        m = re.search(r"\[IMAGE_META\](.*?)\[/IMAGE_META\]", content, re.DOTALL)
+        if m and doc_id not in meta:
+            try:
+                meta[doc_id] = json.loads(m.group(1))
+            except Exception:
+                pass
+    return meta
+
+
+def _download_image_b64(storage_path: str) -> bytes | None:
+    """Supabase Storage에서 이미지를 다운로드해 bytes 반환. 실패 시 None."""
+    try:
+        return supabase_admin.storage.from_("documents").download(storage_path)
+    except Exception:
+        return None
+
+
 def chat_with_docs(
     doc_ids: list[str],
     question: str,
@@ -740,13 +908,116 @@ def chat_with_docs(
     chat_history: list | None = None,
 ) -> tuple[str, list[str]]:
     """문서 기반 RAG 질의응답. (answer, sources) 반환."""
+    import base64
+
     is_multi = len(doc_ids) > 1
-
-    # 임베딩 기반 유사도 검색으로 컨텍스트 구성
-    context = _get_context_semantic(doc_ids, question, top_k=TOP_K, labeled=is_multi)
-
     level_hint = LEVEL_PROMPTS.get(level, LEVEL_PROMPTS["intermediate"])
+    doc_filenames = _get_filenames(doc_ids)
 
+    # ── 이미지 문서 처리 ──────────────────────────
+    image_docs = _get_image_docs(doc_ids)
+    img_meta_map = _get_image_metadata([img["doc_id"] for img in image_docs])
+    non_image_ids = [
+        d for d in doc_ids
+        if d not in {img["doc_id"] for img in image_docs}
+    ]
+    has_images = len(image_docs) > 0
+    has_non_image = len(non_image_ids) > 0
+
+    # 이미지 base64 수집
+    image_parts: list[dict] = []
+    for img in image_docs:
+        raw = _download_image_b64(img["storage_path"])
+        if raw:
+            b64 = base64.b64encode(raw).decode("utf-8")
+            image_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{img['mime_type']};base64,{b64}", "detail": "high"},
+            })
+
+    # ── 컨텍스트 구성 ─────────────────────────────
+    context_ids = non_image_ids if has_non_image else doc_ids
+    context = _get_context_semantic(context_ids, question, top_k=TOP_K, labeled=is_multi) if context_ids else ""
+
+    # 비디오/오디오 여부
+    has_video = any(
+        name.lower().rsplit(".", 1)[-1] in VIDEO_AUDIO_EXTENSIONS
+        for name in doc_filenames if "." in name
+    )
+    video_note = (
+        "\n\n중요: 비디오 또는 오디오 파일이 포함되어 있습니다. "
+        "[음성 전사 내용 - 파일명] 태그가 붙은 내용은 해당 영상/음성의 음성을 텍스트로 변환한 것입니다."
+        if has_video else ""
+    )
+
+    # ── 이미지 타입별 분석 가이드 ─────────────────
+    IMAGE_TYPE_GUIDE = {
+        "photo": "피사체의 외형·행동·감정을 묘사하고, 배경과 전체적인 분위기도 언급하세요.",
+        "chart": "축 레이블, 데이터 값, 단위, 추세, 최댓값·최솟값을 정확히 언급하세요. 수치는 반드시 이미지에서 보이는 그대로 인용하세요.",
+        "diagram": "각 구성 요소의 이름·역할과 요소 간 관계·흐름 방향을 순서대로 설명하세요.",
+        "screenshot": "화면에 보이는 UI 요소, 코드, 오류 메시지, 설정 값을 그대로 인용하고 기술적으로 분석하세요.",
+        "document": "문서에 적힌 텍스트를 정확히 인용하고, 문서의 구조(제목·항목·서명 등)를 설명하세요.",
+        "illustration": "그림의 스타일, 색상, 표현하는 개념이나 메시지를 설명하세요.",
+    }
+
+    # ── 시스템 프롬프트 ───────────────────────────
+    if has_images and not has_non_image:
+        # 이미지 전용 모드 — 메타데이터로 subjects·type 주입
+        image_names = ", ".join(f"'{img['filename']}'" for img in image_docs)
+
+        # 모든 이미지의 subjects 통합
+        all_subjects: list[str] = []
+        all_types: list[str] = []
+        for img in image_docs:
+            meta = img_meta_map.get(img["doc_id"], {})
+            all_subjects.extend(meta.get("subjects", []))
+            if meta.get("image_type"):
+                all_types.append(meta["image_type"])
+            # visual_context를 context에 보조로 추가
+        subjects_str = ", ".join(dict.fromkeys(all_subjects)) or "파악 중"
+        primary_type = all_types[0] if all_types else "photo"
+        type_guide = IMAGE_TYPE_GUIDE.get(primary_type, IMAGE_TYPE_GUIDE["photo"])
+
+        # 관련성 사전 체크 (답변 생성과 완전히 분리)
+        visual_context = ""
+        for img in image_docs:
+            meta = img_meta_map.get(img["doc_id"], {})
+            if meta.get("visual_context"):
+                visual_context = meta["visual_context"]
+                break
+        is_related = _check_image_relevance(question, all_subjects, visual_context)
+
+        system_msg = f"""당신은 이미지를 깊이 분석하는 전문 비주얼 학습 튜터입니다.
+첨부된 이미지({image_names})를 직접 보고 질문에 성실히 답변하세요.
+
+【이미지 정보】
+- 유형: {primary_type}
+- 등장 대상: {subjects_str}
+
+【{primary_type} 유형 분석 원칙】
+{type_guide}
+불명확한 부분은 "이미지에서 명확히 확인되지 않습니다"라고 솔직히 말하세요.
+
+답변 시 {level_hint}"""
+        if context:
+            system_msg += f"\n\n【보조 참고 — 이미지 사전 추출 내용】\n<context>\n{context}\n</context>"
+        if not is_related:
+            system_msg += '\n\n【출력 형식】답변 맨 앞에 반드시 이 문장을 먼저 쓰세요: "📌 이 질문은 업로드된 이미지와 직접적인 관련은 없지만, 알고 계시면 도움이 될 것 같아 답변드립니다."'
+
+    elif has_images and has_non_image:
+        # 혼합 모드 (이미지 + 다른 문서)
+        names_str = ", ".join(f"'{n}'" for n in doc_filenames)
+        system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
+총 {len(doc_ids)}개의 자료({names_str})가 제공됩니다. 이미지는 직접 확인하고, 문서는 아래 컨텍스트를 참조하세요.
+이미지와 문서 내용을 통합하여 종합적으로 답변하세요.
+답변 시 {level_hint}{video_note}
+
+<context>
+{context}
+</context>"""
+
+    elif is_multi:
+        names_str = ", ".join(f"'{n}'" for n in doc_filenames)
     # 비디오/오디오 파일 여부 확인 (시스템 프롬프트에 안내 추가용)
     video_audio_exts = VIDEO_AUDIO_EXTENSIONS
     doc_filenames = _get_filenames(doc_ids)
@@ -775,6 +1046,7 @@ def chat_with_docs(
 <context>
 {context}
 </context>"""
+
     else:
         system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
 아래 문서 내용을 바탕으로 질문에 답변하세요.
@@ -785,20 +1057,60 @@ def chat_with_docs(
 {context}
 </context>"""
 
+    # ── 메시지 구성 ───────────────────────────────
     messages: list[dict] = [{"role": "system", "content": system_msg}]
+
     if chat_history:
         for msg in chat_history[-6:]:
-            messages.append(msg)
-    messages.append({"role": "user", "content": question})
+            # 히스토리에 이미지가 포함된 경우 텍스트만 유지 (토큰 절약)
+            if isinstance(msg.get("content"), list):
+                text_only = " ".join(
+                    p.get("text", "") for p in msg["content"] if p.get("type") == "text"
+                )
+                messages.append({"role": msg["role"], "content": text_only})
+            else:
+                messages.append(msg)
 
+    # 이미지가 있으면 multimodal user message
+    if image_parts:
+        user_content: list[dict] = [{"type": "text", "text": question}] + image_parts
+        messages.append({"role": "user", "content": user_content})
+    else:
+        messages.append({"role": "user", "content": question})
+
+    # 이미지가 있으면 Vision 지원 모델 강제
     safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
+    if image_parts and safe_model == "gpt-4o-mini":
+        safe_model = "gpt-4o-mini"  # gpt-4o-mini도 vision 지원
+    elif image_parts and "gpt-4o" not in safe_model:
+        safe_model = "gpt-4o"
+
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
     response = client.chat.completions.create(
         model=safe_model,
         messages=messages,  # type: ignore
         temperature=0.3,
+        max_tokens=2000,
     )
     answer = response.choices[0].message.content or ""
+
+    # ── 이미지 직접 참조 질문에서 잘못 붙은 📌 제거 ──
+    if has_images and _IMAGE_DIRECT_REF_RE.search(question):
+        if answer.lstrip().startswith("📌"):
+            lines = answer.split("\n")
+            filtered = []
+            skip_blank = False
+            for line in lines:
+                if line.lstrip().startswith("📌 이 질문은 업로드된"):
+                    skip_blank = True
+                    continue
+                if skip_blank and line.strip() == "":
+                    skip_blank = False
+                    continue
+                filtered.append(line)
+                skip_blank = False
+            answer = "\n".join(filtered).lstrip()
+
     sources = _get_filenames(doc_ids)
     return answer, sources
 
@@ -1753,3 +2065,169 @@ def generate_infographic(
             section["color"] = colors[idx % len(colors)]
 
     return title, description, sections
+
+
+# ─────────────────────────────────────────────
+# 추천 질문 생성
+# ─────────────────────────────────────────────
+
+def generate_suggestions(
+    doc_ids: list[str],
+    asked_questions: list[str] = [],
+    model: str = "gpt-4o-mini",
+) -> list[dict]:
+    """문서 타입과 내용 기반으로 카테고리별 추천 질문 3개를 생성한다.
+    이미지 소스는 실제 이미지를 Vision API에 직접 전달.
+    반환: [{"text": "...", "category": "이해|분석|적용"}]
+    """
+    import base64
+
+    filenames = _get_filenames(doc_ids)
+    image_docs = _get_image_docs(doc_ids)
+    non_image_ids = [d for d in doc_ids if d not in {img["doc_id"] for img in image_docs}]
+
+    # 파일 타입 감지
+    file_types: set[str] = set()
+    for fn in filenames:
+        ext = fn.lower().rsplit(".", 1)[-1] if "." in fn else ""
+        if ext in IMAGE_EXTENSIONS:
+            file_types.add("image")
+        elif ext in VIDEO_AUDIO_EXTENSIONS:
+            file_types.add("video_audio")
+        elif ext in ("pptx", "ppt"):
+            file_types.add("ppt")
+        else:
+            file_types.add("document")
+
+    # 텍스트 컨텍스트 (비이미지 문서)
+    context_ids = non_image_ids if non_image_ids else doc_ids
+    context = _get_context(context_ids, max_chars=4000) if context_ids else ""
+
+    # 이미지 메타데이터 조회
+    img_meta_map = _get_image_metadata([img["doc_id"] for img in image_docs])
+    all_subjects: list[str] = []
+    all_img_types: list[str] = []
+    for img in image_docs:
+        meta = img_meta_map.get(img["doc_id"], {})
+        all_subjects.extend(meta.get("subjects", []))
+        if meta.get("image_type"):
+            all_img_types.append(meta["image_type"])
+    subjects_str = ", ".join(dict.fromkeys(all_subjects))
+    primary_img_type = all_img_types[0] if all_img_types else "photo"
+
+    # 이미지 base64 수집
+    image_parts: list[dict] = []
+    for img in image_docs:
+        raw = _download_image_b64(img["storage_path"])
+        if raw:
+            b64 = base64.b64encode(raw).decode("utf-8")
+            image_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{img['mime_type']};base64,{b64}", "detail": "high"},
+            })
+
+    asked_block = ""
+    if asked_questions:
+        asked_block = "\n\n[이미 질문된 항목 - 반드시 제외]\n" + "\n".join(
+            f"- {q}" for q in asked_questions[-6:]
+        )
+
+    # 이미지 전용 프롬프트
+    if image_parts and not non_image_ids:
+        image_names = ", ".join(f"'{img['filename']}'" for img in image_docs)
+        # 이미지 타입별 질문 가이드
+        img_type_hint = {
+            "photo":        "피사체([{subjects}])의 외형·행동·습성·생태 등 다양한 각도의 질문 포함.",
+            "chart":        "축 값, 데이터 수치, 추세, 비교 포인트를 구체적으로 언급하는 질문 포함.",
+            "diagram":      "구성 요소 간 관계, 흐름 순서, 핵심 노드에 관한 질문 포함.",
+            "screenshot":   "코드 로직, UI 요소, 오류 원인, 설정 의미에 관한 기술적 질문 포함.",
+            "document":     "문서에 적힌 특정 항목, 조항, 수치를 직접 인용하는 질문 포함.",
+            "illustration": "그림이 표현하는 개념, 메시지, 상징적 의미에 관한 질문 포함.",
+        }.get(primary_img_type, "이미지에서 보이는 구체적 요소를 언급하는 질문 포함.").format(subjects=subjects_str)
+
+        meta_hint = f"\n[사전 분석 결과] 이미지 유형: {primary_img_type} / 등장 대상: {subjects_str}" if subjects_str else ""
+
+        prompt_text = f"""당신은 이미지 기반 학습을 돕는 전문 비주얼 튜터입니다.
+첨부된 이미지({image_names})를 직접 분석하여, 학습자가 이 이미지를 완전히 이해하기 위해 반드시 물어봐야 할 핵심 질문 3개를 생성하세요.
+{meta_hint}
+{asked_block}
+
+[질문 생성 규칙]
+{img_type_hint}
+
+1. 이미지에서 실제로 보이는 구체적 요소(수치, 대상, 색상, 구조, 텍스트)를 질문에 직접 언급할 것
+   ✗ "이미지가 무엇을 나타내나요?" (너무 일반적)
+   ✓ "그래프에서 2023년 매출이 급등한 원인은 무엇인가요?" (구체적)
+
+2. 카테고리별 1개씩:
+   - "이해": 이미지의 특정 요소·대상·수치를 확인하는 질문
+   - "분석": 이미지 전체 의미, 패턴, 시사점을 파악하는 질문
+   - "적용": 이미지 내용을 실제 상황이나 다른 개념에 연결하는 질문
+
+3. 각 질문은 완전한 문장, 40자 이내
+
+JSON 형식으로만 응답:
+{{"questions": [{{"text": "질문", "category": "이해"}}, {{"text": "질문", "category": "분석"}}, {{"text": "질문", "category": "적용"}}]}}"""
+
+        user_content: list[dict] = [{"type": "text", "text": prompt_text}] + image_parts
+
+    else:
+        # 텍스트 문서 (+ 선택적으로 이미지 혼합) 프롬프트
+        type_guidance = ""
+        if "image" in file_types:
+            type_guidance += "\n[이미지 포함] 이미지에서 보이는 시각적 요소, 차트 수치, 다이어그램을 직접 언급하는 질문 포함."
+        if "video_audio" in file_types:
+            type_guidance += "\n[영상/음성 포함] 영상에서 언급된 발언, 수치, 설명된 개념에 관한 질문 포함."
+        if "ppt" in file_types:
+            type_guidance += "\n[PPT 포함] 슬라이드 흐름, 핵심 주장, 데이터에 관한 질문 포함."
+
+        prompt_text = f"""당신은 학습 내용을 깊이 이해하도록 돕는 전문 튜터입니다.
+아래 문서 내용을 분석하여, 학습자가 반드시 짚고 넘어가야 할 핵심 질문 3개를 생성하세요.
+{type_guidance}
+══════════════════════════════
+[문서 내용]
+{context[:4000]}
+══════════════════════════════
+{asked_block}
+
+[생성 규칙 - 반드시 준수]
+1. 각 질문은 문서에 실제로 등장하는 용어, 수치, 개념을 반드시 포함할 것
+   ✗ "핵심 개념이 무엇인가요?" → ✓ "SHA-256이 MD5보다 안전한 이유는?"
+
+2. 카테고리별 1개씩:
+   - "이해": 개념·사실 확인 → "~란?", "~는 어떻게?"
+   - "분석": 비교·원인·관계 → "~와 ~의 차이는?", "왜 ~?"
+   - "적용": 실제 활용·확장 → "~을 어떻게 활용?", "만약 ~라면?"
+
+3. 각 질문은 완전한 문장, 40자 이내
+
+JSON 형식으로만 응답:
+{{"questions": [{{"text": "질문", "category": "이해"}}, {{"text": "질문", "category": "분석"}}, {{"text": "질문", "category": "적용"}}]}}"""
+
+        if image_parts:
+            user_content = [{"type": "text", "text": prompt_text}] + image_parts
+        else:
+            user_content = [{"type": "text", "text": prompt_text}]
+
+    try:
+        safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=safe_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "당신은 학습 내용을 깊이 이해하도록 돕는 전문 교육 튜터입니다. 자료의 실제 내용에 기반한 구체적이고 통찰력 있는 질문을 생성합니다.",
+                },
+                {"role": "user", "content": user_content},  # type: ignore
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.75,
+        )
+        result = json.loads(response.choices[0].message.content or "{}")
+        questions = result.get("questions", [])
+        if isinstance(questions, list):
+            return [q for q in questions if isinstance(q, dict) and "text" in q][:3]
+        return []
+    except Exception:
+        return []

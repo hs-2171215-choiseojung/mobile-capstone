@@ -156,7 +156,10 @@ export default function StudentWorkspacePage() {
 
     if (notebookRes.ok) {
       const notebookData = await notebookRes.json();
-      setNotebookTitle(toText(notebookData?.title));
+      const customTitle = (() => {
+        try { return localStorage.getItem(`notebook-custom-title:${notebookId}`) || ""; } catch { return ""; }
+      })();
+      setNotebookTitle(customTitle || toText(notebookData?.title));
       setDocs(
         Array.isArray(notebookData?.documents)
           ? notebookData.documents.filter((doc: Partial<DocumentInfo>) => isReadyDocument(doc))
