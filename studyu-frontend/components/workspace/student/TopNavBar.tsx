@@ -33,9 +33,7 @@ export function TopNavBar({ title }: TopNavBarProps) {
         <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-600">학생</span>
       </div>
 
-      <div className="flex items-center gap-3">
-        <StudyULogo size={28} />
-      </div>
+
     </header>
   );
 }
