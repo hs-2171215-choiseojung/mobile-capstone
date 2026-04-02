@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
-import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2 } from 'lucide-react';
+import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2, X } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 
 interface Doc {
