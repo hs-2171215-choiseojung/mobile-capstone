@@ -32,6 +32,9 @@ STORAGE_BUCKET = "documents"
 
 STORAGE_CONTENT_TYPES = {
     "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "ppt": "application/vnd.ms-powerpoint",
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",
     "png": "image/png",

@@ -32,6 +32,7 @@ interface SourceInfo {
 interface StudentSourceViewerProps {
   source: SourceInfo;
   sourceUrl?: string;
+  sourceFileUrl?: string;
   loading?: boolean;
   error?: string;
   onClose: () => void;
@@ -41,6 +42,7 @@ interface StudentSourceViewerProps {
 export function StudentSourceViewer({
   source,
   sourceUrl,
+  sourceFileUrl,
   loading = false,
   error,
   onClose,
@@ -118,9 +120,9 @@ export function StudentSourceViewer({
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-4">
-          {sourceUrl && !isEmbeddableYoutube && lowerType !== "url" && (
+          {sourceFileUrl && !isEmbeddableYoutube && lowerType !== "url" && (
             <button
-              onClick={() => downloadUrl(sourceUrl, source.filename)}
+              onClick={() => downloadUrl(sourceFileUrl, source.filename)}
               title="다운로드"
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200"
             >
@@ -138,9 +140,9 @@ export function StudentSourceViewer({
               저장
             </button>
           )}
-          {sourceUrl && (
+          {sourceFileUrl && (
             <a
-              href={sourceUrl}
+              href={sourceFileUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200"
@@ -167,6 +169,12 @@ export function StudentSourceViewer({
         ) : error ? (
           <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 gap-3">
             <p className="text-sm">{error}</p>
+          </div>
+        ) : !sourceUrl && transcriptText ? (
+          <div className="h-full p-4 overflow-y-auto">
+            <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">
+              {transcriptText}
+            </div>
           </div>
         ) : !sourceUrl ? (
           <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 gap-3">

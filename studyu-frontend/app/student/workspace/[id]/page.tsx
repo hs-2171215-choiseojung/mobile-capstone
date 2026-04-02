@@ -39,6 +39,12 @@ interface DocumentInfo {
   status?: string;
 }
 
+const PREVIEWABLE_OFFICE_EXTS = new Set(["docx", "pptx", "ppt"]);
+
+function getOfficeEmbedUrl(url: string): string {
+  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`;
+}
+
 export default function StudentWorkspacePage() {
   const params = useParams();
   const notebookId = params.id as string;
@@ -53,6 +59,7 @@ export default function StudentWorkspacePage() {
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [selectedSource, setSelectedSource] = useState<DocumentInfo | null>(null);
   const [selectedSourceUrl, setSelectedSourceUrl] = useState("");
+  const [selectedSourceDownloadUrl, setSelectedSourceDownloadUrl] = useState("");
   const [selectedSourceError, setSelectedSourceError] = useState("");
   const [isSourceLoading, setIsSourceLoading] = useState(false);
   const [selectedSourceTranscript, setSelectedSourceTranscript] = useState<string | undefined>(undefined);
@@ -325,10 +332,21 @@ export default function StudentWorkspacePage() {
     shouldRestoreCenterScrollRef.current = false;
   }, [selectedItem, selectedSource]);
 
+  useEffect(() => {
+    return () => {
+      if (selectedSourceUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(selectedSourceUrl);
+      }
+    };
+  }, [selectedSourceUrl]);
+
   const AUDIO_EXTS = new Set(["mp3", "m4a", "wav"]);
   const TEXT_ONLY_EXTS = new Set(["docx", "pptx", "ppt", "hwp", "hwpx"]);
 
   const openSourceDocument = async (doc: DocumentInfo) => {
+    if (selectedSourceUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(selectedSourceUrl);
+    }
     setActiveDocIds([doc.id]);
     setLeftOpenBefore(isLeftOpen);
     setIsLeftOpen(false);
@@ -336,6 +354,7 @@ export default function StudentWorkspacePage() {
     setSelectedItem(null);
     setSelectedSource(doc);
     setSelectedSourceUrl("");
+    setSelectedSourceDownloadUrl("");
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
     setIsSourceLoading(true);
@@ -347,31 +366,89 @@ export default function StudentWorkspacePage() {
 
       const ext = doc.filename.toLowerCase().split(".").pop() ?? doc.file_type;
       const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
-      const needsUrl = !TEXT_ONLY_EXTS.has(ext);
+      const needsAccessUrl = !TEXT_ONLY_EXTS.has(ext) || PREVIEWABLE_OFFICE_EXTS.has(ext);
       const needsText = AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext) || TEXT_ONLY_EXTS.has(ext);
+      const needsPreviewPdf = PREVIEWABLE_OFFICE_EXTS.has(ext);
 
-      const fetches: Promise<void>[] = [];
-
-      if (needsUrl) {
-        fetches.push(
-          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } })
-            .then((r) => r.json().catch(() => ({})))
-            .then((data) => {
-              if (data?.url) setSelectedSourceUrl(data.url);
-              else setSelectedSourceError(data?.detail || "문서 URL을 가져오지 못했습니다.");
-            })
-        );
-      }
-
-      if (needsText) {
-        fetches.push(
-          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } })
+      const nextSourceTextPromise = needsText
+        ? fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } })
             .then((r) => r.json().catch(() => ({})))
             .then((data) => { if (data?.text) setSelectedSourceTranscript(data.text); })
-        );
+        : Promise.resolve();
+
+      let nextAccessUrl = "";
+      if (needsAccessUrl) {
+        const accessResponse = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const accessData = await accessResponse.json().catch(() => ({}));
+
+        if (accessResponse.ok && accessData?.url) {
+          nextAccessUrl = accessData.url;
+          setSelectedSourceDownloadUrl(accessData.url);
+          if (!needsPreviewPdf) {
+            setSelectedSourceUrl(accessData.url);
+          }
+        } else if (!needsText && !needsPreviewPdf) {
+          setSelectedSourceError(accessData?.detail || "문서 URL을 가져오지 못했습니다.");
+        }
       }
 
-      await Promise.all(fetches);
+      if (needsPreviewPdf) {
+        const previewResponse = await fetch(`${API}/api/documents/${doc.id}/preview-pdf`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (previewResponse.ok) {
+          const blob = await previewResponse.blob();
+          setSelectedSourceUrl(URL.createObjectURL(blob));
+        } else if (nextAccessUrl) {
+          setSelectedSourceUrl(getOfficeEmbedUrl(nextAccessUrl));
+        }
+      }
+
+      await nextSourceTextPromise;
+      return;
+
+      const sourceAccessUrlPromise = needsAccessUrl
+        ? fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } })
+            .then(async (r) => ({ ok: r.ok, data: await r.json().catch(() => ({})) }))
+            .then((data) => {
+              if (data.ok && data.data?.url) {
+                setSelectedSourceDownloadUrl(data.data.url);
+                if (!needsPreviewPdf) {
+                  setSelectedSourceUrl(data.data.url);
+                }
+              } else if (!needsText && !needsPreviewPdf) {
+                setSelectedSourceError(data.data?.detail || "문서 URL을 가져오지 못했습니다.");
+              }
+            })
+        : Promise.resolve();
+
+      const sourcePreviewPromise = needsPreviewPdf
+        ? fetch(`${API}/api/documents/${doc.id}/preview-pdf`, { headers: { Authorization: `Bearer ${token}` } })
+            .then(async (r) => {
+              if (!r.ok) {
+                const errorData = await r.json().catch(() => ({}));
+                return { ok: false, error: errorData?.detail || "PDF 미리보기를 생성하지 못했습니다." };
+              }
+              const blob = await r.blob();
+              return { ok: true, url: URL.createObjectURL(blob) };
+            })
+            .then((result) => {
+              if (result.ok && result.url) {
+                setSelectedSourceUrl(result.url);
+              }
+            })
+        : Promise.resolve();
+
+      const sourceTextPromise = needsText
+        ? fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => r.json().catch(() => ({})))
+            .then((data) => { if (data?.text) setSelectedSourceTranscript(data.text); })
+        : Promise.resolve();
+
+      await Promise.all([sourceAccessUrlPromise, sourcePreviewPromise, sourceTextPromise]);
     } catch {
       setSelectedSourceError("문서를 여는 중 오류가 발생했습니다.");
     } finally {
@@ -467,12 +544,17 @@ export default function StudentWorkspacePage() {
               <StudentSourceViewer
                 source={selectedSource}
                 sourceUrl={selectedSourceUrl}
+                sourceFileUrl={selectedSourceDownloadUrl || selectedSourceUrl}
                 loading={isSourceLoading}
                 error={selectedSourceError}
                 transcriptText={selectedSourceTranscript}
                 onClose={() => {
+                  if (selectedSourceUrl.startsWith("blob:")) {
+                    URL.revokeObjectURL(selectedSourceUrl);
+                  }
                   setSelectedSource(null);
                   setSelectedSourceUrl("");
+                  setSelectedSourceDownloadUrl("");
                   setSelectedSourceError("");
                   setSelectedSourceTranscript(undefined);
                   setIsLeftOpen(leftOpenBefore);
@@ -515,8 +597,12 @@ export default function StudentWorkspacePage() {
                           }}
                           onOpenItem={(item) => {
                             centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
+                            if (selectedSourceUrl.startsWith("blob:")) {
+                              URL.revokeObjectURL(selectedSourceUrl);
+                            }
                             setSelectedSource(null);
                             setSelectedSourceUrl("");
+                            setSelectedSourceDownloadUrl("");
                             setSelectedSourceError("");
                             setSelectedItem(item);
                             setLeftOpenBefore(isLeftOpen);

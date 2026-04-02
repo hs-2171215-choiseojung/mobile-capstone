@@ -278,6 +278,14 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [inviteCode, setInviteCode] = useState("");
   const [inviteLoading, setInviteLoading] = useState(false);
 
+  const resetViewerState = useCallback((nextDocs: Doc[] = docs) => {
+    setViewerDoc(null);
+    setViewerUrl(null);
+    setViewerText(null);
+    setViewerStudioItem(null);
+    setActiveDocIds(nextDocs.map((doc) => doc.id));
+    setActiveChunkDocIds(new Set(nextDocs.map((doc) => doc.id)));
+  }, [docs]);
 
   // ── Resize handlers ───────────────────────────────────────────────
   useEffect(() => {
@@ -482,9 +490,14 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail ?? "삭제 실패"); }
-      setDocs((prev) => prev.filter((d) => d.id !== docId));
-      setActiveDocIds((prev) => prev.filter((id) => id !== docId));
-      setActiveChunkDocIds((prev) => { const n = new Set(prev); n.delete(docId); return n; });
+      const nextDocs = docs.filter((d) => d.id !== docId);
+      setDocs(nextDocs);
+      if (viewerDoc?.id === docId) {
+        resetViewerState(nextDocs);
+      } else {
+        setActiveDocIds((prev) => prev.filter((id) => id !== docId));
+        setActiveChunkDocIds((prev) => { const n = new Set(prev); n.delete(docId); return n; });
+      }
     } catch (e) {
       alert(`삭제 실패: ${e instanceof Error ? e.message : "알 수 없는 오류"}`);
     }
@@ -1397,7 +1410,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                 {/* Viewer header */}
                 <div className="h-10 border-b border-gray-100 flex items-center gap-3 px-4 shrink-0">
                   <button
-                    onClick={() => { setViewerDoc(null); setViewerUrl(null); setViewerText(null); setActiveDocIds(docs.map((d) => d.id)); setActiveChunkDocIds(new Set(docs.map((d) => d.id))); }}
+                    onClick={() => resetViewerState()}
                     className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 transition-colors"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -1968,7 +1981,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                 </span>
               </div>
               <button
-                onClick={() => { setViewerDoc(null); setViewerUrl(null); setViewerText(null); setViewerStudioItem(null); setActiveDocIds(docs.map((d) => d.id)); setActiveChunkDocIds(new Set(docs.map((d) => d.id))); }}
+                onClick={() => resetViewerState()}
                 className="w-6 h-6 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-400"
               >
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
