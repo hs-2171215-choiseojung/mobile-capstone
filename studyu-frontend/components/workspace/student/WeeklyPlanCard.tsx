@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useMemo, useState } from 'react';
 import { FileText, ChevronUp, ChevronDown, FileQuestion, Mic, Layout, PenTool } from 'lucide-react';
@@ -47,6 +47,25 @@ export function WeeklyPlanCard({
     }
     setInternalExpanded((prev) => !prev);
   };
+
+  const STUDIO_TYPE_LABEL: Record<string, string> = {
+    quiz: '퀴즈',
+    memo: '메모',
+    notepad: '메모',
+    summary: '요약',
+    report: '보고서',
+    audio: '오디오',
+    slides: '슬라이드',
+    slide: '슬라이드',
+    mindmap: '마인드맵',
+    plan: '마인드맵',
+    flashcard: '플래시카드',
+    table: '데이터 표',
+    data: '데이터 표',
+  };
+
+  const getStudioTypeLabel = (type: string) =>
+    STUDIO_TYPE_LABEL[type?.toLowerCase?.()] ?? '학습 자료';
 
   const getIconAndColor = (type: string) => {
     switch (type) {
@@ -116,10 +135,16 @@ export function WeeklyPlanCard({
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-[15px] font-semibold text-gray-900 truncate">{title}</p>
-                    <p className="text-[12px] text-gray-500 mt-0.5">{isSource ? 'Source document' : 'Assigned by instructor'}</p>
+                    <p className="text-[12px] text-gray-500 mt-0.5">{isSource ? 'Source document' : getStudioTypeLabel(item.type)}</p>
                   </div>
                   {!isSource && (
-                    <button className="px-4 py-1.5 text-xs font-semibold text-white bg-[#155dfc] hover:bg-[#0d4ac4] rounded-lg transition-colors shrink-0">
+                    <button
+                      className="px-4 py-1.5 text-xs font-semibold text-white bg-[#155dfc] hover:bg-[#0d4ac4] rounded-lg transition-colors shrink-0"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onOpenItem) onOpenItem(item);
+                      }}
+                    >
                       시작하기
                     </button>
                   )}

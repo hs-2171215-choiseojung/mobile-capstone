@@ -3,15 +3,13 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { ChevronDown, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, BotMessageSquare } from 'lucide-react';
+import { ChevronDown, BotMessageSquare } from 'lucide-react';
 import { Resizable } from 're-resizable';
 
 import { TopNavBar } from "@/components/workspace/student/TopNavBar";
-import { StudentSourcePanel } from "@/components/workspace/student/StudentSourcePanel";
 import { WeeklyPlanCard } from "@/components/workspace/student/WeeklyPlanCard";
-import { StudentStudioPanel } from "@/components/workspace/student/StudentStudioPanel";
 import { StudentChatPanel } from "@/components/workspace/student/StudentChatPanel";
-import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer"; 
+import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer";
 import { StudentSourceViewer } from "@/components/workspace/student/StudentSourceViewer";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -48,13 +46,12 @@ function getOfficeEmbedUrl(url: string): string {
 export default function StudentWorkspacePage() {
   const params = useParams();
   const notebookId = params.id as string;
-  
+
   const [notebookTitle, setNotebookTitle] = useState<string>("");
-  const [currentUserId, setCurrentUserId] = useState<string>("");
 
   const [activeDocIds, setActiveDocIds] = useState<string[]>([]);
   const [docs, setDocs] = useState<any[]>([]);
-  const [studioItems, setStudioItems] = useState<any[]>([]); 
+  const [studioItems, setStudioItems] = useState<any[]>([]);
   const [weekPlans, setWeekPlans] = useState<WeekPlan[]>([]);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [selectedSource, setSelectedSource] = useState<DocumentInfo | null>(null);
@@ -69,17 +66,9 @@ export default function StudentWorkspacePage() {
   const [expandedCenterWeeks, setExpandedCenterWeeks] = useState<number[]>([]);
   const [centerWeeksHydrated, setCenterWeeksHydrated] = useState(false);
 
-  const [isLeftOpen, setIsLeftOpen] = useState(true);
-  const [isRightOpen, setIsRightOpen] = useState(true);
-  const [leftOpenBefore, setLeftOpenBefore] = useState(true);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatWidth, setChatWidth] = useState(380);
 
-  const [chatHeight, setChatHeight] = useState(320);
-  const [isChatOpen, setIsChatOpen] = useState(true);
-
-  const [leftWidth, setLeftWidth] = useState(288);
-  const [rightWidth, setRightWidth] = useState(360);
-  const [isLeftResizing, setIsLeftResizing] = useState(false);
-  const [isRightResizing, setIsRightResizing] = useState(false);
   const centerScrollRef = useRef<HTMLDivElement | null>(null);
   const centerScrollTopRef = useRef(0);
   const shouldRestoreCenterScrollRef = useRef(false);
@@ -143,8 +132,6 @@ export default function StudentWorkspacePage() {
     const supabase = createClient();
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData.session?.access_token;
-    const me = sessionData.session?.user?.id || "";
-    setCurrentUserId(me);
     if (!token) return;
 
     const [notebookRes, studioRes, studyPlanRes] = await Promise.all([
@@ -272,24 +259,6 @@ export default function StudentWorkspacePage() {
     };
   });
 
-  const unassignedStudioItems = studioItems.filter((item) => {
-    if (!item?.id) return false;
-    if (assignedStudioItemIds.has(item.id)) return false;
-    return typeof item?.content?.week_id !== "number";
-  });
-
-  const cardsWithUnassigned = unassignedStudioItems.length > 0
-    ? [
-        ...cards,
-        {
-          key: "unassigned-studio",
-          weekNumber: 0,
-          weekTitle: "주차 미지정",
-          instruct: "",
-          items: unassignedStudioItems,
-        },
-      ]
-    : cards;
 
   useEffect(() => {
     if (!notebookId) return;
@@ -348,9 +317,6 @@ export default function StudentWorkspacePage() {
       URL.revokeObjectURL(selectedSourceUrl);
     }
     setActiveDocIds([doc.id]);
-    setLeftOpenBefore(isLeftOpen);
-    setIsLeftOpen(false);
-    if (!isRightOpen) setIsRightOpen(true);
     setSelectedItem(null);
     setSelectedSource(doc);
     setSelectedSourceUrl("");
@@ -408,47 +374,6 @@ export default function StudentWorkspacePage() {
       }
 
       await nextSourceTextPromise;
-      return;
-
-      const sourceAccessUrlPromise = needsAccessUrl
-        ? fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } })
-            .then(async (r) => ({ ok: r.ok, data: await r.json().catch(() => ({})) }))
-            .then((data) => {
-              if (data.ok && data.data?.url) {
-                setSelectedSourceDownloadUrl(data.data.url);
-                if (!needsPreviewPdf) {
-                  setSelectedSourceUrl(data.data.url);
-                }
-              } else if (!needsText && !needsPreviewPdf) {
-                setSelectedSourceError(data.data?.detail || "문서 URL을 가져오지 못했습니다.");
-              }
-            })
-        : Promise.resolve();
-
-      const sourcePreviewPromise = needsPreviewPdf
-        ? fetch(`${API}/api/documents/${doc.id}/preview-pdf`, { headers: { Authorization: `Bearer ${token}` } })
-            .then(async (r) => {
-              if (!r.ok) {
-                const errorData = await r.json().catch(() => ({}));
-                return { ok: false, error: errorData?.detail || "PDF 미리보기를 생성하지 못했습니다." };
-              }
-              const blob = await r.blob();
-              return { ok: true, url: URL.createObjectURL(blob) };
-            })
-            .then((result) => {
-              if (result.ok && result.url) {
-                setSelectedSourceUrl(result.url);
-              }
-            })
-        : Promise.resolve();
-
-      const sourceTextPromise = needsText
-        ? fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } })
-            .then((r) => r.json().catch(() => ({})))
-            .then((data) => { if (data?.text) setSelectedSourceTranscript(data.text); })
-        : Promise.resolve();
-
-      await Promise.all([sourceAccessUrlPromise, sourcePreviewPromise, sourceTextPromise]);
     } catch {
       setSelectedSourceError("문서를 여는 중 오류가 발생했습니다.");
     } finally {
@@ -456,53 +381,101 @@ export default function StudentWorkspacePage() {
     }
   };
 
+  const closeSource = () => {
+    if (selectedSourceUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(selectedSourceUrl);
+    }
+    setSelectedSource(null);
+    setSelectedSourceUrl("");
+    setSelectedSourceDownloadUrl("");
+    setSelectedSourceError("");
+    setSelectedSourceTranscript(undefined);
+    setActiveDocIds([]);
+    shouldRestoreCenterScrollRef.current = true;
+  };
+
   return (
-    <div className="flex flex-col h-screen bg-white overflow-hidden min-w-[1200px]">
+    <div className="flex flex-col h-screen bg-white overflow-hidden">
       <TopNavBar title={notebookTitle} />
       <div className="flex flex-1 pt-[64px] overflow-hidden relative">
-        
-        {/* 왼쪽: 소스 패널 */}
-        <Resizable
-          size={{ width: isLeftOpen ? leftWidth : 0, height: '100%' }}
-          minWidth={isLeftOpen ? 200 : 0}
-          maxWidth={isLeftOpen ? 600 : 0}
-          enable={{ right: isLeftOpen }}
-          onResizeStart={() => setIsLeftResizing(true)}
-          onResizeStop={(e, direction, ref, d) => {
-            setIsLeftResizing(false);
-            setLeftWidth(prev => prev + d.width);
-          }}
-          handleStyles={{ right: { width: '12px', right: '-6px', zIndex: 50, cursor: 'col-resize' } }}
-          handleComponent={{
-            right: isLeftOpen ? (
-              <div className="w-full h-full flex items-center justify-center group">
-                <div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors shadow-sm"></div>
-              </div>
-            ) : <></>
-          }}
-          className={`shrink-0 bg-white flex flex-col relative z-10 border-[#e7e9ed] ${
-            !isLeftResizing ? "transition-all duration-300 ease-in-out" : ""
-          } ${isLeftOpen ? "border-r" : "border-r-0 overflow-hidden"}`}
-        >
-          <div className="w-full h-full flex flex-col min-w-[200px]">
-            <StudentSourcePanel
-              sources={displayDocs}
-              onOpenSource={openSourceDocument}
-              selectedSourceId={selectedSource?.id ?? null}
-              isOpen={isLeftOpen}
-              onToggleOpen={() => setIsLeftOpen((prev) => !prev)}
-            />
-          </div>
-        </Resizable>
 
-        {/* 가운데: 메인 패널 */}
-        <div className="flex-1 flex flex-col min-w-0 h-full relative transition-all duration-300">
-          
-          <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-[#e7e9ed] shrink-0 z-10">
-            <button onClick={() => setIsLeftOpen(!isLeftOpen)} className="p-1.5 text-gray-400 hover:text-[#155dfc] hover:bg-blue-50 rounded-lg transition-colors">
-              {isLeftOpen ? <PanelLeftClose className="w-5 h-5" /> : <PanelLeftOpen className="w-5 h-5" />}
-            </button>
-            <div className="flex items-center gap-3">
+        {/* 채팅 없이 단독으로 열리는 스튜디오 타입 */}
+        {(() => {
+          const CHAT_TYPES = new Set(["quiz", "mindmap", "plan", "table", "data", "flashcard"]);
+          const normalizeType = (t: string) => ({ memo: "notepad", summary: "report", plan: "mindmap", data: "table" }[t] || t);
+          const itemNeedsNoChat = selectedItem && CHAT_TYPES.has(normalizeType(selectedItem.type ?? ""));
+
+          if (selectedSource) return (
+            /* 소스 문서: 뷰어 + 우측 채팅 (Resizable) */
+            <div className="flex flex-1 overflow-hidden">
+              <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative min-h-0">
+                <StudentSourceViewer
+                  source={selectedSource}
+                  sourceUrl={selectedSourceUrl}
+                  sourceFileUrl={selectedSourceDownloadUrl || selectedSourceUrl}
+                  loading={isSourceLoading}
+                  error={selectedSourceError}
+                  transcriptText={selectedSourceTranscript}
+                  onClose={closeSource}
+                />
+              </div>
+              <Resizable
+                size={{ width: chatWidth, height: '100%' }}
+                minWidth={280}
+                maxWidth={640}
+                enable={{ left: true }}
+                onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
+                handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
+                handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
+                className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
+              >
+                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} />
+              </Resizable>
+            </div>
+          );
+
+          if (selectedItem && itemNeedsNoChat) return (
+            /* 퀴즈·마인드맵·표·플래시카드: 단독 전체화면 */
+            <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative">
+              <StudioItemViewer
+                item={selectedItem}
+                onClose={() => { setSelectedItem(null); shouldRestoreCenterScrollRef.current = true; }}
+              />
+            </div>
+          );
+
+          if (selectedItem) return (
+            /* 일반 스튜디오 아이템: 뷰어 + 우측 채팅 (Resizable) */
+            <div className="flex flex-1 overflow-hidden">
+              <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative min-h-0">
+                <StudioItemViewer
+                  item={selectedItem}
+                  onClose={() => { setSelectedItem(null); shouldRestoreCenterScrollRef.current = true; }}
+                />
+              </div>
+              <Resizable
+                size={{ width: chatWidth, height: '100%' }}
+                minWidth={280}
+                maxWidth={640}
+                enable={{ left: true }}
+                onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
+                handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
+                handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
+                className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
+              >
+                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} />
+              </Resizable>
+            </div>
+          );
+
+          return null;
+        })()}
+
+        {!selectedSource && !selectedItem && (
+          /* 기본: Weekly Study Plan */
+          <div className="flex-1 flex flex-col min-w-0 h-full relative overflow-hidden">
+
+            <div className="flex items-center justify-end px-6 py-3 bg-white border-b border-[#e7e9ed] shrink-0 z-10">
               <div className="flex items-center gap-2">
                 <div className="relative">
                   <select value={selectedLLM} onChange={(e) => setSelectedLLM(e.target.value)} className="appearance-none bg-[#f8f9fb] border border-[#e7e9ed] hover:bg-[#e7e9ed] text-[#414751] text-[12px] font-medium pl-4 pr-8 py-1.5 rounded-full focus:outline-none focus:ring-2 focus:ring-[#155dfc]/20 transition-colors cursor-pointer shadow-sm">
@@ -521,49 +494,10 @@ export default function StudentWorkspacePage() {
                   <ChevronDown className="w-3.5 h-3.5 text-[#99a1af] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 </div>
               </div>
-              <div className="w-px h-5 bg-gray-200 mx-1" />
-              <button onClick={() => setIsRightOpen(!isRightOpen)} className="p-1.5 text-gray-400 hover:text-[#155dfc] hover:bg-blue-50 rounded-lg transition-colors">
-                {isRightOpen ? <PanelRightClose className="w-5 h-5" /> : <PanelRightOpen className="w-5 h-5" />}
-              </button>
             </div>
-          </div>
 
-          {selectedItem ? (
-            <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative">
-              <StudioItemViewer 
-                item={selectedItem} 
-                onClose={() => {
-                  setSelectedItem(null);
-                  setIsLeftOpen(leftOpenBefore);
-                  shouldRestoreCenterScrollRef.current = true;
-                }} 
-              />
-            </div>
-          ) : selectedSource ? (
-            <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative">
-              <StudentSourceViewer
-                source={selectedSource}
-                sourceUrl={selectedSourceUrl}
-                sourceFileUrl={selectedSourceDownloadUrl || selectedSourceUrl}
-                loading={isSourceLoading}
-                error={selectedSourceError}
-                transcriptText={selectedSourceTranscript}
-                onClose={() => {
-                  if (selectedSourceUrl.startsWith("blob:")) {
-                    URL.revokeObjectURL(selectedSourceUrl);
-                  }
-                  setSelectedSource(null);
-                  setSelectedSourceUrl("");
-                  setSelectedSourceDownloadUrl("");
-                  setSelectedSourceError("");
-                  setSelectedSourceTranscript(undefined);
-                  setIsLeftOpen(leftOpenBefore);
-                  shouldRestoreCenterScrollRef.current = true;
-                }}
-              />
-            </div>
-          ) : (
-            <>
+            {/* 콘텐츠 + 우측 채팅 패널 */}
+            <div className="flex flex-1 overflow-hidden">
               <div ref={centerScrollRef} className="flex-1 overflow-y-auto px-[32px] py-[32px]">
                 <div className="max-w-[800px] mx-auto">
                   <div className="mb-[32px]">
@@ -575,14 +509,14 @@ export default function StudentWorkspacePage() {
                     </p>
                   </div>
                   <div className="flex flex-col gap-[48px] pb-10">
-                    {cardsWithUnassigned.length === 0 ? (
+                    {cards.length === 0 ? (
                       <div className="text-sm text-gray-400 bg-gray-50 border border-dashed border-gray-200 rounded-xl px-5 py-6 text-center">
                         강사가 추가한 주차가 아직 없습니다.
                       </div>
                     ) : (
-                      cardsWithUnassigned.map((card) => (
-                        <WeeklyPlanCard 
-                          key={card.key} 
+                      cards.map((card) => (
+                        <WeeklyPlanCard
+                          key={card.key}
                           weekNumber={card.weekNumber}
                           weekTitle={card.weekTitle}
                           instruct={card.instruct}
@@ -597,17 +531,7 @@ export default function StudentWorkspacePage() {
                           }}
                           onOpenItem={(item) => {
                             centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
-                            if (selectedSourceUrl.startsWith("blob:")) {
-                              URL.revokeObjectURL(selectedSourceUrl);
-                            }
-                            setSelectedSource(null);
-                            setSelectedSourceUrl("");
-                            setSelectedSourceDownloadUrl("");
-                            setSelectedSourceError("");
                             setSelectedItem(item);
-                            setLeftOpenBefore(isLeftOpen);
-                            setIsLeftOpen(false);
-                            if (!isRightOpen) setIsRightOpen(true);
                           }}
                           onOpenDoc={(doc) => {
                             const targetDocId = doc?.resolvedDocId || doc?.sourceDocId || doc?.id;
@@ -615,8 +539,6 @@ export default function StudentWorkspacePage() {
                             const targetDoc = displayDocs.find((candidate) => candidate.id === targetDocId);
                             if (!targetDoc) return;
                             centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
-                            setActiveDocIds([targetDoc.id]);
-                            setIsLeftOpen(true);
                             void openSourceDocument(targetDoc);
                           }}
                         />
@@ -626,92 +548,41 @@ export default function StudentWorkspacePage() {
                 </div>
               </div>
 
+              {/* 우측 채팅 패널 */}
               {isChatOpen && (
                 <Resizable
-                  size={{ width: '100%', height: chatHeight }}
-                  onResizeStop={(e, direction, ref, d) => {
-                    const newHeight = chatHeight + d.height;
-                    if (newHeight <= 100) {
-                      setIsChatOpen(false);
-                      setChatHeight(320);
-                    } else {
-                      setChatHeight(newHeight);
-                    }
+                  size={{ width: chatWidth, height: '100%' }}
+                  minWidth={280}
+                  maxWidth={640}
+                  enable={{ left: true }}
+                  onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
+                  handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
+                  handleComponent={{
+                    left: (
+                      <div className="w-full h-full flex items-center justify-center group">
+                        <div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" />
+                      </div>
+                    )
                   }}
-                  minHeight={50}
-                  maxHeight="80%"
-                  enable={{ top: true }}
-                  handleStyles={{ top: { marginTop: '-4px', height: '8px', cursor: 'row-resize', width: '100%', zIndex: 20 } }}
-                  handleComponent={{ top: <div className="w-full h-full flex items-center justify-center group"><div className="w-16 h-1 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors shadow-sm"></div></div> }}
-                  className="border-t border-[#e7e9ed] bg-white shadow-[0_-8px_15px_-3px_rgba(0,0,0,0.05)] shrink-0 flex flex-col z-10"
+                  className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
                 >
-                  <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} />
+                  <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} onClose={() => setIsChatOpen(false)} />
                 </Resizable>
               )}
-              {!isChatOpen && (
-                <button
-                  onClick={() => setIsChatOpen(true)}
-                  className="absolute bottom-6 right-6 w-14 h-14 bg-[#155dfc] text-white rounded-full flex items-center justify-center shadow-[0_8px_16px_rgba(21,93,252,0.3)] hover:bg-[#0d4ac4] hover:scale-105 transition-all z-50 group"
-                  title="Ask AI 열기"
-                >
-                  <BotMessageSquare className="w-6 h-6" />
-                </button>
-              )}
-            </>
-          )}
-        </div>
+            </div>
 
-        {/* 오른쪽: 스튜디오 패널 */}
-        <Resizable
-          size={{ width: isRightOpen ? rightWidth : 0, height: '100%' }}
-          minWidth={isRightOpen ? 250 : 0}
-          maxWidth={isRightOpen ? 800 : 0}
-          enable={{ left: isRightOpen }}
-          onResizeStart={() => setIsRightResizing(true)}
-          onResizeStop={(e, direction, ref, d) => {
-            setIsRightResizing(false);
-            setRightWidth(prev => prev + d.width);
-          }}
-          handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
-          handleComponent={{
-            left: isRightOpen ? (
-              <div className="w-full h-full flex items-center justify-center group">
-                <div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors shadow-sm"></div>
-              </div>
-            ) : <></>
-          }}
-          className={`shrink-0 bg-[#f8f9fa] flex flex-col relative z-10 border-[#e7e9ed] ${
-            !isRightResizing ? "transition-all duration-300 ease-in-out" : ""
-          } ${isRightOpen ? "border-l" : "border-l-0 overflow-hidden"}`}
-        >
-          <div className="w-full h-full flex flex-col min-w-[250px]">
-            {selectedItem || selectedSource ? (
-              <StudentChatPanel 
-                activeDocIds={activeDocIds} 
-                docs={docs} 
-                notebookId={notebookId}
-                selectedLLM={selectedLLM}
-                selectedDifficulty={selectedDifficulty}
-              />
-            ) : (
-              <StudentStudioPanel 
-                studioItems={studioItems} 
-                docs={displayDocs}
-                weeks={weekPlans.filter((w) => (w as any).status === "ACTIVE")}
-                notebookId={notebookId}
-                currentUserId={currentUserId}
-                onRefresh={() => fetchData()}
-                onOpenItem={(item) => {
-                  centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
-                  setSelectedItem(item);
-                  setLeftOpenBefore(isLeftOpen);
-                  setIsLeftOpen(false);
-                  if (!isRightOpen) setIsRightOpen(true);
-                }} 
-              />
+            {/* 플로팅 버튼 (채팅 닫혀있을 때) */}
+            {!isChatOpen && (
+              <button
+                onClick={() => setIsChatOpen(true)}
+                className="absolute bottom-6 right-6 w-14 h-14 bg-[#155dfc] text-white rounded-full flex items-center justify-center shadow-[0_8px_16px_rgba(21,93,252,0.3)] hover:bg-[#0d4ac4] hover:scale-105 transition-all z-50"
+                title="Ask AI 열기"
+              >
+                <BotMessageSquare className="w-6 h-6" />
+              </button>
             )}
           </div>
-        </Resizable>
+        )}
       </div>
     </div>
   );

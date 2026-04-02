@@ -3,8 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
-  Plus,
-  X,
   FileText,
   FileQuestion,
   Book,
@@ -16,10 +14,6 @@ import {
   Database,
   ChevronDown,
 } from "lucide-react";
-import {
-  UnifiedGenerateModal,
-  UnifiedStudioConfig,
-} from "../StudioViews";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -129,34 +123,6 @@ export function StudentStudioPanel({
     return fallback;
   };
 
-  const getReadableError = (value: unknown, fallback = "생성 실패") => {
-    if (typeof value === "string" && value.trim()) return value;
-    if (Array.isArray(value)) {
-      const joined = value
-        .map((item) => {
-          if (typeof item === "string") return item;
-          if (item && typeof item === "object" && "msg" in item) return String((item as any).msg);
-          return "";
-        })
-        .filter(Boolean)
-        .join(", ");
-      return joined || fallback;
-    }
-    if (value && typeof value === "object") {
-      const obj = value as Record<string, unknown>;
-      if (typeof obj.detail === "string" && obj.detail.trim()) return obj.detail;
-      if (Array.isArray(obj.detail)) return getReadableError(obj.detail, fallback);
-      if (typeof obj.message === "string" && obj.message.trim()) return obj.message;
-      if (typeof obj.error === "string" && obj.error.trim()) return obj.error;
-      try {
-        return JSON.stringify(obj);
-      } catch {
-        return fallback;
-      }
-    }
-    return fallback;
-  };
-
   const hasVisibleTitle = (value?: unknown) =>
     toText(value).replace(/[\s\u200B-\u200D\uFEFF]/g, "").length > 0;
 
@@ -164,10 +130,6 @@ export function StudentStudioPanel({
   const [collapsedWeeks, setCollapsedWeeks] = useState<number[]>([]);
   const [collapsedTypes, setCollapsedTypes] = useState<string[]>([]);
   const [weekStateHydrated, setWeekStateHydrated] = useState(false);
-
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [activeModal, setActiveModal] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState<string | null>(null);
 
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -270,25 +232,6 @@ export function StudentStudioPanel({
     [weeks, studioItems, studioMap]
   );
 
-  const modalWeeks = useMemo(
-    () =>
-      (weeks ?? []).map((week, index) => ({
-        id: week.id ?? index + 1,
-        title: week.title || `Week ${week.id ?? index + 1}`,
-        status: week.status || "UPCOMING",
-        sources: week.sources || [],
-        tasks: (week.tasks ?? []).map((task, taskIndex) => ({
-          id: taskIndex + 1,
-          icon: "",
-          iconBg: "",
-          title: "",
-          subtitle: "",
-          itemId: task.itemId,
-        })),
-      })),
-    [weeks]
-  );
-
   const groupedByType = useMemo(() => {
     const getMappedOption = (rawType: string) => {
       const typeMap: Record<string, string> = { memo: "notepad", summary: "report", plan: "mindmap", slides: "slide", data: "table" };
@@ -355,111 +298,10 @@ export function StudentStudioPanel({
     if (res.ok) onRefresh?.();
   };
 
-  const handleGenerate = async (typeId: string, cfg: UnifiedStudioConfig, weekId: number | null) => {
-    if (!docs.length) {
-      alert("학습할 소스(문서)가 없습니다.");
-      return;
-    }
-
-    setIsGenerating(typeId);
-    try {
-      const supabase = createClient();
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-
-      const docIds = cfg.selectedDocIds.length > 0 ? cfg.selectedDocIds : docs.map((d: any) => d.id);
-      const docNames = docs.filter((d: any) => docIds.includes(d.id)).map((d: any) => d.filename || d.name).filter(Boolean).join(", ");
-      const langMap: Record<string, string> = { "한국어": "ko", "English": "en", "日本語": "ja", "中文": "zh" };
-      const lengthMap: Record<string, string> = { "간결하게": "short", "기본값": "medium", "상세하게": "long" };
-      const diffMap: Record<string, string> = { "간결하게": "easy", "기본값": "medium", "상세하게": "hard" };
-      const countMap: Record<string, number> = { "간결하게": 3, "기본값": 5, "상세하게": 10 };
-      const lang = langMap[cfg.language] || "ko";
-      const length = lengthMap[cfg.length] || "medium";
-      let endpoint = `${API}/api/generate`;
-      const payload: any = { doc_ids: docIds, notebook_id: notebookId, week_id: weekId };
-
-      if (typeId === "quiz") {
-        payload.type = "quiz";
-        payload.quiz_count = countMap[cfg.length] || 5;
-        payload.difficulty = diffMap[cfg.length] || "medium";
-        payload.topic = cfg.format || cfg.instructions || "";
-        payload.item_title = docNames || "퀴즈";
-      } else if (typeId === "audio") {
-        endpoint += "/audio";
-        const audioFormatMap: Record<string, string> = {
-          "강의 요약 오디오": "lecture_summary",
-          "핵심 개념 설명": "concept_explanation",
-          "Q&A 형식": "qa",
-          "스토리텔링 방식": "storytelling",
-          "토론 형식": "debate",
-          "인터뷰 형식": "interview",
-        };
-        payload.format = audioFormatMap[cfg.format] || "lecture_summary";
-        payload.language = lang;
-        payload.length = length;
-        payload.focus = cfg.instructions;
-        payload.item_title = docNames || "오디오";
-      } else if (typeId === "mindmap") {
-        endpoint += "/mindmap";
-        payload.language = lang;
-        payload.focus = cfg.instructions || cfg.format;
-      } else if (typeId === "flashcard") {
-        endpoint += "/flashcard";
-        payload.count = countMap[cfg.length] || 5;
-        payload.difficulty = diffMap[cfg.length] || "medium";
-        payload.topic = cfg.format || cfg.instructions || "";
-        payload.language = lang;
-        payload.item_title = docNames || "플래시카드";
-      } else if (typeId === "slides") {
-        endpoint += "/slides";
-        payload.format = cfg.format || "lecture";
-        payload.length = length;
-        payload.language = lang;
-        payload.prompt = cfg.instructions;
-        payload.item_title = docNames || "슬라이드";
-      } else if (typeId === "report") {
-        endpoint += "/report";
-        payload.format = cfg.format || "report";
-        payload.language = lang;
-        payload.length = length;
-        payload.tone = cfg.style === "구어체" ? "casual" : cfg.style === "학술체" ? "academic" : "formal";
-        payload.instructions = cfg.instructions;
-        payload.item_title = docNames || "보고서";
-      } else if (typeId === "table") {
-        throw new Error("데이터 표 생성은 아직 연동 전입니다.");
-      }
-
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(getReadableError(data, "생성 실패"));
-
-      setActiveModal(null);
-      onRefresh?.();
-    } catch (error: any) {
-      const message = getReadableError(error?.message ?? error, "생성 중 오류가 발생했습니다.");
-      alert(`오류: ${message}`);
-    } finally {
-      setIsGenerating(null);
-    }
-  };
-
   return (
     <div className="flex flex-col h-full bg-white relative">
       <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-gray-100 overflow-hidden" style={{ minHeight: 44 }}>
         <span className="text-gray-800 whitespace-nowrap" style={{ fontSize: "0.92rem", fontWeight: 700 }}>스튜디오</span>
-        <button
-          onClick={() => setIsMenuOpen(true)}
-          className="w-6 h-6 rounded-md bg-gray-100 hover:bg-blue-100 flex items-center justify-center text-gray-400 hover:text-blue-500 transition-colors shrink-0"
-        >
-          <Plus size={14} />
-        </button>
       </div>
 
       <div className="px-4 py-3 border-b border-gray-100 shrink-0">
@@ -600,58 +442,6 @@ export function StudentStudioPanel({
         )}
       </div>
 
-      {isMenuOpen && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[100] px-4" onClick={() => setIsMenuOpen(false)}>
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col min-h-[400px]" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-5 border-b border-gray-100 bg-white z-10">
-              <div>
-                <h3 className="text-lg font-bold text-gray-900">AI 학습 자료 자동 생성</h3>
-                <p className="text-sm text-gray-500 mt-0.5">강사 소스를 바탕으로 학습 자료를 생성합니다.</p>
-              </div>
-              <button onClick={() => setIsMenuOpen(false)} className="p-1.5 hover:bg-gray-100 rounded-full transition-colors mb-auto">
-                <X className="w-5 h-5 text-gray-500" />
-              </button>
-            </div>
-            <div className="p-6 grid grid-cols-2 sm:grid-cols-3 gap-4 overflow-y-auto max-h-[60vh] bg-gray-50 flex-1">
-              {STUDIO_CREATION_OPTIONS.map((option) => {
-                const Icon = option.icon;
-                return (
-                  <button
-                    key={option.id}
-                    onClick={() => {
-                      if (["video", "infographic"].includes(option.id)) {
-                        alert("해당 기능은 곧 지원 예정입니다.");
-                        return;
-                      }
-                      setIsMenuOpen(false);
-                      setActiveModal(option.id === "slide" ? "slides" : option.id);
-                    }}
-                    className="relative flex flex-col items-center justify-center p-5 border bg-white rounded-2xl transition-all group border-gray-100 hover:border-blue-400 hover:shadow-md cursor-pointer"
-                  >
-                    <div className={`w-12 h-12 flex items-center justify-center rounded-full mb-3 transition-transform group-hover:scale-110 ${option.bg}`}>
-                      <Icon className={`w-6 h-6 ${option.color}`} />
-                    </div>
-                    <span className="text-[13px] font-bold text-gray-700 text-center break-keep">{option.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeModal && (
-        <UnifiedGenerateModal
-          typeId={activeModal}
-          loading={isGenerating === activeModal}
-          docs={docs as any[]}
-          activeDocIds={docs.map((d: any) => d.id)}
-          weeks={modalWeeks as any[]}
-          initialWeekId={null}
-          onClose={() => setActiveModal(null)}
-          onGenerate={(cfg, weekId) => handleGenerate(activeModal, cfg, weekId)}
-        />
-      )}
     </div>
   );
 }

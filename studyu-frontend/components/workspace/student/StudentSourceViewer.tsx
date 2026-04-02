@@ -23,10 +23,17 @@ function downloadText(text: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+const KNOWN_EXTS = new Set([
+  "pdf","docx","doc","pptx","ppt","hwp","hwpx","txt","xlsx","xls",
+  "jpg","jpeg","png","gif","webp","mp4","mov","avi","mkv","webm","mp3","m4a","wav",
+]);
+
+
 interface SourceInfo {
   id: string;
   filename: string;
   file_type: string;
+  storage_path?: string;
 }
 
 interface StudentSourceViewerProps {
@@ -52,9 +59,16 @@ export function StudentSourceViewer({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lowerType = source.file_type.toLowerCase();
-  const isImage = ["image", "jpg", "jpeg", "png", "gif", "webp"].includes(lowerType);
-  const isVideo = ["video", "mp4", "mov", "avi", "mkv", "webm"].includes(lowerType);
-  const isAudio = ["audio", "mp3", "m4a", "wav"].includes(lowerType);
+  const fileExt = source.filename.toLowerCase().split(".").pop() ?? "";
+  const storagePath = source.storage_path ?? "";
+  const isUrlSource =
+    lowerType === "url" ||
+    lowerType === "link" ||
+    (storagePath.startsWith("http") && !KNOWN_EXTS.has(fileExt));
+  const effectiveExt = isUrlSource ? "" : (KNOWN_EXTS.has(fileExt) ? fileExt : lowerType);
+  const isImage = ["image", "jpg", "jpeg", "png", "gif", "webp"].includes(effectiveExt);
+  const isVideo = ["video", "mp4", "mov", "avi", "mkv", "webm"].includes(effectiveExt);
+  const isAudio = ["audio", "mp3", "m4a", "wav"].includes(effectiveExt);
   const getYoutubeEmbedUrl = (url: string) => {
     try {
       const parsed = new URL(url);
@@ -115,9 +129,6 @@ export function StudentSourceViewer({
       <div className="shrink-0 px-5 py-3 border-b border-gray-200 flex items-center justify-between">
         <div className="min-w-0">
           <h2 className="text-[17px] font-bold text-gray-900 truncate leading-tight">{source.filename}</h2>
-          <p className="text-[11px] text-gray-500 mt-0.5">
-            {lowerType === "url" ? "웹 소스" : `${source.file_type.toUpperCase()} 문서`}
-          </p>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-4">
           {sourceFileUrl && !isEmbeddableYoutube && lowerType !== "url" && (

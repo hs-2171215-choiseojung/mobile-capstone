@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
-import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2 } from 'lucide-react';
+import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2, X } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 
 interface Doc {
@@ -16,11 +16,12 @@ interface StudentChatPanelProps {
   docs: Doc[];
   selectedLLM?: string;
   selectedDifficulty?: string;
+  onClose?: () => void;
 }
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, selectedDifficulty }: StudentChatPanelProps) {
+export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, selectedDifficulty, onClose }: StudentChatPanelProps) {
   const [messages, setMessages] = useState<any[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -133,16 +134,27 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
           <BotMessageSquare className="w-5 h-5 text-[#155dfc]" />
           <h2 className="text-[14px] font-semibold text-[#1a1d26]">Ask AI</h2>
         </div>
-        
-        {messages.length > 0 && (
-          <button 
-            onClick={handleClearChat}
-            className="p-1.5 text-[#99a1af] hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
-            title="대화 내역 지우기"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-        )}
+
+        <div className="flex items-center gap-1">
+          {messages.length > 0 && (
+            <button
+              onClick={handleClearChat}
+              className="p-1.5 text-[#99a1af] hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+              title="대화 내역 지우기"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          )}
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1.5 text-[#99a1af] hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
+              title="닫기"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 메시지 리스트 영역 */}
