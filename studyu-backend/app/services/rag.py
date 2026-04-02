@@ -1018,6 +1018,24 @@ def chat_with_docs(
 
     elif is_multi:
         names_str = ", ".join(f"'{n}'" for n in doc_filenames)
+    # 비디오/오디오 파일 여부 확인 (시스템 프롬프트에 안내 추가용)
+    video_audio_exts = VIDEO_AUDIO_EXTENSIONS
+    doc_filenames = _get_filenames(doc_ids)
+    has_video = any(
+        name.lower().rsplit(".", 1)[-1] in video_audio_exts
+        for name in doc_filenames
+        if "." in name
+    )
+    video_note = (
+        "\n\n중요: 비디오 또는 오디오 파일이 포함되어 있습니다. "
+        "[음성 전사 내용 - 파일명] 태그가 붙은 내용은 해당 영상/음성의 음성을 텍스트로 변환한 것입니다. "
+        "'동영상이 뭘 말하나요?', '영상 내용 요약해줘' 같은 질문에는 이 전사 내용을 바탕으로 답변하세요."
+        if has_video else ""
+    )
+
+    if is_multi:
+        doc_names = doc_filenames
+        names_str = ", ".join(f"'{n}'" for n in doc_names)
         system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
 총 {len(doc_ids)}개의 문서({names_str})가 제공됩니다.
 반드시 각 문서를 모두 참조하여 답변하세요.

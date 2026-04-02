@@ -465,3 +465,49 @@ async def generate_video_route(
         "title": title,
         "item_id": item_id,
     }
+
+
+class InfographicGenerateRequest(BaseModel):
+    doc_ids: list[str]
+    format: str = "overview"       # overview | process | comparison | statistics | timeline
+    language: str = "ko"
+    instructions: str = ""
+    model: Optional[str] = "gpt-4o-mini"
+    notebook_id: Optional[str] = None
+
+
+@router.post("/generate/infographic")
+async def generate_infographic_route(
+    req: InfographicGenerateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """문서 내용을 바탕으로 인포그래픽을 생성."""
+    if not req.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
+
+    from app.services.rag import generate_infographic
+    try:
+        title, description, sections = generate_infographic(
+            doc_ids=req.doc_ids,
+            format=req.format,
+            language=req.language,
+            instructions=req.instructions,
+            model=req.model or "gpt-4o-mini",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"인포그래픽 생성 실패: {str(e)}")
+
+    item_id = _save_studio_item(
+        user_id=user["id"],
+        item_type="infographic",
+        title=title,
+        subtitle=f"인포그래픽 · 소스 {len(req.doc_ids)}개",
+        content={"title": title, "description": description, "sections": sections},
+        notebook_id=req.notebook_id,
+    )
+    return {
+        "title": title,
+        "description": description,
+        "sections": sections,
+        "item_id": item_id,
+    }

@@ -3,15 +3,13 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { ChevronDown, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, BotMessageSquare } from 'lucide-react';
+import { ChevronDown, BotMessageSquare } from 'lucide-react';
 import { Resizable } from 're-resizable';
 
 import { TopNavBar } from "@/components/workspace/student/TopNavBar";
-import { StudentSourcePanel } from "@/components/workspace/student/StudentSourcePanel";
 import { WeeklyPlanCard } from "@/components/workspace/student/WeeklyPlanCard";
-import { StudentStudioPanel } from "@/components/workspace/student/StudentStudioPanel";
 import { StudentChatPanel } from "@/components/workspace/student/StudentChatPanel";
-import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer"; 
+import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer";
 import { StudentSourceViewer } from "@/components/workspace/student/StudentSourceViewer";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -39,20 +37,26 @@ interface DocumentInfo {
   status?: string;
 }
 
+const PREVIEWABLE_OFFICE_EXTS = new Set(["docx", "pptx", "ppt"]);
+
+function getOfficeEmbedUrl(url: string): string {
+  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`;
+}
+
 export default function StudentWorkspacePage() {
   const params = useParams();
   const notebookId = params.id as string;
-  
+
   const [notebookTitle, setNotebookTitle] = useState<string>("");
-  const [currentUserId, setCurrentUserId] = useState<string>("");
 
   const [activeDocIds, setActiveDocIds] = useState<string[]>([]);
   const [docs, setDocs] = useState<any[]>([]);
-  const [studioItems, setStudioItems] = useState<any[]>([]); 
+  const [studioItems, setStudioItems] = useState<any[]>([]);
   const [weekPlans, setWeekPlans] = useState<WeekPlan[]>([]);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [selectedSource, setSelectedSource] = useState<DocumentInfo | null>(null);
   const [selectedSourceUrl, setSelectedSourceUrl] = useState("");
+  const [selectedSourceDownloadUrl, setSelectedSourceDownloadUrl] = useState("");
   const [selectedSourceError, setSelectedSourceError] = useState("");
   const [isSourceLoading, setIsSourceLoading] = useState(false);
   const [selectedSourceTranscript, setSelectedSourceTranscript] = useState<string | undefined>(undefined);
@@ -62,20 +66,15 @@ export default function StudentWorkspacePage() {
   const [expandedCenterWeeks, setExpandedCenterWeeks] = useState<number[]>([]);
   const [centerWeeksHydrated, setCenterWeeksHydrated] = useState(false);
 
-  const [isLeftOpen, setIsLeftOpen] = useState(true);
-  const [isRightOpen, setIsRightOpen] = useState(true);
-  const [leftOpenBefore, setLeftOpenBefore] = useState(true);
+  const [isDataLoading, setIsDataLoading] = useState(true);
 
-  const [chatHeight, setChatHeight] = useState(320);
-  const [isChatOpen, setIsChatOpen] = useState(true);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatWidth, setChatWidth] = useState(380);
 
-  const [leftWidth, setLeftWidth] = useState(288);
-  const [rightWidth, setRightWidth] = useState(360);
-  const [isLeftResizing, setIsLeftResizing] = useState(false);
-  const [isRightResizing, setIsRightResizing] = useState(false);
   const centerScrollRef = useRef<HTMLDivElement | null>(null);
   const centerScrollTopRef = useRef(0);
   const shouldRestoreCenterScrollRef = useRef(false);
+  const weekCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   const toText = (value: unknown, fallback = ""): string => {
     if (typeof value === "string") return value;
@@ -133,11 +132,11 @@ export default function StudentWorkspacePage() {
   };
 
   const fetchData = async () => {
+    setIsDataLoading(true);
+    try {
     const supabase = createClient();
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData.session?.access_token;
-    const me = sessionData.session?.user?.id || "";
-    setCurrentUserId(me);
     if (!token) return;
 
     const [notebookRes, studioRes, studyPlanRes] = await Promise.all([
@@ -184,6 +183,9 @@ export default function StudentWorkspacePage() {
     } else {
       setStudioItems([]);
     }
+    } finally {
+      setIsDataLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -215,7 +217,9 @@ export default function StudentWorkspacePage() {
       .filter(Boolean) as string[]
   );
 
-  const cards = weekPlans.map((week, index) => {
+  const cards = weekPlans
+    .filter((week) => (week as any).status === "ACTIVE")
+    .map((week, index) => {
     const weekSources = week.sources ?? [];
     const weekDocs = mergeUniqueDocuments(
       weekSources
@@ -266,24 +270,6 @@ export default function StudentWorkspacePage() {
     };
   });
 
-  const unassignedStudioItems = studioItems.filter((item) => {
-    if (!item?.id) return false;
-    if (assignedStudioItemIds.has(item.id)) return false;
-    return typeof item?.content?.week_id !== "number";
-  });
-
-  const cardsWithUnassigned = unassignedStudioItems.length > 0
-    ? [
-        ...cards,
-        {
-          key: "unassigned-studio",
-          weekNumber: 0,
-          weekTitle: "주차 미지정",
-          instruct: "",
-          items: unassignedStudioItems,
-        },
-      ]
-    : cards;
 
   useEffect(() => {
     if (!notebookId) return;
@@ -326,17 +312,26 @@ export default function StudentWorkspacePage() {
     shouldRestoreCenterScrollRef.current = false;
   }, [selectedItem, selectedSource]);
 
+  useEffect(() => {
+    return () => {
+      if (selectedSourceUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(selectedSourceUrl);
+      }
+    };
+  }, [selectedSourceUrl]);
+
   const AUDIO_EXTS = new Set(["mp3", "m4a", "wav"]);
   const TEXT_ONLY_EXTS = new Set(["docx", "pptx", "ppt", "hwp", "hwpx"]);
 
   const openSourceDocument = async (doc: DocumentInfo) => {
+    if (selectedSourceUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(selectedSourceUrl);
+    }
     setActiveDocIds([doc.id]);
-    setLeftOpenBefore(isLeftOpen);
-    setIsLeftOpen(false);
-    if (!isRightOpen) setIsRightOpen(true);
     setSelectedItem(null);
     setSelectedSource(doc);
     setSelectedSourceUrl("");
+    setSelectedSourceDownloadUrl("");
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
     setIsSourceLoading(true);
@@ -347,31 +342,49 @@ export default function StudentWorkspacePage() {
       if (!token) { setSelectedSourceError("로그인이 필요합니다."); return; }
 
       const ext = doc.filename.toLowerCase().split(".").pop() ?? doc.file_type;
-      const needsUrl = !TEXT_ONLY_EXTS.has(ext);
-      const needsText = AUDIO_EXTS.has(ext) || TEXT_ONLY_EXTS.has(ext);
+      const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
+      const needsAccessUrl = !TEXT_ONLY_EXTS.has(ext) || PREVIEWABLE_OFFICE_EXTS.has(ext);
+      const needsText = AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext) || TEXT_ONLY_EXTS.has(ext);
+      const needsPreviewPdf = PREVIEWABLE_OFFICE_EXTS.has(ext);
 
-      const fetches: Promise<void>[] = [];
-
-      if (needsUrl) {
-        fetches.push(
-          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } })
-            .then((r) => r.json().catch(() => ({})))
-            .then((data) => {
-              if (data?.url) setSelectedSourceUrl(data.url);
-              else setSelectedSourceError(data?.detail || "문서 URL을 가져오지 못했습니다.");
-            })
-        );
-      }
-
-      if (needsText) {
-        fetches.push(
-          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } })
+      const nextSourceTextPromise = needsText
+        ? fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } })
             .then((r) => r.json().catch(() => ({})))
             .then((data) => { if (data?.text) setSelectedSourceTranscript(data.text); })
-        );
+        : Promise.resolve();
+
+      let nextAccessUrl = "";
+      if (needsAccessUrl) {
+        const accessResponse = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const accessData = await accessResponse.json().catch(() => ({}));
+
+        if (accessResponse.ok && accessData?.url) {
+          nextAccessUrl = accessData.url;
+          setSelectedSourceDownloadUrl(accessData.url);
+          if (!needsPreviewPdf) {
+            setSelectedSourceUrl(accessData.url);
+          }
+        } else if (!needsText && !needsPreviewPdf) {
+          setSelectedSourceError(accessData?.detail || "문서 URL을 가져오지 못했습니다.");
+        }
       }
 
-      await Promise.all(fetches);
+      if (needsPreviewPdf) {
+        const previewResponse = await fetch(`${API}/api/documents/${doc.id}/preview-pdf`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (previewResponse.ok) {
+          const blob = await previewResponse.blob();
+          setSelectedSourceUrl(URL.createObjectURL(blob));
+        } else if (nextAccessUrl) {
+          setSelectedSourceUrl(getOfficeEmbedUrl(nextAccessUrl));
+        }
+      }
+
+      await nextSourceTextPromise;
     } catch {
       setSelectedSourceError("문서를 여는 중 오류가 발생했습니다.");
     } finally {
@@ -379,53 +392,116 @@ export default function StudentWorkspacePage() {
     }
   };
 
+  const scrollToWeek = (weekNumber: number) => {
+    setExpandedCenterWeeks((prev) =>
+      prev.includes(weekNumber) ? prev : [...prev, weekNumber]
+    );
+    setTimeout(() => {
+      const el = weekCardRefs.current.get(weekNumber);
+      if (el && centerScrollRef.current) {
+        const container = centerScrollRef.current;
+        const elRect = el.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        container.scrollTo({ top: container.scrollTop + elRect.top - containerRect.top - 16, behavior: "smooth" });
+      }
+    }, 50);
+  };
+
+  const closeSource = () => {
+    if (selectedSourceUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(selectedSourceUrl);
+    }
+    setSelectedSource(null);
+    setSelectedSourceUrl("");
+    setSelectedSourceDownloadUrl("");
+    setSelectedSourceError("");
+    setSelectedSourceTranscript(undefined);
+    setActiveDocIds([]);
+    shouldRestoreCenterScrollRef.current = true;
+  };
+
   return (
-    <div className="flex flex-col h-screen bg-white overflow-hidden min-w-[1200px]">
+    <div className="flex flex-col h-screen bg-white overflow-hidden">
       <TopNavBar title={notebookTitle} />
       <div className="flex flex-1 pt-[64px] overflow-hidden relative">
-        
-        {/* 왼쪽: 소스 패널 */}
-        <Resizable
-          size={{ width: isLeftOpen ? leftWidth : 0, height: '100%' }}
-          minWidth={isLeftOpen ? 200 : 0}
-          maxWidth={isLeftOpen ? 600 : 0}
-          enable={{ right: isLeftOpen }}
-          onResizeStart={() => setIsLeftResizing(true)}
-          onResizeStop={(e, direction, ref, d) => {
-            setIsLeftResizing(false);
-            setLeftWidth(prev => prev + d.width);
-          }}
-          handleStyles={{ right: { width: '12px', right: '-6px', zIndex: 50, cursor: 'col-resize' } }}
-          handleComponent={{
-            right: isLeftOpen ? (
-              <div className="w-full h-full flex items-center justify-center group">
-                <div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors shadow-sm"></div>
-              </div>
-            ) : <></>
-          }}
-          className={`shrink-0 bg-white flex flex-col relative z-10 border-[#e7e9ed] ${
-            !isLeftResizing ? "transition-all duration-300 ease-in-out" : ""
-          } ${isLeftOpen ? "border-r" : "border-r-0 overflow-hidden"}`}
-        >
-          <div className="w-full h-full flex flex-col min-w-[200px]">
-            <StudentSourcePanel
-              sources={displayDocs}
-              onOpenSource={openSourceDocument}
-              selectedSourceId={selectedSource?.id ?? null}
-              isOpen={isLeftOpen}
-              onToggleOpen={() => setIsLeftOpen((prev) => !prev)}
-            />
-          </div>
-        </Resizable>
 
-        {/* 가운데: 메인 패널 */}
-        <div className="flex-1 flex flex-col min-w-0 h-full relative transition-all duration-300">
-          
-          <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-[#e7e9ed] shrink-0 z-10">
-            <button onClick={() => setIsLeftOpen(!isLeftOpen)} className="p-1.5 text-gray-400 hover:text-[#155dfc] hover:bg-blue-50 rounded-lg transition-colors">
-              {isLeftOpen ? <PanelLeftClose className="w-5 h-5" /> : <PanelLeftOpen className="w-5 h-5" />}
-            </button>
-            <div className="flex items-center gap-3">
+        {/* 채팅 없이 단독으로 열리는 스튜디오 타입 */}
+        {(() => {
+          const CHAT_TYPES = new Set(["quiz", "mindmap", "plan", "table", "data", "flashcard"]);
+          const normalizeType = (t: string) => ({ memo: "notepad", summary: "report", plan: "mindmap", data: "table" }[t] || t);
+          const itemNeedsNoChat = selectedItem && CHAT_TYPES.has(normalizeType(selectedItem.type ?? ""));
+
+          if (selectedSource) return (
+            /* 소스 문서: 뷰어 + 우측 채팅 (Resizable) */
+            <div className="flex flex-1 overflow-hidden">
+              <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative min-h-0">
+                <StudentSourceViewer
+                  source={selectedSource}
+                  sourceUrl={selectedSourceUrl}
+                  sourceFileUrl={selectedSourceDownloadUrl || selectedSourceUrl}
+                  loading={isSourceLoading}
+                  error={selectedSourceError}
+                  transcriptText={selectedSourceTranscript}
+                  onClose={closeSource}
+                />
+              </div>
+              <Resizable
+                size={{ width: chatWidth, height: '100%' }}
+                minWidth={280}
+                maxWidth={640}
+                enable={{ left: true }}
+                onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
+                handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
+                handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
+                className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
+              >
+                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} />
+              </Resizable>
+            </div>
+          );
+
+          if (selectedItem && itemNeedsNoChat) return (
+            /* 퀴즈·마인드맵·표·플래시카드: 단독 전체화면 */
+            <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative">
+              <StudioItemViewer
+                item={selectedItem}
+                onClose={() => { setSelectedItem(null); shouldRestoreCenterScrollRef.current = true; }}
+              />
+            </div>
+          );
+
+          if (selectedItem) return (
+            /* 일반 스튜디오 아이템: 뷰어 + 우측 채팅 (Resizable) */
+            <div className="flex flex-1 overflow-hidden">
+              <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative min-h-0">
+                <StudioItemViewer
+                  item={selectedItem}
+                  onClose={() => { setSelectedItem(null); shouldRestoreCenterScrollRef.current = true; }}
+                />
+              </div>
+              <Resizable
+                size={{ width: chatWidth, height: '100%' }}
+                minWidth={280}
+                maxWidth={640}
+                enable={{ left: true }}
+                onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
+                handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
+                handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
+                className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
+              >
+                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} />
+              </Resizable>
+            </div>
+          );
+
+          return null;
+        })()}
+
+        {!selectedSource && !selectedItem && (
+          /* 기본: Weekly Study Plan */
+          <div className="flex-1 flex flex-col min-w-0 h-full relative overflow-hidden">
+
+            <div className="flex items-center justify-end px-6 py-3 bg-white border-b border-[#e7e9ed] shrink-0 z-10">
               <div className="flex items-center gap-2">
                 <div className="relative">
                   <select value={selectedLLM} onChange={(e) => setSelectedLLM(e.target.value)} className="appearance-none bg-[#f8f9fb] border border-[#e7e9ed] hover:bg-[#e7e9ed] text-[#414751] text-[12px] font-medium pl-4 pr-8 py-1.5 rounded-full focus:outline-none focus:ring-2 focus:ring-[#155dfc]/20 transition-colors cursor-pointer shadow-sm">
@@ -444,188 +520,196 @@ export default function StudentWorkspacePage() {
                   <ChevronDown className="w-3.5 h-3.5 text-[#99a1af] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 </div>
               </div>
-              <div className="w-px h-5 bg-gray-200 mx-1" />
-              <button onClick={() => setIsRightOpen(!isRightOpen)} className="p-1.5 text-gray-400 hover:text-[#155dfc] hover:bg-blue-50 rounded-lg transition-colors">
-                {isRightOpen ? <PanelRightClose className="w-5 h-5" /> : <PanelRightOpen className="w-5 h-5" />}
-              </button>
             </div>
-          </div>
 
-          {selectedItem ? (
-            <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative">
-              <StudioItemViewer 
-                item={selectedItem} 
-                onClose={() => {
-                  setSelectedItem(null);
-                  setIsLeftOpen(leftOpenBefore);
-                  shouldRestoreCenterScrollRef.current = true;
-                }} 
-              />
+            {/* 진도현황 고정 헤더 */}
+            <div className="shrink-0 bg-white border-b border-[#e7e9ed] px-[20px] py-3 z-10">
+              <div className="max-w-[900px] mx-auto">
+                {isDataLoading ? (
+                  <div className="animate-pulse">
+                    <div className="h-3 w-16 bg-[#d1d5db] rounded mb-2" />
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(16, 1fr)', gap: '6px' }}>
+                      {Array.from({ length: 16 }).map((_, i) => (
+                        <div key={i} className="flex flex-col items-center gap-1">
+                          <div className="w-7 h-7 rounded-full bg-[#e7e9ed]" />
+                          <div className="h-2 w-3 bg-[#e7e9ed] rounded" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (() => {
+                  const totalWeeks = Math.max(16, weekPlans.length);
+                  const weekNums = Array.from({ length: totalWeeks }, (_, i) => i + 1);
+                  const cols = totalWeeks <= 16 ? 16 : Math.ceil(totalWeeks / Math.ceil(totalWeeks / 16));
+                  return (
+                    <>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[12px] font-semibold text-[#2d3748]">진도현황</span>
+                        <div className="flex items-center gap-3">
+                          <span className="flex items-center gap-1 text-[10px] text-[#414751]">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#155dfc] inline-block" />
+                            활성 {cards.length}주차
+                          </span>
+                          <span className="flex items-center gap-1 text-[10px] text-[#414751]">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#d1d5db] inline-block" />
+                            미공개 {totalWeeks - cards.length}주차
+                          </span>
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: '4px' }}>
+                        {weekNums.map((weekNum) => {
+                          const isActive = cards.some((c) => c.weekNumber === weekNum);
+                          return (
+                            <button
+                              key={weekNum}
+                              onClick={() => isActive && scrollToWeek(weekNum)}
+                              disabled={!isActive}
+                              className={`flex flex-col items-center gap-0.5 ${isActive ? "group cursor-pointer" : "cursor-default"}`}
+                              title={isActive ? `${weekNum}주차로 이동` : `${weekNum}주차`}
+                            >
+                              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold border-2 transition-all ${isActive ? "group-hover:scale-110" : ""} ${
+                                isActive
+                                  ? "bg-[#155dfc] border-[#155dfc] text-white shadow-sm"
+                                  : "bg-white border-[#d1d5db] text-[#9ca3af]"
+                              }`}>
+                                {weekNum}
+                              </div>
+                              <span className={`text-[8px] font-medium leading-none ${isActive ? "text-[#155dfc]" : "text-[#9ca3af]"}`}>
+                                {isActive ? `${weekNum}주` : "-"}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
             </div>
-          ) : selectedSource ? (
-            <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative">
-              <StudentSourceViewer
-                source={selectedSource}
-                sourceUrl={selectedSourceUrl}
-                loading={isSourceLoading}
-                error={selectedSourceError}
-                transcriptText={selectedSourceTranscript}
-                onClose={() => {
-                  setSelectedSource(null);
-                  setSelectedSourceUrl("");
-                  setSelectedSourceError("");
-                  setSelectedSourceTranscript(undefined);
-                  setIsLeftOpen(leftOpenBefore);
-                  shouldRestoreCenterScrollRef.current = true;
-                }}
-              />
-            </div>
-          ) : (
-            <>
-              <div ref={centerScrollRef} className="flex-1 overflow-y-auto px-[32px] py-[32px]">
-                <div className="max-w-[800px] mx-auto">
-                  <div className="mb-[32px]">
-                    <h1 className="font-['Inter'] text-[30px] font-semibold text-[#1a1d26] tracking-[-0.75px] leading-[36px]">
+
+            {/* 콘텐츠 + 우측 채팅 패널 */}
+            <div className="flex flex-1 overflow-hidden">
+              <div ref={centerScrollRef} className="flex-1 overflow-y-auto px-[20px] py-[20px]">
+                <div className="max-w-[900px] mx-auto">
+                  <div className="mb-[16px]">
+                    <h1 className="font-['Inter'] text-[22px] font-semibold text-[#1a1d26] tracking-[-0.5px] leading-[28px]">
                       Weekly Study Plan
                     </h1>
-                    <p className="font-['Inter'] text-[16px] text-[#99a1af] mt-[4px] leading-[24px]">
+                    <p className="font-['Inter'] text-[13px] text-[#99a1af] mt-[2px] leading-[20px]">
                       {toText(notebookTitle, "노트북")} • Student Mode
                     </p>
                   </div>
-                  <div className="flex flex-col gap-[48px] pb-10">
-                    {cardsWithUnassigned.length === 0 ? (
-                      <div className="text-sm text-gray-400 bg-gray-50 border border-dashed border-gray-200 rounded-xl px-5 py-6 text-center">
-                        강사가 추가한 주차가 아직 없습니다.
-                      </div>
-                    ) : (
-                      cardsWithUnassigned.map((card) => (
-                        <WeeklyPlanCard 
-                          key={card.key} 
-                          weekNumber={card.weekNumber}
-                          weekTitle={card.weekTitle}
-                          instruct={card.instruct}
-                          items={card.items}
-                          isExpanded={expandedCenterWeeks.includes(card.weekNumber)}
-                          onToggleExpanded={() => {
-                            setExpandedCenterWeeks((prev) =>
-                              prev.includes(card.weekNumber)
-                                ? prev.filter((id) => id !== card.weekNumber)
-                                : [...prev, card.weekNumber]
-                            );
-                          }}
-                          onOpenItem={(item) => {
-                            centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
-                            setSelectedSource(null);
-                            setSelectedSourceUrl("");
-                            setSelectedSourceError("");
-                            setSelectedItem(item);
-                            setLeftOpenBefore(isLeftOpen);
-                            setIsLeftOpen(false);
-                            if (!isRightOpen) setIsRightOpen(true);
-                          }}
-                          onOpenDoc={(doc) => {
-                            const targetDocId = doc?.resolvedDocId || doc?.sourceDocId || doc?.id;
-                            if (!targetDocId) return;
-                            const targetDoc = displayDocs.find((candidate) => candidate.id === targetDocId);
-                            if (!targetDoc) return;
-                            centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
-                            setActiveDocIds([targetDoc.id]);
-                            setIsLeftOpen(true);
-                            void openSourceDocument(targetDoc);
-                          }}
-                        />
-                      ))
-                    )}
-                  </div>
+
+                  {/* 카드 로딩 스켈레톤 */}
+                  {isDataLoading && (
+                    <div className="animate-pulse">
+                      {Array.from({ length: 3 }).map((_, i) => (
+                        <div key={i} className="mb-[28px]">
+                          <div className="flex items-center gap-2.5 pb-2.5 border-b border-gray-200 mb-3">
+                            <div className="w-4 h-4 rounded bg-[#e7e9ed]" />
+                            <div className="h-4 w-32 bg-[#e7e9ed] rounded" />
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            {Array.from({ length: 2 }).map((_, j) => (
+                              <div key={j} className="flex items-center px-3 py-2.5 border border-gray-200 rounded-lg">
+                                <div className="w-8 h-8 rounded-lg bg-[#e7e9ed] mr-3 shrink-0" />
+                                <div className="flex-1">
+                                  <div className="h-3.5 w-40 bg-[#e7e9ed] rounded mb-1.5" />
+                                  <div className="h-2.5 w-24 bg-[#f3f4f6] rounded" />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 카드 */}
+                  {!isDataLoading && (
+                    <div className="flex flex-col gap-[28px] pb-10">
+                      {cards.length === 0 ? (
+                        <div className="text-sm text-gray-400 bg-gray-50 border border-dashed border-gray-200 rounded-xl px-5 py-6 text-center">
+                          강사가 추가한 주차가 아직 없습니다.
+                        </div>
+                      ) : (
+                        cards.map((card) => (
+                          <div
+                            key={card.key}
+                            ref={(el) => {
+                              if (el) weekCardRefs.current.set(card.weekNumber, el);
+                              else weekCardRefs.current.delete(card.weekNumber);
+                            }}
+                          >
+                            <WeeklyPlanCard
+                              weekNumber={card.weekNumber}
+                              weekTitle={card.weekTitle}
+                              instruct={card.instruct}
+                              items={card.items}
+                              isExpanded={expandedCenterWeeks.includes(card.weekNumber)}
+                              onToggleExpanded={() => {
+                                setExpandedCenterWeeks((prev) =>
+                                  prev.includes(card.weekNumber)
+                                    ? prev.filter((id) => id !== card.weekNumber)
+                                    : [...prev, card.weekNumber]
+                                );
+                              }}
+                              onOpenItem={(item) => {
+                                centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
+                                setSelectedItem(item);
+                              }}
+                              onOpenDoc={(doc) => {
+                                const targetDocId = doc?.resolvedDocId || doc?.sourceDocId || doc?.id;
+                                if (!targetDocId) return;
+                                const targetDoc = displayDocs.find((candidate) => candidate.id === targetDocId);
+                                if (!targetDoc) return;
+                                centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
+                                void openSourceDocument(targetDoc);
+                              }}
+                            />
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
+              {/* 우측 채팅 패널 */}
               {isChatOpen && (
                 <Resizable
-                  size={{ width: '100%', height: chatHeight }}
-                  onResizeStop={(e, direction, ref, d) => {
-                    const newHeight = chatHeight + d.height;
-                    if (newHeight <= 100) {
-                      setIsChatOpen(false);
-                      setChatHeight(320);
-                    } else {
-                      setChatHeight(newHeight);
-                    }
+                  size={{ width: chatWidth, height: '100%' }}
+                  minWidth={280}
+                  maxWidth={640}
+                  enable={{ left: true }}
+                  onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
+                  handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
+                  handleComponent={{
+                    left: (
+                      <div className="w-full h-full flex items-center justify-center group">
+                        <div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" />
+                      </div>
+                    )
                   }}
-                  minHeight={50}
-                  maxHeight="80%"
-                  enable={{ top: true }}
-                  handleStyles={{ top: { marginTop: '-4px', height: '8px', cursor: 'row-resize', width: '100%', zIndex: 20 } }}
-                  handleComponent={{ top: <div className="w-full h-full flex items-center justify-center group"><div className="w-16 h-1 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors shadow-sm"></div></div> }}
-                  className="border-t border-[#e7e9ed] bg-white shadow-[0_-8px_15px_-3px_rgba(0,0,0,0.05)] shrink-0 flex flex-col z-10"
+                  className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
                 >
-                  <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} />
+                  <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} onClose={() => setIsChatOpen(false)} />
                 </Resizable>
               )}
-              {!isChatOpen && (
-                <button
-                  onClick={() => setIsChatOpen(true)}
-                  className="absolute bottom-6 right-6 w-14 h-14 bg-[#155dfc] text-white rounded-full flex items-center justify-center shadow-[0_8px_16px_rgba(21,93,252,0.3)] hover:bg-[#0d4ac4] hover:scale-105 transition-all z-50 group"
-                  title="Ask AI 열기"
-                >
-                  <BotMessageSquare className="w-6 h-6" />
-                </button>
-              )}
-            </>
-          )}
-        </div>
+            </div>
 
-        {/* 오른쪽: 스튜디오 패널 */}
-        <Resizable
-          size={{ width: isRightOpen ? rightWidth : 0, height: '100%' }}
-          minWidth={isRightOpen ? 250 : 0}
-          maxWidth={isRightOpen ? 800 : 0}
-          enable={{ left: isRightOpen }}
-          onResizeStart={() => setIsRightResizing(true)}
-          onResizeStop={(e, direction, ref, d) => {
-            setIsRightResizing(false);
-            setRightWidth(prev => prev + d.width);
-          }}
-          handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
-          handleComponent={{
-            left: isRightOpen ? (
-              <div className="w-full h-full flex items-center justify-center group">
-                <div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors shadow-sm"></div>
-              </div>
-            ) : <></>
-          }}
-          className={`shrink-0 bg-[#f8f9fa] flex flex-col relative z-10 border-[#e7e9ed] ${
-            !isRightResizing ? "transition-all duration-300 ease-in-out" : ""
-          } ${isRightOpen ? "border-l" : "border-l-0 overflow-hidden"}`}
-        >
-          <div className="w-full h-full flex flex-col min-w-[250px]">
-            {selectedItem || selectedSource ? (
-              <StudentChatPanel 
-                activeDocIds={activeDocIds} 
-                docs={docs} 
-                notebookId={notebookId}
-                selectedLLM={selectedLLM}
-                selectedDifficulty={selectedDifficulty}
-              />
-            ) : (
-              <StudentStudioPanel 
-                studioItems={studioItems} 
-                docs={displayDocs}
-                weeks={weekPlans}
-                notebookId={notebookId}
-                currentUserId={currentUserId}
-                onRefresh={() => fetchData()}
-                onOpenItem={(item) => {
-                  centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
-                  setSelectedItem(item);
-                  setLeftOpenBefore(isLeftOpen);
-                  setIsLeftOpen(false);
-                  if (!isRightOpen) setIsRightOpen(true);
-                }} 
-              />
+            {/* 플로팅 버튼 (채팅 닫혀있을 때) */}
+            {!isChatOpen && (
+              <button
+                onClick={() => setIsChatOpen(true)}
+                className="absolute bottom-6 right-6 w-14 h-14 bg-[#155dfc] text-white rounded-full flex items-center justify-center shadow-[0_8px_16px_rgba(21,93,252,0.3)] hover:bg-[#0d4ac4] hover:scale-105 transition-all z-50"
+                title="Ask AI 열기"
+              >
+                <BotMessageSquare className="w-6 h-6" />
+              </button>
             )}
           </div>
-        </Resizable>
+        )}
       </div>
     </div>
   );

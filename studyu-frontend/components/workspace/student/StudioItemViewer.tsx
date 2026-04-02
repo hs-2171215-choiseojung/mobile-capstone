@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useState, useEffect } from "react";
+import dynamic from "next/dynamic";
 import {
   QuizView,
   AudioView,
@@ -11,6 +12,11 @@ import {
   MemoView,
 } from "../StudioViews";
 import MindMapView from "../MindMapView";
+
+const InfographicView = dynamic(
+  () => import("../InfographicView").then((m) => ({ default: m.InfographicView })),
+  { ssr: false }
+);
 
 function downloadCsv(headers: string[], rows: string[][], filename: string) {
   const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
@@ -197,6 +203,18 @@ export function StudioItemViewer({ item, onClose }: StudioItemViewerProps) {
           )}
         </div>
       </div>
+    );
+  }
+
+  if (t === "infographic") {
+    const sections = c.sections || item.infographic?.sections || [];
+    const title = toText(item.title, "인포그래픽");
+    const description = c.description || item.infographic?.description || "";
+    return (
+      <InfographicView
+        data={{ title, description, sections }}
+        onBack={onClose}
+      />
     );
   }
 

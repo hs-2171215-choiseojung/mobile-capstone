@@ -16,11 +16,12 @@ interface StudentChatPanelProps {
   docs: Doc[];
   selectedLLM?: string;
   selectedDifficulty?: string;
+  onClose?: () => void;
 }
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, selectedDifficulty }: StudentChatPanelProps) {
+export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, selectedDifficulty, onClose }: StudentChatPanelProps) {
   const [messages, setMessages] = useState<any[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -191,22 +192,34 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
           <BotMessageSquare className="w-5 h-5 text-[#155dfc]" />
           <h2 className="text-[14px] font-semibold text-[#1a1d26]">Ask AI</h2>
         </div>
-        
-        {messages.length > 0 && (
-          <button 
-            onClick={handleClearChat}
-            className="p-1.5 text-[#99a1af] hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
-            title="대화 내역 지우기"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-        )}
+
+        <div className="flex items-center gap-1">
+          {messages.length > 0 && (
+            <button
+              onClick={handleClearChat}
+              className="p-1.5 text-[#99a1af] hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+              title="대화 내역 지우기"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          )}
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1.5 text-[#99a1af] hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
+              title="닫기"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 메시지 리스트 영역 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
         {messages.length === 0 && (
           <div className="flex flex-col h-full">
+            {/* 인트로 */}
             <div className="flex flex-col items-start gap-2 mb-4">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="text-[#155dfc]">
                 <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6L12 2z" fill="currentColor"/>
@@ -219,6 +232,7 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
                 어떻게 질문해야 할지 모르겠다면 아래 예시를 눌러보세요.
               </p>
             </div>
+            {/* 추천 질문 칩 */}
             <div className="flex flex-col items-end gap-2">
               {[
                 "이 자료를 요약해줘",
@@ -230,6 +244,7 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
                 <button
                   key={q}
                   onClick={() => setInputValue(q)}
+                  onClick={() => { setInputValue(q); }}
                   className="px-3 py-1.5 rounded-full border border-[#e7e9ed] bg-white text-[12px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-colors text-right"
                 >
                   {q}

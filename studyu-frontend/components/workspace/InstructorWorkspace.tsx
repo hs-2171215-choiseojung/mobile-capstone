@@ -232,6 +232,11 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const sourceFileInputRef = useRef<HTMLInputElement>(null);
   const [sourceSubmitting, setSourceSubmitting] = useState(false);
 
+  // Drag-and-drop from Studio panel
+  const [dropTargetWeekId, setDropTargetWeekId] = useState<number | null>(null);
+  const [draggingCard, setDraggingCard] = useState<{ weekId: number; cardType: "source" | "task"; cardId: number } | null>(null);
+  const [dragOverCard, setDragOverCard] = useState<{ weekId: number; cardType: "source" | "task"; cardId: number; half: "top" | "bottom" } | null>(null);
+
   // Chat
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([{
@@ -241,6 +246,20 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  const studyPlanScrollRef = useRef<HTMLDivElement>(null);
+  const weekCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  const scrollToWeek = (weekId: number) => {
+    setTimeout(() => {
+      const el = weekCardRefs.current.get(weekId);
+      if (el && studyPlanScrollRef.current) {
+        const container = studyPlanScrollRef.current;
+        const elRect = el.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        container.scrollTo({ top: container.scrollTop + elRect.top - containerRect.top - 16, behavior: "smooth" });
+      }
+    }, 50);
+  };
 
   // Add Task modal
   const [openPickerWeekId, setOpenPickerWeekId] = useState<number | null>(null);
@@ -270,7 +289,17 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
   const [linkCopied, setLinkCopied] = useState(false);
+  const [inviteCode, setInviteCode] = useState("");
+  const [inviteLoading, setInviteLoading] = useState(false);
 
+  const resetViewerState = useCallback((nextDocs: Doc[] = docs) => {
+    setViewerDoc(null);
+    setViewerUrl(null);
+    setViewerText(null);
+    setViewerStudioItem(null);
+    setActiveDocIds(nextDocs.map((doc) => doc.id));
+    setActiveChunkDocIds(new Set(nextDocs.map((doc) => doc.id)));
+  }, [docs]);
 
   // ── Resize handlers ───────────────────────────────────────────────
   useEffect(() => {
@@ -391,6 +420,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   async function handleViewDoc(doc: { id: string; name: string; type: string }) {
     setViewerStudioItem(null);
     setViewerDoc(doc);
+    setActiveDocIds([doc.id]);
+    setActiveChunkDocIds(new Set([doc.id]));
     setViewerUrl(null);
     setViewerText(null);
     setViewerLoading(true);
@@ -434,7 +465,21 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         return;
       }
 
-      // PDF, 이미지, 비디오: URL만
+      // 비디오: URL + 텍스트 둘 다
+      const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
+      if (VIDEO_EXTS.has(ext)) {
+        const [urlRes, textRes] = await Promise.all([
+          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        const urlData = await urlRes.json();
+        const textData = await textRes.json();
+        setViewerUrl(urlData.url ?? null);
+        setViewerText(textData.text ?? "");
+        return;
+      }
+
+      // PDF, 이미지: URL만
       const res = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -443,6 +488,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     } catch (e) {
       alert(`파일 불러오기 실패: ${e instanceof Error ? e.message : "알 수 없는 오류"}`);
       setViewerDoc(null);
+      setActiveDocIds(docs.map((d) => d.id));
+      setActiveChunkDocIds(new Set(docs.map((d) => d.id)));
     } finally {
       setViewerLoading(false);
     }
@@ -457,9 +504,14 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail ?? "삭제 실패"); }
-      setDocs((prev) => prev.filter((d) => d.id !== docId));
-      setActiveDocIds((prev) => prev.filter((id) => id !== docId));
-      setActiveChunkDocIds((prev) => { const n = new Set(prev); n.delete(docId); return n; });
+      const nextDocs = docs.filter((d) => d.id !== docId);
+      setDocs(nextDocs);
+      if (viewerDoc?.id === docId) {
+        resetViewerState(nextDocs);
+      } else {
+        setActiveDocIds((prev) => prev.filter((id) => id !== docId));
+        setActiveChunkDocIds((prev) => { const n = new Set(prev); n.delete(docId); return n; });
+      }
     } catch (e) {
       alert(`삭제 실패: ${e instanceof Error ? e.message : "알 수 없는 오류"}`);
     }
@@ -643,6 +695,187 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     setWeeks((prev) => prev.map((w) => w.id !== weekId ? w : { ...w, status: w.status === "ACTIVE" ? "UPCOMING" : "ACTIVE" }));
   }
 
+  function handleWeekDrop(e: React.DragEvent, weekId: number) {
+    e.preventDefault();
+    setDropTargetWeekId(null);
+    setDragOverCard(null);
+    setDraggingCard(null);
+
+    // Week-card move (cross-week, drops on empty week area)
+    const cardRaw = e.dataTransfer.getData("application/week-card");
+    if (cardRaw) {
+      try {
+        const { weekId: srcWeekId, cardType: srcType, cardId: srcId } = JSON.parse(cardRaw) as { weekId: number; cardType: "source" | "task"; cardId: number };
+        if (srcWeekId === weekId) return;
+        setWeeks((prev) => {
+          let movedSource: WeekSource | null = null;
+          let movedTask: WeekTask | null = null;
+          const step1 = prev.map((w) => {
+            if (w.id !== srcWeekId) return w;
+            if (srcType === "source") {
+              movedSource = w.sources.find((s) => s.id === srcId) ?? null;
+              return { ...w, sources: w.sources.filter((s) => s.id !== srcId) };
+            } else {
+              movedTask = w.tasks.find((t) => t.id === srcId) ?? null;
+              return { ...w, tasks: w.tasks.filter((t) => t.id !== srcId) };
+            }
+          });
+          return step1.map((w) => {
+            if (w.id !== weekId) return w;
+            if (movedSource) {
+              const maxId = w.sources.length > 0 ? Math.max(...w.sources.map((s) => s.id)) : 0;
+              return { ...w, sources: [...w.sources, { ...movedSource, id: maxId + 1 }] };
+            }
+            if (movedTask) {
+              const maxId = w.tasks.length > 0 ? Math.max(...w.tasks.map((t) => t.id)) : 0;
+              return { ...w, tasks: [...w.tasks, { ...movedTask, id: maxId + 1 }] };
+            }
+            return w;
+          });
+        });
+      } catch { /* ignore */ }
+      return;
+    }
+
+    // Studio item drop
+    const raw = e.dataTransfer.getData("application/studio-item");
+    if (!raw) return;
+    try {
+      const item = JSON.parse(raw) as { id: string; type: string; title: string; subtitle: string; icon: string; iconBg: string };
+      setWeeks((prev) => prev.map((w) => {
+        if (w.id !== weekId) return w;
+        const maxId = w.tasks.length > 0 ? Math.max(...w.tasks.map((t) => t.id)) : 0;
+        const newTask: WeekTask = { id: maxId + 1, icon: item.icon, iconBg: item.iconBg, title: item.title, subtitle: item.subtitle, itemId: item.id, studioType: item.type };
+        return { ...w, tasks: [...w.tasks, newTask] };
+      }));
+    } catch { /* 잘못된 데이터 무시 */ }
+  }
+
+  function handleCardDragOver(
+    e: React.DragEvent,
+    weekId: number,
+    cardType: "source" | "task",
+    cardId: number
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const half: "top" | "bottom" = e.clientY < rect.top + rect.height / 2 ? "top" : "bottom";
+    setDragOverCard((prev) =>
+      prev?.weekId === weekId && prev?.cardType === cardType && prev?.cardId === cardId && prev?.half === half
+        ? prev
+        : { weekId, cardType, cardId, half }
+    );
+  }
+
+  function handleCardDrop(
+    e: React.DragEvent,
+    targetWeekId: number,
+    targetCardType: "source" | "task",
+    targetCardId: number
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    const half = dragOverCard?.half ?? "bottom";
+    setDragOverCard(null);
+    setDraggingCard(null);
+    setDropTargetWeekId(null);
+
+    const raw = e.dataTransfer.getData("application/week-card");
+    if (!raw) return;
+    try {
+      const { weekId: srcWeekId, cardType: srcType, cardId: srcId } = JSON.parse(raw) as { weekId: number; cardType: "source" | "task"; cardId: number };
+
+      if (srcWeekId === targetWeekId && srcType === targetCardType && srcId !== targetCardId) {
+        // Same week, same type: reorder
+        setWeeks((prev) => prev.map((w) => {
+          if (w.id !== srcWeekId) return w;
+          if (srcType === "source") {
+            const items = [...w.sources];
+            const fromIdx = items.findIndex((s) => s.id === srcId);
+            if (fromIdx === -1) return w;
+            const [moved] = items.splice(fromIdx, 1);
+            let toIdx = items.findIndex((s) => s.id === targetCardId);
+            if (toIdx === -1) return { ...w, sources: [...items, moved] };
+            items.splice(half === "top" ? toIdx : toIdx + 1, 0, moved);
+            return { ...w, sources: items };
+          } else {
+            const items = [...w.tasks];
+            const fromIdx = items.findIndex((t) => t.id === srcId);
+            if (fromIdx === -1) return w;
+            const [moved] = items.splice(fromIdx, 1);
+            let toIdx = items.findIndex((t) => t.id === targetCardId);
+            if (toIdx === -1) return { ...w, tasks: [...items, moved] };
+            items.splice(half === "top" ? toIdx : toIdx + 1, 0, moved);
+            return { ...w, tasks: items };
+          }
+        }));
+        return;
+      }
+
+      if (srcWeekId !== targetWeekId) {
+        // Cross-week: remove from source, insert at target position
+        setWeeks((prev) => {
+          let movedSource: WeekSource | null = null;
+          let movedTask: WeekTask | null = null;
+          const step1 = prev.map((w) => {
+            if (w.id !== srcWeekId) return w;
+            if (srcType === "source") {
+              movedSource = w.sources.find((s) => s.id === srcId) ?? null;
+              return { ...w, sources: w.sources.filter((s) => s.id !== srcId) };
+            } else {
+              movedTask = w.tasks.find((t) => t.id === srcId) ?? null;
+              return { ...w, tasks: w.tasks.filter((t) => t.id !== srcId) };
+            }
+          });
+          return step1.map((w) => {
+            if (w.id !== targetWeekId) return w;
+            if (movedSource) {
+              const items = [...w.sources];
+              const maxId = Math.max(0, ...items.map((s) => s.id));
+              const newItem = { ...movedSource, id: maxId + 1 };
+              const toIdx = items.findIndex((s) => s.id === targetCardId);
+              if (toIdx === -1) return { ...w, sources: [...items, newItem] };
+              items.splice(half === "top" ? toIdx : toIdx + 1, 0, newItem);
+              return { ...w, sources: items };
+            }
+            if (movedTask) {
+              const items = [...w.tasks];
+              const maxId = Math.max(0, ...items.map((t) => t.id));
+              const newItem = { ...movedTask, id: maxId + 1 };
+              const toIdx = items.findIndex((t) => t.id === targetCardId);
+              if (toIdx === -1) return { ...w, tasks: [...items, newItem] };
+              items.splice(half === "top" ? toIdx : toIdx + 1, 0, newItem);
+              return { ...w, tasks: items };
+            }
+            return w;
+          });
+        });
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function handleOpenInvite() {
+    setInviteCode("");
+    setInviteLoading(true);
+    setShowShareModal(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API}/api/notebooks/${notebook.id}/invite`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("코드 생성 실패");
+      const data = await res.json();
+      setInviteCode(data.invite_code);
+    } catch (e) {
+      alert(`초대 코드 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
+      setShowShareModal(false);
+    } finally {
+      setInviteLoading(false);
+    }
+  }
+
   function handleAddWeekTask(weekId: number, task: WeekTask) {
     setWeeks((prev) => prev.map((w) => {
       if (w.id !== weekId) return w;
@@ -815,11 +1048,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         <div className="flex items-center gap-3">
           {/* Public Link Share */}
           <button
-            onClick={() => {
-              const shareId = Math.random().toString(36).substring(2, 10);
-              setShareUrl(`${window.location.origin}/share/${shareId}`);
-              setShowShareModal(true);
-            }}
+            onClick={handleOpenInvite}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100 transition-colors"
             style={{ fontSize: "0.78rem" }}
           >
@@ -900,9 +1129,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                   <button
                     onClick={() => {
                       setActiveView("link");
-                      const shareId = Math.random().toString(36).substring(2, 10);
-                      setShareUrl(`${window.location.origin}/share/${shareId}`);
-                      setShowShareModal(true);
+                      handleOpenInvite();
                     }}
                     className={`h-[41px] flex items-center gap-2.5 pl-3 rounded-[14px] transition-all ${
                       activeView === "link" ? "bg-[#eff6ff] shadow-sm" : "hover:bg-gray-50"
@@ -1197,7 +1424,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                 {/* Viewer header */}
                 <div className="h-10 border-b border-gray-100 flex items-center gap-3 px-4 shrink-0">
                   <button
-                    onClick={() => { setViewerDoc(null); setViewerUrl(null); setViewerText(null); }}
+                    onClick={() => resetViewerState()}
                     className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 transition-colors"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -1282,8 +1509,18 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
 
                     if (VIDEO_EXTS.has(ext) && viewerUrl) {
                       return (
-                        <div className="flex items-center justify-center p-6 min-h-full bg-black">
-                          <video controls src={viewerUrl} className="max-w-full max-h-full rounded-xl" style={{ maxHeight: "calc(100vh - 200px)" }} />
+                        <div className="p-6 flex flex-col gap-6">
+                          <div className="bg-black rounded-2xl overflow-hidden flex items-center justify-center">
+                            <video controls src={viewerUrl} className="max-w-full rounded-xl" style={{ maxHeight: "calc(100vh - 320px)" }} />
+                          </div>
+                          {viewerText && (
+                            <div>
+                              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">변환된 텍스트</p>
+                              <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-100">
+                                {viewerText}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     }
@@ -1338,8 +1575,63 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
               </div>
             )}
 
+            {/* 진도현황 고정 바 */}
+            {!viewerDoc && !viewerStudioItem && (() => {
+              const totalWeeks = Math.max(16, weeks.length);
+              const weekNums = Array.from({ length: totalWeeks }, (_, i) => i + 1);
+              const cols = totalWeeks <= 16 ? 16 : Math.ceil(totalWeeks / Math.ceil(totalWeeks / 16));
+              const activeWeekIds = new Set(weeks.filter(w => w.status === "ACTIVE").map(w => w.id));
+              return (
+                <div className="shrink-0 bg-white border-b border-gray-200 px-6 py-2.5 z-10">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] font-semibold text-[#2d3748]">진도현황</span>
+                    <div className="flex items-center gap-3">
+                      <span className="flex items-center gap-1 text-[10px] text-gray-500">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#155dfc] inline-block" />
+                        활성 {activeWeekIds.size}주차
+                      </span>
+                      <span className="flex items-center gap-1 text-[10px] text-gray-500">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#d1d5db] inline-block" />
+                        미공개 {totalWeeks - activeWeekIds.size}주차
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: '4px' }}>
+                    {weekNums.map((weekNum) => {
+                      const isActive = activeWeekIds.has(weekNum);
+                      const exists = weeks.some(w => w.id === weekNum);
+                      return (
+                        <button
+                          key={weekNum}
+                          onClick={() => exists && scrollToWeek(weekNum)}
+                          disabled={!exists}
+                          className={`flex flex-col items-center gap-0.5 ${exists ? "group cursor-pointer" : "cursor-default"}`}
+                          title={exists ? `${weekNum}주차로 이동` : `${weekNum}주차`}
+                        >
+                          <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold border-2 transition-all ${exists ? "group-hover:scale-110" : ""} ${
+                            isActive
+                              ? "bg-[#155dfc] border-[#155dfc] text-white shadow-sm"
+                              : exists
+                                ? "bg-white border-[#6b7280] text-[#6b7280]"
+                                : "bg-white border-[#d1d5db] text-[#d1d5db]"
+                          }`}>
+                            {weekNum}
+                          </div>
+                          <span className={`text-[8px] font-medium leading-none ${
+                            isActive ? "text-[#155dfc]" : exists ? "text-[#6b7280]" : "text-[#d1d5db]"
+                          }`}>
+                            {isActive ? "활성" : exists ? "준비" : "-"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Scrollable Study Plan */}
-            {!viewerDoc && !viewerStudioItem && <div className="flex-1 overflow-y-auto min-h-0">
+            {!viewerDoc && !viewerStudioItem && <div ref={studyPlanScrollRef} className="flex-1 overflow-y-auto min-h-0">
               <div className="px-8 py-7 bg-white min-h-full">
                 <h1 className="mb-7" style={{ fontFamily: "Manrope, sans-serif", fontSize: "1.3rem", fontWeight: 700, color: "#001c39" }}>
                   Instructor Study Plan Sequence
@@ -1347,7 +1639,18 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
 
                 <div className="space-y-8">
                   {weeks.map((week) => (
-                    <div key={week.id} id={`week-${week.id}`}>
+                    <div
+                      key={week.id}
+                      id={`week-${week.id}`}
+                      ref={(el) => {
+                        if (el) weekCardRefs.current.set(week.id, el);
+                        else weekCardRefs.current.delete(week.id);
+                      }}
+                      onDragOver={(e) => { e.preventDefault(); if (!draggingCard) setDropTargetWeekId(week.id); }}
+                      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropTargetWeekId(null); }}
+                      onDrop={(e) => handleWeekDrop(e, week.id)}
+                      style={dropTargetWeekId === week.id ? { outline: "2px dashed #2563eb", borderRadius: 10, background: "#eff6ff" } : undefined}
+                    >
                       {/* Week Header */}
                       <div className="flex items-center justify-between pb-2.5 mb-3 border-b group" style={{ borderColor: "#e7e8e9" }}>
                         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -1411,8 +1714,32 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                       {/* Cards */}
                       <div className="space-y-3">
                         {/* Source cards */}
-                        {week.sources.map((source) => (
-                          <div key={`src-${source.id}`} className="relative rounded-[8px] group/source" style={{ background: "#f3f4f5" }}>
+                        {week.sources.map((source) => {
+                          const isDraggingThis = draggingCard?.weekId === week.id && draggingCard?.cardType === "source" && draggingCard?.cardId === source.id;
+                          const isOverTop = dragOverCard?.weekId === week.id && dragOverCard?.cardType === "source" && dragOverCard?.cardId === source.id && dragOverCard?.half === "top";
+                          const isOverBottom = dragOverCard?.weekId === week.id && dragOverCard?.cardType === "source" && dragOverCard?.cardId === source.id && dragOverCard?.half === "bottom";
+                          return (
+                          <div
+                            key={`src-${source.id}`}
+                            className="relative rounded-[8px] group/source"
+                            style={{
+                              background: "#f3f4f5",
+                              opacity: isDraggingThis ? 0.4 : 1,
+                              borderTop: isOverTop ? "2px solid #2563eb" : "2px solid transparent",
+                              borderBottom: isOverBottom ? "2px solid #2563eb" : "2px solid transparent",
+                              cursor: "grab",
+                            }}
+                            draggable
+                            onDragStart={(e) => {
+                              setDraggingCard({ weekId: week.id, cardType: "source", cardId: source.id });
+                              e.dataTransfer.setData("application/week-card", JSON.stringify({ weekId: week.id, cardType: "source", cardId: source.id }));
+                              e.dataTransfer.effectAllowed = "move";
+                            }}
+                            onDragEnd={() => { setDraggingCard(null); setDragOverCard(null); }}
+                            onDragOver={(e) => handleCardDragOver(e, week.id, "source", source.id)}
+                            onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverCard(null); }}
+                            onDrop={(e) => handleCardDrop(e, week.id, "source", source.id)}
+                          >
                             <div className="flex items-center px-4 gap-3" style={{ height: 72 }}>
                               <div className="shrink-0 grid gap-[3px]" style={{ gridTemplateColumns: "repeat(2,4px)", opacity:0.4 }}>
                                 {[...Array(6)].map((_, i) => <div key={i} className="rounded-full" style={{ width:4, height:4, background:"#99A1AF" }}/>)}
@@ -1424,21 +1751,54 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                 <p className="truncate" style={{ fontFamily:"Inter,sans-serif", fontSize:"15px", fontWeight:600, color:"#191c1d" }}>{source.name}</p>
                                 <p style={{ fontFamily:"Inter,sans-serif", fontSize:"12px", color:"#414751" }}>학습 소스 자료</p>
                               </div>
+                              {source.docId && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleViewDoc({ id: source.docId!, name: source.name, type: source.iconBg }); if (!studioSidebarOpen) setStudioSidebarOpen(false); }}
+                                  className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                                  style={{ background: "#1d4ed8", color: "white", fontSize: "12px" }}
+                                >
+                                  열기
+                                </button>
+                              )}
                               <button
-                                onClick={() => setWeeks((prev) => prev.map((w) =>
+                                onClick={(e) => { e.stopPropagation(); setWeeks((prev) => prev.map((w) =>
                                   w.id !== week.id ? w : { ...w, sources: w.sources.filter((s) => s.id !== source.id) }
-                                ))}
+                                )); }}
                                 className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover/source:opacity-100 transition-all"
                               >
                                 <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
                               </button>
                             </div>
                           </div>
-                        ))}
+                        );})}
 
                         {/* Task cards */}
-                        {week.tasks.map((task) => (
-                          <div key={task.id} className="relative rounded-[8px] group/task" style={{ background: "#f3f4f5" }}>
+                        {week.tasks.map((task) => {
+                          const isDraggingThis = draggingCard?.weekId === week.id && draggingCard?.cardType === "task" && draggingCard?.cardId === task.id;
+                          const isOverTop = dragOverCard?.weekId === week.id && dragOverCard?.cardType === "task" && dragOverCard?.cardId === task.id && dragOverCard?.half === "top";
+                          const isOverBottom = dragOverCard?.weekId === week.id && dragOverCard?.cardType === "task" && dragOverCard?.cardId === task.id && dragOverCard?.half === "bottom";
+                          return (
+                          <div
+                            key={task.id}
+                            className="relative rounded-[8px] group/task"
+                            style={{
+                              background: "#f3f4f5",
+                              opacity: isDraggingThis ? 0.4 : 1,
+                              borderTop: isOverTop ? "2px solid #2563eb" : "2px solid transparent",
+                              borderBottom: isOverBottom ? "2px solid #2563eb" : "2px solid transparent",
+                              cursor: "grab",
+                            }}
+                            draggable
+                            onDragStart={(e) => {
+                              setDraggingCard({ weekId: week.id, cardType: "task", cardId: task.id });
+                              e.dataTransfer.setData("application/week-card", JSON.stringify({ weekId: week.id, cardType: "task", cardId: task.id }));
+                              e.dataTransfer.effectAllowed = "move";
+                            }}
+                            onDragEnd={() => { setDraggingCard(null); setDragOverCard(null); }}
+                            onDragOver={(e) => handleCardDragOver(e, week.id, "task", task.id)}
+                            onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverCard(null); }}
+                            onDrop={(e) => handleCardDrop(e, week.id, "task", task.id)}
+                          >
                             <div className="flex items-center px-4 gap-3" style={{ height: 72 }}>
                               <div className="shrink-0 grid gap-[3px]" style={{ gridTemplateColumns: "repeat(2,4px)", opacity:0.4 }}>
                                 {[...Array(6)].map((_, i) => <div key={i} className="rounded-full" style={{ width:4, height:4, background:"#99A1AF" }}/>)}
@@ -1507,7 +1867,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                               </button>
                             </div>
                           </div>
-                        ))}
+                        );})}
 
                         {/* Add buttons */}
                         <div className="flex gap-3">
@@ -1694,7 +2054,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                 </span>
               </div>
               <button
-                onClick={() => { setViewerDoc(null); setViewerUrl(null); setViewerText(null); setViewerStudioItem(null); }}
+                onClick={() => resetViewerState()}
                 className="w-6 h-6 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-400"
               >
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
@@ -2042,55 +2402,62 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         </>
       )}
 
-      {/* ─── Share URL Modal ─── */}
+      {/* ─── Invite Code Modal ─── */}
       {showShareModal && (
         <>
           <div className="fixed inset-0 bg-black/40 z-50" onClick={() => { setShowShareModal(false); setLinkCopied(false); }} />
           <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
-            <div className="bg-white rounded-2xl shadow-2xl w-[480px] pointer-events-auto overflow-hidden">
+            <div className="bg-white rounded-2xl shadow-2xl w-[400px] pointer-events-auto overflow-hidden">
               <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-100">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #2B7FFF, #60a5fa)" }}>
-                    <svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="none"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  </div>
-                  <div>
-                    <h3 className="text-gray-800 font-bold" style={{ fontSize: "15px" }}>공유 URL 생성</h3>
-                    <p className="text-gray-400" style={{ fontSize: "12px" }}>아래 링크로 노트북을 공유할 수 있어요</p>
-                  </div>
+                <div>
+                  <h3 className="text-gray-800 font-bold" style={{ fontSize: "16px" }}>초대 코드 공유</h3>
+                  <p className="text-gray-400" style={{ fontSize: "12px" }}>&quot;{notebook.title}&quot;</p>
                 </div>
                 <button onClick={() => { setShowShareModal(false); setLinkCopied(false); }} className="w-8 h-8 rounded-xl bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500">
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
                 </button>
               </div>
-              <div className="px-6 py-5 space-y-4">
-                <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3">
-                  <svg className="w-3.5 h-3.5 shrink-0 text-gray-400" viewBox="0 0 24 24" fill="none"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  <span className="flex-1 text-gray-600 truncate" style={{ fontSize: "13px" }}>{shareUrl}</span>
-                </div>
-                <button
-                  onClick={() => {
-                    try {
-                      const ta = document.createElement("textarea");
-                      ta.value = shareUrl;
-                      ta.style.cssText = "position:fixed;opacity:0";
-                      document.body.appendChild(ta);
-                      ta.focus(); ta.select();
-                      document.execCommand("copy");
-                      document.body.removeChild(ta);
-                    } catch {}
-                    setLinkCopied(true);
-                    setTimeout(() => setLinkCopied(false), 2500);
-                  }}
-                  className="w-full py-3 rounded-xl text-white transition-all hover:opacity-90 flex items-center justify-center gap-2"
-                  style={{ background: linkCopied ? "#16a34a" : "linear-gradient(135deg, #2B7FFF, #60a5fa)", fontSize: "14px", fontWeight: 600 }}
-                >
-                  {linkCopied ? (
-                    <><svg width="15" height="15" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>복사 완료!</>
-                  ) : (
-                    <><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="13" height="13" rx="2" stroke="white" strokeWidth="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke="white" strokeWidth="2" strokeLinecap="round"/></svg>URL 복사</>
-                  )}
-                </button>
-                <p className="text-center text-gray-400" style={{ fontSize: "11.5px" }}>링크를 가진 누구나 이 노트북을 볼 수 있어요</p>
+              <div className="px-6 py-6 space-y-4">
+                {inviteLoading ? (
+                  <div className="flex items-center justify-center py-6 text-sm text-gray-400">코드 생성 중...</div>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-4 py-4">
+                      <span className="flex-1 text-2xl font-bold tracking-widest text-blue-600 text-center">{inviteCode}</span>
+                      <button
+                        onClick={() => { navigator.clipboard?.writeText(inviteCode).catch(() => {}); }}
+                        className="p-1.5 rounded-lg hover:bg-gray-200 text-gray-400 transition-colors"
+                        title="복사"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor" strokeWidth="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => {
+                        try {
+                          const ta = document.createElement("textarea");
+                          ta.value = inviteCode;
+                          ta.style.cssText = "position:fixed;opacity:0";
+                          document.body.appendChild(ta);
+                          ta.focus(); ta.select();
+                          document.execCommand("copy");
+                          document.body.removeChild(ta);
+                        } catch {}
+                        setLinkCopied(true);
+                        setTimeout(() => setLinkCopied(false), 2500);
+                      }}
+                      className="w-full py-3 rounded-xl text-white transition-all hover:opacity-90 flex items-center justify-center gap-2"
+                      style={{ background: linkCopied ? "#16a34a" : "linear-gradient(135deg, #2B7FFF, #60a5fa)", fontSize: "14px", fontWeight: 600 }}
+                    >
+                      {linkCopied ? (
+                        <><svg width="15" height="15" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>복사 완료!</>
+                      ) : (
+                        <><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="13" height="13" rx="2" stroke="white" strokeWidth="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke="white" strokeWidth="2" strokeLinecap="round"/></svg>코드 복사</>
+                      )}
+                    </button>
+                    <p className="text-xs text-gray-400 text-center">학생에게 이 코드를 알려주세요. 학생이 코드를 입력하면 이 노트북에 참여할 수 있습니다.</p>
+                  </>
+                )}
               </div>
             </div>
           </div>

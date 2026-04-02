@@ -23,15 +23,23 @@ function downloadText(text: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+const KNOWN_EXTS = new Set([
+  "pdf","docx","doc","pptx","ppt","hwp","hwpx","txt","xlsx","xls",
+  "jpg","jpeg","png","gif","webp","mp4","mov","avi","mkv","webm","mp3","m4a","wav",
+]);
+
+
 interface SourceInfo {
   id: string;
   filename: string;
   file_type: string;
+  storage_path?: string;
 }
 
 interface StudentSourceViewerProps {
   source: SourceInfo;
   sourceUrl?: string;
+  sourceFileUrl?: string;
   loading?: boolean;
   error?: string;
   onClose: () => void;
@@ -41,6 +49,7 @@ interface StudentSourceViewerProps {
 export function StudentSourceViewer({
   source,
   sourceUrl,
+  sourceFileUrl,
   loading = false,
   error,
   onClose,
@@ -50,9 +59,16 @@ export function StudentSourceViewer({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lowerType = source.file_type.toLowerCase();
-  const isImage = ["image", "jpg", "jpeg", "png", "gif", "webp"].includes(lowerType);
-  const isVideo = ["video", "mp4", "mov", "avi", "mkv", "webm"].includes(lowerType);
-  const isAudio = ["audio", "mp3", "m4a", "wav"].includes(lowerType);
+  const fileExt = source.filename.toLowerCase().split(".").pop() ?? "";
+  const storagePath = source.storage_path ?? "";
+  const isUrlSource =
+    lowerType === "url" ||
+    lowerType === "link" ||
+    (storagePath.startsWith("http") && !KNOWN_EXTS.has(fileExt));
+  const effectiveExt = isUrlSource ? "" : (KNOWN_EXTS.has(fileExt) ? fileExt : lowerType);
+  const isImage = ["image", "jpg", "jpeg", "png", "gif", "webp"].includes(effectiveExt);
+  const isVideo = ["video", "mp4", "mov", "avi", "mkv", "webm"].includes(effectiveExt);
+  const isAudio = ["audio", "mp3", "m4a", "wav"].includes(effectiveExt);
   const getYoutubeEmbedUrl = (url: string) => {
     try {
       const parsed = new URL(url);
@@ -113,14 +129,11 @@ export function StudentSourceViewer({
       <div className="shrink-0 px-5 py-3 border-b border-gray-200 flex items-center justify-between">
         <div className="min-w-0">
           <h2 className="text-[17px] font-bold text-gray-900 truncate leading-tight">{source.filename}</h2>
-          <p className="text-[11px] text-gray-500 mt-0.5">
-            {lowerType === "url" ? "웹 소스" : `${source.file_type.toUpperCase()} 문서`}
-          </p>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-4">
-          {sourceUrl && !isEmbeddableYoutube && lowerType !== "url" && (
+          {sourceFileUrl && !isEmbeddableYoutube && lowerType !== "url" && (
             <button
-              onClick={() => downloadUrl(sourceUrl, source.filename)}
+              onClick={() => downloadUrl(sourceFileUrl, source.filename)}
               title="다운로드"
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200"
             >
@@ -138,9 +151,9 @@ export function StudentSourceViewer({
               저장
             </button>
           )}
-          {sourceUrl && (
+          {sourceFileUrl && (
             <a
-              href={sourceUrl}
+              href={sourceFileUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200"
@@ -168,6 +181,12 @@ export function StudentSourceViewer({
           <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 gap-3">
             <p className="text-sm">{error}</p>
           </div>
+        ) : !sourceUrl && transcriptText ? (
+          <div className="h-full p-4 overflow-y-auto">
+            <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">
+              {transcriptText}
+            </div>
+          </div>
         ) : !sourceUrl ? (
           <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 gap-3">
             <p className="text-sm">표시할 문서 URL이 없습니다.</p>
@@ -190,8 +209,18 @@ export function StudentSourceViewer({
             </div>
           </div>
         ) : isVideo ? (
-          <div className="h-full flex items-center justify-center">
-            <video ref={videoRef} src={sourceUrl} controls className="max-w-full max-h-full rounded-lg shadow-sm bg-black" />
+          <div className="h-full flex flex-col gap-4 p-4 overflow-y-auto">
+            <div className="bg-black rounded-xl overflow-hidden flex items-center justify-center">
+              <video ref={videoRef} src={sourceUrl} controls className="max-w-full rounded-lg" style={{ maxHeight: "calc(100vh - 320px)" }} />
+            </div>
+            {transcriptText && (
+              <div>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">변환된 텍스트</p>
+                <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">
+                  {transcriptText}
+                </div>
+              </div>
+            )}
           </div>
         ) : isAudio ? (
           <div className="h-full flex flex-col gap-4 p-4 overflow-y-auto">
