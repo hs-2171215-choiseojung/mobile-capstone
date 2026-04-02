@@ -243,7 +243,6 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
               ].map((q) => (
                 <button
                   key={q}
-                  onClick={() => setInputValue(q)}
                   onClick={() => { setInputValue(q); }}
                   className="px-3 py-1.5 rounded-full border border-[#e7e9ed] bg-white text-[12px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-colors text-right"
                 >
