@@ -246,6 +246,20 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  const studyPlanScrollRef = useRef<HTMLDivElement>(null);
+  const weekCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  const scrollToWeek = (weekId: number) => {
+    setTimeout(() => {
+      const el = weekCardRefs.current.get(weekId);
+      if (el && studyPlanScrollRef.current) {
+        const container = studyPlanScrollRef.current;
+        const elRect = el.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        container.scrollTo({ top: container.scrollTop + elRect.top - containerRect.top - 16, behavior: "smooth" });
+      }
+    }, 50);
+  };
 
   // Add Task modal
   const [openPickerWeekId, setOpenPickerWeekId] = useState<number | null>(null);
@@ -1561,8 +1575,63 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
               </div>
             )}
 
+            {/* 진도현황 고정 바 */}
+            {!viewerDoc && !viewerStudioItem && (() => {
+              const totalWeeks = Math.max(16, weeks.length);
+              const weekNums = Array.from({ length: totalWeeks }, (_, i) => i + 1);
+              const cols = totalWeeks <= 16 ? 16 : Math.ceil(totalWeeks / Math.ceil(totalWeeks / 16));
+              const activeWeekIds = new Set(weeks.filter(w => w.status === "ACTIVE").map(w => w.id));
+              return (
+                <div className="shrink-0 bg-white border-b border-gray-200 px-6 py-2.5 z-10">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] font-semibold text-[#2d3748]">진도현황</span>
+                    <div className="flex items-center gap-3">
+                      <span className="flex items-center gap-1 text-[10px] text-gray-500">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#155dfc] inline-block" />
+                        활성 {activeWeekIds.size}주차
+                      </span>
+                      <span className="flex items-center gap-1 text-[10px] text-gray-500">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#d1d5db] inline-block" />
+                        미공개 {totalWeeks - activeWeekIds.size}주차
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: '4px' }}>
+                    {weekNums.map((weekNum) => {
+                      const isActive = activeWeekIds.has(weekNum);
+                      const exists = weeks.some(w => w.id === weekNum);
+                      return (
+                        <button
+                          key={weekNum}
+                          onClick={() => exists && scrollToWeek(weekNum)}
+                          disabled={!exists}
+                          className={`flex flex-col items-center gap-0.5 ${exists ? "group cursor-pointer" : "cursor-default"}`}
+                          title={exists ? `${weekNum}주차로 이동` : `${weekNum}주차`}
+                        >
+                          <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold border-2 transition-all ${exists ? "group-hover:scale-110" : ""} ${
+                            isActive
+                              ? "bg-[#155dfc] border-[#155dfc] text-white shadow-sm"
+                              : exists
+                                ? "bg-white border-[#6b7280] text-[#6b7280]"
+                                : "bg-white border-[#d1d5db] text-[#d1d5db]"
+                          }`}>
+                            {weekNum}
+                          </div>
+                          <span className={`text-[8px] font-medium leading-none ${
+                            isActive ? "text-[#155dfc]" : exists ? "text-[#6b7280]" : "text-[#d1d5db]"
+                          }`}>
+                            {isActive ? "활성" : exists ? "준비" : "-"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Scrollable Study Plan */}
-            {!viewerDoc && !viewerStudioItem && <div className="flex-1 overflow-y-auto min-h-0">
+            {!viewerDoc && !viewerStudioItem && <div ref={studyPlanScrollRef} className="flex-1 overflow-y-auto min-h-0">
               <div className="px-8 py-7 bg-white min-h-full">
                 <h1 className="mb-7" style={{ fontFamily: "Manrope, sans-serif", fontSize: "1.3rem", fontWeight: 700, color: "#001c39" }}>
                   Instructor Study Plan Sequence
@@ -1573,6 +1642,10 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                     <div
                       key={week.id}
                       id={`week-${week.id}`}
+                      ref={(el) => {
+                        if (el) weekCardRefs.current.set(week.id, el);
+                        else weekCardRefs.current.delete(week.id);
+                      }}
                       onDragOver={(e) => { e.preventDefault(); if (!draggingCard) setDropTargetWeekId(week.id); }}
                       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropTargetWeekId(null); }}
                       onDrop={(e) => handleWeekDrop(e, week.id)}
