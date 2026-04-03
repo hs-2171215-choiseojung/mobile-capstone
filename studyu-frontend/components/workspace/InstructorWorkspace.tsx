@@ -8,6 +8,12 @@ import StudioPanel, { type SavedItem } from "@/components/workspace/StudioPanel"
 import { inferDocType, type Doc } from "@/components/workspace/SourcePanel";
 import StudyULogo from "@/components/StudyULogo";
 import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer";
+import { SharedSourceViewer } from "@/components/workspace/SharedSourceViewer";
+
+const PREVIEWABLE_OFFICE_EXTS = new Set(["docx", "pptx", "ppt"]);
+function getOfficeEmbedUrl(url: string): string {
+  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`;
+}
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -226,6 +232,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   // Document viewer
   const [viewerDoc, setViewerDoc] = useState<{ id: string; name: string; type: string } | null>(null);
   const [viewerUrl, setViewerUrl] = useState<string | null>(null);
+  const [viewerFileUrl, setViewerFileUrl] = useState<string | null>(null);
   const [viewerText, setViewerText] = useState<string | null>(null);
   const [viewerLoading, setViewerLoading] = useState(false);
   // Studio item viewer
@@ -305,6 +312,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const resetViewerState = useCallback((nextDocs: Doc[] = docs) => {
     setViewerDoc(null);
     setViewerUrl(null);
+    setViewerFileUrl(null);
     setViewerText(null);
     setViewerStudioItem(null);
     setActiveDocIds(nextDocs.map((doc) => doc.id));
@@ -449,26 +457,78 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     setActiveDocIds([doc.id]);
     setActiveChunkDocIds(new Set([doc.id]));
     setViewerUrl(null);
+    setViewerFileUrl(null);
     setViewerText(null);
     setViewerLoading(true);
     try {
       const token = await getToken();
       const ext = doc.name.toLowerCase().split(".").pop() ?? doc.type;
       const AUDIO_EXTS = new Set(["mp3", "m4a"]);
+      const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
       const TEXT_ONLY_EXTS = new Set(["docx", "pptx", "ppt", "hwp", "hwpx"]);
 
-      // URL 타입은 access-url 불필요
+      // URL 타입: 원본 URL + 텍스트
       if (doc.type === "url") {
-        // chunks로 텍스트만 가져옴
-        const res = await fetch(`${API}/api/documents/${doc.id}/chunks`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const data = await res.json();
-        setViewerText(data.text ?? "");
+        const [urlRes, textRes] = await Promise.all([
+          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        const urlData = await urlRes.json();
+        const textData = await textRes.json();
+        setViewerUrl(urlData.url ?? null);
+        setViewerText(textData.text ?? "");
         return;
       }
 
-      // 텍스트 전용 파일 (DOCX 등)
+      // 오디오: URL + 텍스트
+      if (AUDIO_EXTS.has(ext)) {
+        const [urlRes, textRes] = await Promise.all([
+          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        const urlData = await urlRes.json();
+        const textData = await textRes.json();
+        setViewerUrl(urlData.url ?? null);
+        setViewerFileUrl(urlData.url ?? null);
+        setViewerText(textData.text ?? "");
+        return;
+      }
+
+      // 비디오: URL + 텍스트
+      if (VIDEO_EXTS.has(ext)) {
+        const [urlRes, textRes] = await Promise.all([
+          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        const urlData = await urlRes.json();
+        const textData = await textRes.json();
+        setViewerUrl(urlData.url ?? null);
+        setViewerFileUrl(urlData.url ?? null);
+        setViewerText(textData.text ?? "");
+        return;
+      }
+
+      // DOCX/PPT: preview-pdf + access-url(다운로드) + 텍스트
+      if (PREVIEWABLE_OFFICE_EXTS.has(ext)) {
+        const [previewRes, urlRes, textRes] = await Promise.all([
+          fetch(`${API}/api/documents/${doc.id}/preview-pdf`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        const urlData = await urlRes.json();
+        const textData = await textRes.json();
+        setViewerFileUrl(urlData.url ?? null);
+        setViewerText(textData.text ?? "");
+        if (previewRes.ok) {
+          const blob = await previewRes.blob();
+          setViewerUrl(URL.createObjectURL(blob));
+        } else if (urlData.url) {
+          setViewerUrl(getOfficeEmbedUrl(urlData.url));
+        }
+        return;
+      }
+
+      // HWP: 텍스트만
       if (TEXT_ONLY_EXTS.has(ext)) {
         const res = await fetch(`${API}/api/documents/${doc.id}/chunks`, {
           headers: { Authorization: `Bearer ${token}` },
@@ -478,39 +538,13 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         return;
       }
 
-      // 오디오: URL + 텍스트 둘 다
-      if (AUDIO_EXTS.has(ext)) {
-        const [urlRes, textRes] = await Promise.all([
-          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
-          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
-        ]);
-        const urlData = await urlRes.json();
-        const textData = await textRes.json();
-        setViewerUrl(urlData.url ?? null);
-        setViewerText(textData.text ?? "");
-        return;
-      }
-
-      // 비디오: URL + 텍스트 둘 다
-      const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
-      if (VIDEO_EXTS.has(ext)) {
-        const [urlRes, textRes] = await Promise.all([
-          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
-          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
-        ]);
-        const urlData = await urlRes.json();
-        const textData = await textRes.json();
-        setViewerUrl(urlData.url ?? null);
-        setViewerText(textData.text ?? "");
-        return;
-      }
-
       // PDF, 이미지: URL만
       const res = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
       setViewerUrl(data.url ?? null);
+      setViewerFileUrl(data.url ?? null);
     } catch (e) {
       alert(`파일 불러오기 실패: ${e instanceof Error ? e.message : "알 수 없는 오류"}`);
       setViewerDoc(null);
@@ -1774,157 +1808,14 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
             {/* Document Viewer */}
             {viewerDoc && (
               <div className="flex-1 flex flex-col overflow-hidden bg-white">
-                {/* Viewer header */}
-                <div className="h-10 border-b border-gray-100 flex items-center gap-3 px-4 shrink-0">
-                  <button
-                    onClick={() => resetViewerState()}
-                    className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 transition-colors"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M19 12H5M12 5l-7 7 7 7"/>
-                    </svg>
-                    돌아가기
-                  </button>
-                  <span className="text-gray-300">|</span>
-                  <span className="text-xs text-gray-600 font-medium truncate flex-1 min-w-0">{viewerDoc.name}</span>
-                  {viewerDoc.type !== "url" && viewerUrl && (
-                    <button
-                      onClick={() => downloadUrl(viewerUrl, viewerDoc.name)}
-                      title="다운로드"
-                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs shrink-0"
-                    >
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                      </svg>
-                      저장
-                    </button>
-                  )}
-                  {!viewerUrl && viewerText && (
-                    <button
-                      onClick={() => downloadText(viewerText, `${viewerDoc.name}.txt`)}
-                      title="텍스트 다운로드"
-                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs shrink-0"
-                    >
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                      </svg>
-                      저장
-                    </button>
-                  )}
-                </div>
-
-                {/* Viewer content */}
-                <div className="flex-1 overflow-y-auto min-h-0">
-                  {viewerLoading ? (
-                    <div className="flex items-center justify-center h-full gap-2 text-gray-400">
-                      <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40" strokeDashoffset="10"/></svg>
-                      <span className="text-sm">불러오는 중...</span>
-                    </div>
-                  ) : (() => {
-                    const ext = (viewerDoc.name.toLowerCase().split(".").pop() ?? viewerDoc.type) as string;
-                    const IMAGE_EXTS = new Set(["jpg","jpeg","png","gif","webp"]);
-                    const AUDIO_EXTS = new Set(["mp3","m4a"]);
-                    const VIDEO_EXTS = new Set(["mp4","mov","avi","mkv","webm"]);
-
-                    if (IMAGE_EXTS.has(ext) && viewerUrl) {
-                      return (
-                        <div className="flex items-center justify-center p-6 min-h-full">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={viewerUrl} alt={viewerDoc.name} className="max-w-full max-h-full rounded-xl shadow-md object-contain" />
-                        </div>
-                      );
-                    }
-
-                    if (AUDIO_EXTS.has(ext)) {
-                      return (
-                        <div className="p-6 flex flex-col gap-6">
-                          {viewerUrl && (
-                            <div className="bg-gray-50 rounded-2xl p-5 flex flex-col items-center gap-3">
-                              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#2b7fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M9 18V5l12-2v13"/>
-                                <circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
-                              </svg>
-                              <p className="text-xs text-gray-500 font-medium">{viewerDoc.name}</p>
-                              <audio controls src={viewerUrl} className="w-full max-w-md" />
-                            </div>
-                          )}
-                          {viewerText && (
-                            <div>
-                              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">변환된 텍스트</p>
-                              <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-100">
-                                {viewerText}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    }
-
-                    if (VIDEO_EXTS.has(ext) && viewerUrl) {
-                      return (
-                        <div className="p-6 flex flex-col gap-6">
-                          <div className="bg-black rounded-2xl overflow-hidden flex items-center justify-center">
-                            <video controls src={viewerUrl} className="max-w-full rounded-xl" style={{ maxHeight: "calc(100vh - 320px)" }} />
-                          </div>
-                          {viewerText && (
-                            <div>
-                              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">변환된 텍스트</p>
-                              <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-100">
-                                {viewerText}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    }
-
-                    if (ext === "pdf" && viewerUrl) {
-                      return (
-                        <iframe src={viewerUrl} className="w-full h-full border-0" title={viewerDoc.name} />
-                      );
-                    }
-
-                    if (viewerDoc.type === "url") {
-                      return (
-                        <div className="p-6 flex flex-col gap-4">
-                          <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex items-center gap-3">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2b7fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                              <circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 010 20M12 2a15.3 15.3 0 000 20"/>
-                            </svg>
-                            <span className="text-sm text-blue-600 font-medium">{viewerDoc.name}</span>
-                          </div>
-                          {viewerText && (
-                            <div>
-                              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">추출된 텍스트</p>
-                              <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-100">
-                                {viewerText}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    }
-
-                    // DOCX / HWP / PPTX 등 텍스트 전용
-                    return (
-                      <div className="p-6">
-                        {viewerText ? (
-                          <>
-                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">추출된 텍스트</p>
-                            <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-100">
-                              {viewerText}
-                            </div>
-                          </>
-                        ) : (
-                          <div className="flex flex-col items-center justify-center h-40 text-gray-400 gap-2">
-                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z"/><path d="M14 2v6h6"/></svg>
-                            <span className="text-sm">미리보기를 지원하지 않는 파일입니다</span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
+                <SharedSourceViewer
+                  source={{ id: viewerDoc.id, filename: viewerDoc.name, file_type: viewerDoc.type }}
+                  sourceUrl={viewerUrl ?? undefined}
+                  sourceFileUrl={viewerFileUrl ?? undefined}
+                  loading={viewerLoading}
+                  onClose={() => resetViewerState()}
+                  transcriptText={viewerText ?? undefined}
+                />
               </div>
             )}
 
