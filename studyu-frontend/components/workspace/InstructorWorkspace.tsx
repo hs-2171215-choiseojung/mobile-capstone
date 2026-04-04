@@ -323,6 +323,9 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     weeks.flatMap((week) => week.tasks.map((task) => task.itemId).filter(Boolean) as string[])
   );
   const unassignedStudioItems = studioItems.filter((item) => !assignedStudioItemIds.has(item.id));
+  const bothLeftSectionsOpen = !leftSourcesCollapsed && !leftStudioItemsCollapsed;
+  const sourceSectionClass = bothLeftSectionsOpen ? "flex-1" : leftSourcesCollapsed ? "shrink-0" : "flex-1";
+  const studioSectionClass = bothLeftSectionsOpen ? "flex-1" : leftStudioItemsCollapsed ? "shrink-0" : "flex-1";
 
   // ── Resize handlers ───────────────────────────────────────────────
   useEffect(() => {
@@ -1455,8 +1458,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                     )}
 
                     {/* Source + Studio split list */}
-                    <div className="flex-1 overflow-y-auto px-3 pb-3 flex flex-col min-h-0">
-                      <div className="flex flex-col min-h-0">
+                    <div className="flex-1 px-3 pb-3 flex flex-col min-h-0 overflow-hidden">
+                      <div className={`flex flex-col min-h-0 ${sourceSectionClass}`}>
                         <div className="px-1 pt-1 pb-2 flex items-center justify-between">
                           <button
                             onClick={() => setLeftSourcesCollapsed((prev) => !prev)}
@@ -1508,7 +1511,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                           </div>
                         </div>
                         {!leftSourcesCollapsed && (
-                        <div className="space-y-0.5">
+                        <div className="space-y-0.5 overflow-y-auto min-h-0 pr-1">
                           {docs.length === 0 ? (
                             <div className="flex flex-col items-center justify-center py-8 text-center">
                               <svg className="w-8 h-8 text-gray-300 mb-2" viewBox="0 0 24 24" fill="none">
@@ -1661,7 +1664,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                         )}
                       </div>
 
-                      <div className="mt-4 pt-4 border-t border-gray-100 flex-1 min-h-0">
+                      <div className={`pt-4 border-t border-gray-100 flex flex-col min-h-0 ${studioSectionClass}`}>
                         <div className="px-1 pb-2 flex items-center justify-between gap-2 relative" data-studio-menu>
                           <button
                             onClick={() => setLeftStudioItemsCollapsed((prev) => !prev)}
@@ -1688,7 +1691,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                           </div>
                         </div>
                         {!leftStudioItemsCollapsed && (
-                        <div className="space-y-1">
+                        <div className="space-y-1 overflow-y-auto min-h-0 pr-1">
                           {unassignedStudioItems.length === 0 ? (
                             <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-3 py-4 text-center">
                               <p className="text-xs text-gray-400">주차가 정해지지 않은 생성물이 여기에 표시됩니다.</p>
