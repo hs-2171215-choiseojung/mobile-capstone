@@ -157,25 +157,33 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
       // 클릭한 인덱스 자리만 새 질문으로 교체
       askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
       const replacingIndex = clickedIndexRef.current;
+      clickedIndexRef.current = -1; // 리셋
       if (replacingIndex >= 0) {
-        getToken().then((t) =>
-          fetch(`${API}/api/chat/suggestions`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
-            body: JSON.stringify({ doc_ids: targetDocIds, asked_questions: askedQuestionsRef.current }),
-          })
-            .then((r) => r.json())
-            .then((d) => {
-              if (d.questions?.length) {
-                setSuggestions((prev) => {
-                  const next = [...prev];
-                  next[replacingIndex] = d.questions[0] as Suggestion;
-                  return next;
-                });
-              }
+        setSuggestions((prev) => {
+          const currentTexts = prev.map((s) => s.text);
+          getToken().then((t) =>
+            fetch(`${API}/api/chat/suggestions`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+              body: JSON.stringify({
+                doc_ids: targetDocIds,
+                asked_questions: [...askedQuestionsRef.current, ...currentTexts],
+              }),
             })
-            .catch(() => {})
-        );
+              .then((r) => r.json())
+              .then((d) => {
+                if (d.questions?.length) {
+                  setSuggestions((p) => {
+                    const next = [...p];
+                    next[replacingIndex] = d.questions[0] as Suggestion;
+                    return next;
+                  });
+                }
+              })
+              .catch(() => {})
+          );
+          return prev;
+        });
       }
     } catch (error: any) {
       setMessages(prev => [...prev, { type: 'system', content: `[오류] ${error.message}` }]);
@@ -296,7 +304,7 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
                 fetch(`${API}/api/chat/suggestions`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                  body: JSON.stringify({ doc_ids: targetDocIds, asked_questions: askedQuestionsRef.current }),
+                  body: JSON.stringify({ doc_ids: targetDocIds, asked_questions: [...askedQuestionsRef.current, ...suggestions.map(s => s.text)] }),
                 })
                   .then((r) => r.json())
                   .then((d) => { if (d.questions?.length) setSuggestions(d.questions.slice(0, 3) as Suggestion[]); })
