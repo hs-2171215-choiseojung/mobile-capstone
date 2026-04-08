@@ -19,6 +19,12 @@
   }
 }
 
+/* 음성 요약 파형 애니메이션 */
+@keyframes waveBar {
+  from { transform: scaleY(0.4); }
+  to   { transform: scaleY(1); }
+}
+
 /* 스크롤바 스타일링 */
 ::-webkit-scrollbar {
   width: 6px;

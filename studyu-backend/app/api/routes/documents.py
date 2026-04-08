@@ -16,15 +16,22 @@
         ALTER TABLE documents ALTER COLUMN file_type TYPE TEXT;
 """
 
+import base64
+import io
 import uuid
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote as url_quote
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi.responses import StreamingResponse, JSONResponse
+from openai import OpenAI
 from pydantic import BaseModel
 from app.core.auth import get_current_user
+from app.core.config import settings
 from app.core.supabase import supabase_admin
 from app.services.rag import ingest_document, ingest_url, SUPPORTED_EXTENSIONS
+from app.services.tts import tts_with_timestamps, ELEVENLABS_VOICES, DEFAULT_VOICE, serialize_summary
+from app.services.audio_cache import load_cached_summary, save_cached_summary
 
 router = APIRouter()
 
@@ -293,6 +300,182 @@ async def get_document_access_url(
         raise HTTPException(status_code=500, detail="문서 URL 생성에 실패했습니다.")
 
     return {"url": signed_url, "kind": "signed", "expires_in": 3600}
+
+
+_IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp"}
+_TEXT_DOC_EXTS = {"pdf", "docx", "doc", "pptx", "ppt", "hwp", "hwpx", "txt"}
+
+# 인메모리 1차 캐시 (서버 재시작 전까지 빠른 응답용)
+_mem_cache: dict[tuple[str, str], dict] = {}
+
+
+class AudioSummaryRequest(BaseModel):
+    voice: str = DEFAULT_VOICE  # "sarah" | "rachel" | "josh" | "adam"
+
+
+@router.post("/documents/{document_id}/audio-summary")
+async def get_document_audio_summary(
+    document_id: str,
+    req: AudioSummaryRequest = AudioSummaryRequest(),
+    user: dict = Depends(get_current_user),
+):
+    """문서 음성 요약 — 이미지는 GPT-4o Vision, 나머지는 chunks 텍스트 → GPT-4o → ElevenLabs TTS.
+    캐시 우선순위: 1) 인메모리  2) Supabase Storage  3) 새로 생성
+    """
+    voice_key = req.voice if req.voice in ELEVENLABS_VOICES else DEFAULT_VOICE
+
+    # 1차: 인메모리 캐시
+    mem_key = (document_id, voice_key)
+    if mem_key in _mem_cache:
+        return JSONResponse(_mem_cache[mem_key])
+
+    # 2차: Supabase Storage 영구 캐시
+    stored = load_cached_summary(document_id, voice_key)
+    if stored:
+        _mem_cache[mem_key] = stored   # 인메모리에도 올려두기
+        return JSONResponse(stored)
+    # 1. 문서 조회
+    doc_res = (
+        supabase_admin.table("documents")
+        .select("id, notebook_id, user_id, storage_path, filename, file_type, status")
+        .eq("id", document_id)
+        .limit(1)
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+    doc = doc_res.data[0]
+    if doc.get("status") != "ready":
+        raise HTTPException(status_code=400, detail="사용할 수 없는 문서입니다.")
+
+    # 2. 열람 권한 확인 (소유자 또는 수강 학생)
+    notebook_id = doc.get("notebook_id")
+    if notebook_id:
+        nb = (
+            supabase_admin.table("notebooks")
+            .select("id, user_id")
+            .eq("id", notebook_id)
+            .single()
+            .execute()
+            .data
+        )
+        if nb and nb.get("user_id") != user["id"]:
+            enrolled = (
+                supabase_admin.table("notebook_enrollments")
+                .select("id")
+                .eq("notebook_id", notebook_id)
+                .eq("student_id", user["id"])
+                .execute()
+                .data
+            )
+            if not enrolled:
+                raise HTTPException(status_code=403, detail="접근 권한이 없습니다.")
+
+    # 3. 파일 형식 판별
+    filename = doc.get("filename", "")
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    is_image = ext in _IMAGE_EXTS
+    is_text_doc = ext in _TEXT_DOC_EXTS
+
+    if not is_image and not is_text_doc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 파일 형식입니다. (지원: 이미지, PDF, DOCX, PPTX, TXT 등)",
+        )
+
+    openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+
+    # 4-A. 이미지: GPT-4o Vision으로 내용 설명
+    if is_image:
+        storage_path = (doc.get("storage_path") or "").strip()
+        if not storage_path:
+            raise HTTPException(status_code=400, detail="문서 경로 정보가 없습니다.")
+        if storage_path.startswith(("http://", "https://")):
+            image_url = storage_path
+        else:
+            try:
+                resp = supabase_admin.storage.from_(STORAGE_BUCKET).create_signed_url(storage_path, 300)
+                image_url = resp.get("signedURL") or resp.get("signedUrl") or ""
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"이미지 URL 생성 실패: {str(e)}")
+        if not image_url:
+            raise HTTPException(status_code=500, detail="이미지 URL 생성에 실패했습니다.")
+        try:
+            completion = openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "이 이미지는 학습 자료입니다. 다음 형식으로 한국어 음성 요약 스크립트를 작성해주세요:\n"
+                                "1) 첫 문장: 이미지의 전체 주제/성격 한 줄 소개\n"
+                                "2) 핵심 내용을 항목별로 자연스럽게 설명 (청취자가 이해하기 쉽게)\n"
+                                "3) 마지막 문장: 학습 포인트 한 줄 마무리\n"
+                                "말투는 친근하고 명확하게, 총 2~3분 분량으로 작성해주세요."
+                            ),
+                        },
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                }],
+                max_tokens=1200,
+            )
+            summary_text = completion.choices[0].message.content or ""
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"이미지 분석 실패: {str(e)}")
+
+    # 4-B. 텍스트 문서: chunks → GPT-4o 요약
+    else:
+        chunks_res = (
+            supabase_admin.table("document_chunks")
+            .select("content, chunk_index")
+            .eq("doc_id", document_id)
+            .order("chunk_index")
+            .execute()
+        )
+        if not chunks_res.data:
+            raise HTTPException(status_code=400, detail="문서 내용이 없습니다. 문서가 아직 처리 중일 수 있습니다.")
+        raw_text = "\n\n".join(c["content"] for c in chunks_res.data)[:8000]
+        try:
+            completion = openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "아래 학습 자료를 한국어 음성 요약 스크립트로 변환해주세요.\n"
+                        "형식:\n"
+                        "1) 첫 문장: 자료의 주제 한 줄 소개\n"
+                        "2) 핵심 내용을 순서대로 자연스럽게 설명\n"
+                        "3) 마지막 문장: 핵심 학습 포인트 마무리\n"
+                        "말투는 친근하고 명확하게, 총 2~3분 분량으로 작성해주세요.\n\n"
+                        f"[자료 내용]\n{raw_text}"
+                    ),
+                }],
+                max_tokens=1200,
+            )
+            summary_text = completion.choices[0].message.content or ""
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"텍스트 요약 실패: {str(e)}")
+
+    # 5. ElevenLabs TTS + 타임스탬프 변환
+    try:
+        audio_bytes, subtitle_segments = await tts_with_timestamps(summary_text, voice_key)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"음성 변환 실패: {str(e)}")
+
+    response_data = serialize_summary(summary_text, audio_bytes, subtitle_segments, voice_key)
+
+    # 캐시 저장 (인메모리 + Storage 비동기 백그라운드)
+    _mem_cache[mem_key] = response_data
+    import asyncio
+    asyncio.create_task(asyncio.to_thread(
+        save_cached_summary, document_id, voice_key, summary_text, audio_bytes, subtitle_segments
+    ))
+
+    return JSONResponse(response_data)
 
 
 @router.get("/documents/{document_id}/chunks")
