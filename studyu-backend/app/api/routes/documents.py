@@ -29,9 +29,21 @@ from pydantic import BaseModel
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.supabase import supabase_admin
-from app.services.rag import ingest_document, ingest_url, SUPPORTED_EXTENSIONS
 from app.services.tts import tts_with_timestamps, ELEVENLABS_VOICES, DEFAULT_VOICE, serialize_summary
 from app.services.audio_cache import load_cached_summary, save_cached_summary
+from app.services.rag import (
+    ingest_document,
+    ingest_url,
+    prepare_media_for_browser_playback,
+    SUPPORTED_EXTENSIONS,
+    VIDEO_AUDIO_EXTENSIONS,
+    _extract_youtube_video_id,
+    _strip_media_metadata,
+    _build_media_timeline_from_chunks_v2,
+    build_media_summary_from_chunks,
+    _parse_media_summary,
+    _inject_media_summary,
+)
 
 router = APIRouter()
 
@@ -64,6 +76,26 @@ MAX_VIDEO_SIZE = 25 * 1024 * 1024  # Whisper API 제한 25MB
 VIDEO_AUDIO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a"}
 
 
+def _ensure_youtube_document_chunks(document_id: str, storage_path: str) -> None:
+    if not storage_path or _extract_youtube_video_id(storage_path) is None:
+        return
+
+    existing = (
+        supabase_admin.table("document_chunks")
+        .select("chunk_index")
+        .eq("doc_id", document_id)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return
+
+    ingest_url(storage_path, document_id)
+    supabase_admin.table("documents").update({
+        "status": "ready",
+    }).eq("id", document_id).execute()
+
+
 @router.post("/documents/upload")
 async def upload_document(
     notebook_id: str = Form(...),
@@ -91,12 +123,25 @@ async def upload_document(
 
     # 1. Supabase Storage에 업로드 (PDF·이미지·비디오·오디오)
     if ext in STORABLE_EXTENSIONS:
-        storage_path = f"{user['id']}/{doc_id}.{ext}"
+        storage_bytes = file_bytes
+        storage_ext = ext
         content_type = STORAGE_CONTENT_TYPES[ext]
+
+        if ext in {"avi", "mkv", "mov"}:
+            converted_bytes, converted_ext, converted_content_type = prepare_media_for_browser_playback(
+                file_bytes,
+                file.filename,
+            )
+            if converted_ext != ext and converted_content_type:
+                storage_bytes = converted_bytes
+                storage_ext = converted_ext
+                content_type = converted_content_type
+
+        storage_path = f"{user['id']}/{doc_id}.{storage_ext}"
         try:
             supabase_admin.storage.from_(STORAGE_BUCKET).upload(
                 storage_path,
-                file_bytes,
+                storage_bytes,
                 {"content-type": content_type},
             )
         except Exception as e:
@@ -486,7 +531,7 @@ async def get_document_chunks(
     """문서 청크 텍스트 반환 (미리보기용)."""
     doc_res = (
         supabase_admin.table("documents")
-        .select("user_id, notebook_id")
+        .select("user_id, notebook_id, storage_path")
         .eq("id", document_id)
         .single()
         .execute()
@@ -507,6 +552,62 @@ async def get_document_chunks(
         if not enrolled:
             raise HTTPException(status_code=403, detail="권한이 없습니다.")
 
+    _ensure_youtube_document_chunks(document_id, doc_res.data.get("storage_path") or "")
+
+    chunks_res = (
+        supabase_admin.table("document_chunks")
+        .select("content, chunk_index")
+        .eq("doc_id", document_id)
+        .order("chunk_index")
+        .execute()
+    )
+    rows = chunks_res.data or []
+    if not rows and _extract_youtube_video_id(doc_res.data.get("storage_path") or "") is not None:
+        raise HTTPException(
+            status_code=500,
+            detail="유튜브 자막을 불러오지 못했습니다. 서버에 youtube-transcript-api가 설치되어 있는지 확인해주세요.",
+        )
+    text = "\n\n".join(_strip_media_metadata(c["content"]) for c in rows)
+    timeline = _build_media_timeline_from_chunks_v2(rows)
+    return {"text": text, "timeline": timeline}
+
+
+@router.get("/documents/{document_id}/media-summary")
+async def get_document_media_summary(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    doc_res = (
+        supabase_admin.table("documents")
+        .select("user_id, notebook_id, filename, storage_path")
+        .eq("id", document_id)
+        .single()
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    if doc_res.data["user_id"] != user["id"]:
+        enrolled = (
+            supabase_admin.table("notebook_enrollments")
+            .select("id")
+            .eq("notebook_id", doc_res.data["notebook_id"])
+            .eq("student_id", user["id"])
+            .execute()
+            .data
+        )
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    filename = doc_res.data.get("filename") or ""
+    storage_path = doc_res.data.get("storage_path") or ""
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    is_youtube_doc = bool(storage_path) and _extract_youtube_video_id(storage_path) is not None
+    if ext not in VIDEO_AUDIO_EXTENSIONS and not is_youtube_doc:
+        raise HTTPException(status_code=400, detail="비디오/오디오 문서에만 사용할 수 있습니다.")
+
+    _ensure_youtube_document_chunks(document_id, doc_res.data.get("storage_path") or "")
+
     chunks_res = (
         supabase_admin.table("document_chunks")
         .select("content")
@@ -514,8 +615,29 @@ async def get_document_chunks(
         .order("chunk_index")
         .execute()
     )
-    text = "\n\n".join(c["content"] for c in (chunks_res.data or []))
-    return {"text": text}
+    rows = chunks_res.data or []
+    if not rows and is_youtube_doc:
+        raise HTTPException(
+            status_code=500,
+            detail="??? ??? ???? ?????. ??? youtube-transcript-api? ???? ??? ??????.",
+        )
+    summary = _parse_media_summary(rows[0]["content"]) if rows else {"title": "전체 내용 요약", "overview": "", "sections": []}
+    if not summary.get("sections"):
+        summary = build_media_summary_from_chunks(rows, filename)
+        if summary.get("sections") and rows:
+            updated_chunks = _inject_media_summary([row["content"] for row in rows], summary)
+            try:
+                supabase_admin.table("document_chunks").update({
+                    "content": updated_chunks[0],
+                }).eq("doc_id", document_id).eq("chunk_index", 0).execute()
+            except Exception:
+                pass
+    return summary
+
+    # 청크는 CHUNK_OVERLAP(100자) 슬라이딩 윈도우로 생성되므로
+    # 두 번째 청크부터는 앞 CHUNK_OVERLAP 글자가 이전 청크 끝과 중복됨.
+    # 원본 텍스트 복원: 첫 청크는 그대로, 나머지는 overlap 부분 제거 후 바로 이어붙임.
+    # separator 없이 ""로 join — 원본 줄바꿈은 텍스트 내부에 이미 포함되어 있음.
 
 
 @router.patch("/documents/{document_id}")

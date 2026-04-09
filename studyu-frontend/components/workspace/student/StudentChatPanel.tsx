@@ -9,6 +9,16 @@ interface Doc {
   name: string;
 }
 
+export interface SourceChunk {
+  num: number;
+  doc_id: string;
+  filename: string;
+  chunk_index: number;
+  text: string;
+  char_offset?: number;
+  char_length?: number;
+}
+
 interface StudentChatPanelProps {
   notebookId: string;
   userId?: string;
@@ -16,13 +26,253 @@ interface StudentChatPanelProps {
   docs: Doc[];
   selectedLLM?: string;
   selectedDifficulty?: string;
+  activeSourceId?: string;
+  activeSourceMediaType?: "audio" | "video" | null;
+  activeSourceMediaDuration?: number;
+  onSeekToTimestamp?: (seconds: number) => void;
   onClose?: () => void;
+  onCitationClick?: (chunk: SourceChunk) => void;
+}
+
+interface ChatReference {
+  doc_id: string;
+  filename: string;
+  chunk_index: number;
+  total_chunks: number;
+  start_sec?: number | null;
+  end_sec?: number | null;
+  excerpt: string;
+}
+
+interface ChatMessage {
+  type: 'user' | 'ai' | 'system';
+  content: string;
+  sources?: SourceChunk[];
+  references?: ChatReference[];
 }
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, selectedDifficulty, onClose }: StudentChatPanelProps) {
-  const [messages, setMessages] = useState<any[]>([]);
+function formatTimestamp(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function getReferenceSeconds(reference: ChatReference, duration: number) {
+  if (typeof reference.start_sec === "number" && Number.isFinite(reference.start_sec)) {
+    return Math.max(0, reference.start_sec);
+  }
+  if (!Number.isFinite(duration) || duration <= 0) return null;
+  if (!Number.isFinite(reference.total_chunks) || reference.total_chunks <= 0) return null;
+  const ratio = (reference.chunk_index + 0.5) / reference.total_chunks;
+  return Math.max(0, Math.min(duration, duration * ratio));
+}
+
+function isApproximateReference(reference: ChatReference) {
+  return !(typeof reference.start_sec === "number" && Number.isFinite(reference.start_sec));
+}
+
+function parseTimestampToSeconds(value: string) {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^((\d+):)?([0-5]?\d):([0-5]\d)$/);
+  if (!match) return null;
+  const hours = match[2] ? Number(match[2]) : 0;
+  const minutes = Number(match[3]);
+  const seconds = Number(match[4]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds)) return null;
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
+function containsTimestampText(content: string) {
+  return /\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b/.test(content);
+}
+
+function collapseNearbyTimestampLists(content: string) {
+  const timestampPattern = /(?:(?:\d+):)?(?:[0-5]?\d):(?:[0-5]\d)/;
+  const listPattern = new RegExp(`${timestampPattern.source}(?:\\s*,\\s*${timestampPattern.source})+`, "g");
+
+  return content.replace(listPattern, (matched) => {
+    const rawParts = matched.split(/\s*,\s*/).filter(Boolean);
+    const parsed = rawParts
+      .map((part) => ({ raw: part, seconds: parseTimestampToSeconds(part) }))
+      .filter((item): item is { raw: string; seconds: number } => item.seconds !== null);
+
+    if (parsed.length < 2) {
+      return matched;
+    }
+
+    const groups: Array<{ start: number; end: number }> = [];
+    parsed.forEach(({ seconds }) => {
+      const current = groups[groups.length - 1];
+      if (!current) {
+        groups.push({ start: seconds, end: seconds });
+        return;
+      }
+
+      if (seconds - current.end <= 12) {
+        current.end = seconds;
+        return;
+      }
+
+      groups.push({ start: seconds, end: seconds });
+    });
+
+    return groups
+      .map((group) =>
+        group.start === group.end
+          ? formatTimestamp(group.start)
+          : `${formatTimestamp(group.start)}-${formatTimestamp(group.end)}`
+      )
+      .join(", ");
+  });
+}
+
+function injectReferenceTimesIntoAnswer(
+  content: string,
+  mediaReferences: Array<{ reference: ChatReference; seconds: number }>
+) {
+  if (!content.trim() || mediaReferences.length === 0 || containsTimestampText(content)) {
+    return content;
+  }
+
+  const uniqueTimes = mediaReferences
+    .map(({ seconds }) => formatTimestamp(seconds))
+    .filter((time, index, arr) => arr.indexOf(time) === index);
+
+  if (uniqueTimes.length === 0) {
+    return content;
+  }
+
+  const lines = content.split("\n");
+  let timeIndex = 0;
+  let numberedLineCount = 0;
+  let appliedInlineTime = false;
+
+  const updatedLines = lines.map((line) => {
+    const trimmed = line.trim();
+    const isNumbered = /^\d+\.\s+/.test(trimmed);
+    const isBullet = /^[-*]\s+/.test(trimmed);
+
+    if (!isNumbered && !isBullet) {
+      return line;
+    }
+    if (containsTimestampText(line)) {
+      return line;
+    }
+
+    const nextTime = uniqueTimes[Math.min(timeIndex, uniqueTimes.length - 1)];
+    if (!nextTime) {
+      return line;
+    }
+
+    if (isNumbered) {
+      numberedLineCount += 1;
+      timeIndex += 1;
+    } else if (numberedLineCount === 0) {
+      timeIndex += 1;
+    }
+
+    const boldTitleMatch = line.match(/^(\s*(?:\d+\.|[-*])\s+\*\*[^*]+\*\*)(.*)$/);
+    if (boldTitleMatch) {
+      appliedInlineTime = true;
+      return `${boldTitleMatch[1]}(${nextTime})${boldTitleMatch[2]}`;
+    }
+
+    const plainTitleMatch = line.match(/^(\s*(?:\d+\.|[-*])\s+[^:：]+)(:\s*.*)$/);
+    if (plainTitleMatch) {
+      appliedInlineTime = true;
+      return `${plainTitleMatch[1]}(${nextTime})${plainTitleMatch[2]}`;
+    }
+
+    appliedInlineTime = true;
+    return `${line} (${nextTime})`;
+  });
+
+  if (appliedInlineTime) {
+    return updatedLines.join("\n");
+  }
+
+  const sentenceParts = content
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (sentenceParts.length === 0) {
+    return content;
+  }
+
+  const inlineSentences = sentenceParts.map((sentence, index) => {
+    if (containsTimestampText(sentence)) {
+      return sentence;
+    }
+
+    const nextTime = uniqueTimes[Math.min(index, uniqueTimes.length - 1)];
+    if (!nextTime) {
+      return sentence;
+    }
+
+    const featureMatch = sentence.match(/^(기능\s*\d+)/);
+    if (featureMatch) {
+      return `${featureMatch[1]}(${nextTime}): ${sentence}`;
+    }
+
+    const titleMatch = sentence.match(/^([^:：]{2,24}?)(은|는|이|가)\s+/);
+    if (titleMatch) {
+      return `${titleMatch[1]}(${nextTime})${titleMatch[2]} ${sentence.slice(titleMatch[0].length)}`;
+    }
+
+    return `${sentence} (${nextTime})`;
+  });
+
+  return inlineSentences.join("\n");
+}
+function renderWithCitations(
+  content: string,
+  sources: SourceChunk[],
+  onCitationClick?: (chunk: SourceChunk) => void,
+  renderText?: (text: string) => any,
+) {
+  const parts = content.split(/(\[\d+\])/g);
+  return parts.map((part, i) => {
+    const match = part.match(/^\[(\d+)\]$/);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      const chunk = sources.find((s) => s.num === num);
+      if (chunk) {
+        return (
+          <button
+            key={i}
+            onClick={() => onCitationClick?.(chunk)}
+            title={chunk.text}
+            className="inline-flex items-center justify-center w-[16px] h-[16px] rounded-full bg-[#155dfc] text-white text-[9px] font-bold mx-0.5 align-super leading-none hover:bg-[#0d4ac4] transition-colors shrink-0"
+          >
+            {num}
+          </button>
+        );
+      }
+    }
+    return <span key={i}>{renderText ? renderText(part) : part}</span>;
+  });
+}
+
+export function StudentChatPanel({
+  activeDocIds,
+  docs,
+  notebookId,
+  selectedLLM,
+  selectedDifficulty,
+  activeSourceId,
+  activeSourceMediaType,
+  activeSourceMediaDuration,
+  onSeekToTimestamp,
+  onClose,
+  onCitationClick,
+}: StudentChatPanelProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -78,7 +328,8 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
     const savedMessages = localStorage.getItem(chatKey);
     if (savedMessages) {
       try {
-        setMessages(JSON.parse(savedMessages));
+        const parsed = JSON.parse(savedMessages);
+        setMessages(Array.isArray(parsed) ? parsed : []);
       } catch (e) {
         setMessages([]);
       }
@@ -152,7 +403,15 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
       }
 
       const data = await res.json();
-      setMessages(prev => [...prev, { type: 'ai', content: data.answer }]);
+      setMessages(prev => [
+        ...prev,
+        {
+          type: 'ai',
+          content: collapseNearbyTimestampLists(data.answer ?? ""),
+          references: Array.isArray(data.references) ? data.references : [],
+          sources: Array.isArray(data.sources) ? data.sources : [],
+        },
+      ]);
 
       // 클릭한 인덱스 자리만 새 질문으로 교체
       askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
@@ -190,6 +449,54 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const renderMessageContent = (content: string, enableTimestampLinks: boolean) => {
+    if (!enableTimestampLinks) {
+      return <>{content}</>;
+    }
+
+    const matches = Array.from(content.matchAll(/\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?/g));
+    if (matches.length === 0) {
+      return <>{content}</>;
+    }
+
+    const nodes: JSX.Element[] = [];
+    let lastIndex = 0;
+
+    matches.forEach((match, index) => {
+      const matchedText = match[0];
+      const matchIndex = match.index ?? 0;
+      const rangeStart = matchedText.split(/\s*-\s*/)[0] ?? matchedText;
+      const seconds = parseTimestampToSeconds(rangeStart);
+
+      if (matchIndex > lastIndex) {
+        nodes.push(<span key={`text-${index}-${lastIndex}`}>{content.slice(lastIndex, matchIndex)}</span>);
+      }
+
+      if (seconds === null) {
+        nodes.push(<span key={`raw-${index}`}>{matchedText}</span>);
+      } else {
+        nodes.push(
+          <button
+            key={`ts-${index}-${matchedText}`}
+            type="button"
+            onClick={() => onSeekToTimestamp?.(seconds)}
+            className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
+          >
+            {matchedText}
+          </button>
+        );
+      }
+
+      lastIndex = matchIndex + matchedText.length;
+    });
+
+    if (lastIndex < content.length) {
+      nodes.push(<span key={`tail-${lastIndex}`}>{content.slice(lastIndex)}</span>);
+    }
+
+    return <>{nodes}</>;
   };
 
   return (
@@ -261,21 +568,43 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
           </div>
         )}
         
-        {messages.map((msg, index) => (
-          <div key={index} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div 
-              className={`max-w-[85%] px-4 py-3 rounded-2xl text-[14px] leading-relaxed whitespace-pre-wrap ${
-                msg.type === 'user' 
-                  ? 'bg-[#155dfc] text-white rounded-tr-sm' 
-                  : msg.type === 'system'
-                  ? 'bg-red-50 text-red-600 border border-red-100'
-                  : 'bg-[#f8f9fb] text-[#1a1d26] border border-[#e7e9ed] rounded-tl-sm'
-              }`}
-            >
-              {msg.content}
+        {messages.map((msg, index) => {
+          const enrichedContent = msg.content;
+
+          return (
+            <div key={index} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className="max-w-[85%] space-y-2">
+                <div
+                  className={`px-4 py-3 rounded-2xl text-[14px] leading-relaxed whitespace-pre-wrap ${
+                    msg.type === 'user'
+                      ? 'bg-[#155dfc] text-white rounded-tr-sm'
+                      : msg.type === 'system'
+                      ? 'bg-red-50 text-red-600 border border-red-100'
+                      : 'bg-[#f8f9fb] text-[#1a1d26] border border-[#e7e9ed] rounded-tl-sm'
+                  }`}
+                >
+                  {msg.type === 'ai' && msg.sources && msg.sources.length > 0 ? (
+                    <span className="whitespace-pre-wrap">
+                      {renderWithCitations(
+                        enrichedContent,
+                        msg.sources,
+                        onCitationClick,
+                        (part) =>
+                          renderMessageContent(
+                            part,
+                            msg.type === "ai" && Boolean(activeSourceId && activeSourceMediaType && onSeekToTimestamp)
+                          )
+                      )}
+                    </span>
+                  ) : renderMessageContent(
+                    enrichedContent,
+                    msg.type === "ai" && Boolean(activeSourceId && activeSourceMediaType && onSeekToTimestamp)
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         
         {isLoading && (
           <div className="flex justify-start">

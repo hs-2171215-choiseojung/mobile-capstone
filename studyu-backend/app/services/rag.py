@@ -14,6 +14,8 @@ RAG 파이프라인 (Supabase 영속 저장, pdfplumber + OpenAI)
 import io
 import json
 import re
+from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pdfplumber
 from openai import OpenAI
@@ -39,6 +41,10 @@ _IMAGE_DIRECT_REF_RE = re.compile(
 
 _UNRELATED_IMG_PREFIX = "📌 이 질문은 업로드된 이미지와 직접적인 관련은 없지만, 알고 계시면 도움이 될 것 같아 답변드립니다."
 
+_MEDIA_META_RE = re.compile(r"\[MEDIA_META\](.*?)\[/MEDIA_META\]", re.DOTALL)
+_MEDIA_SUMMARY_RE = re.compile(r"\[MEDIA_SUMMARY\](.*?)\[/MEDIA_SUMMARY\]", re.DOTALL)
+_MEDIA_TRANSCRIPT_HEADER_RE = re.compile(r"^\[(?:음성 전사 내용 - .*?|MEDIA_TRANSCRIPT)\]\s*", re.MULTILINE)
+
 
 # ─────────────────────────────────────────────
 # 텍스트 정제
@@ -54,6 +60,480 @@ def _sanitize(text: str) -> str:
 
 def _hard_sanitize(text: str) -> str:
     return "".join(ch for ch in text if ord(ch) != 0)
+
+
+def _format_media_timestamp(total_seconds: int | float) -> str:
+    safe = max(0, int(total_seconds or 0))
+    hours = safe // 3600
+    minutes = (safe % 3600) // 60
+    seconds = safe % 60
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+_WHISPER_SUPPORTED_MEDIA_EXTENSIONS = {"flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"}
+
+
+def _find_ffmpeg_binary() -> str | None:
+    import shutil
+
+    return shutil.which("ffmpeg")
+
+
+def _prepare_media_file_for_transcription(input_path: str, original_ext: str) -> tuple[str, bool]:
+    import os
+    import subprocess
+    import tempfile
+
+    normalized_ext = (original_ext or "").lower().lstrip(".")
+    if normalized_ext in _WHISPER_SUPPORTED_MEDIA_EXTENSIONS:
+        return input_path, False
+
+    ffmpeg_path = _find_ffmpeg_binary()
+    if not ffmpeg_path:
+        raise ValueError(
+            f".{normalized_ext} 형식은 Whisper가 직접 지원하지 않습니다. "
+            "서버에 ffmpeg를 설치하면 자동으로 wav로 변환해서 처리할 수 있습니다."
+        )
+
+    converted_fd, converted_path = tempfile.mkstemp(suffix=".wav")
+    os.close(converted_fd)
+
+    try:
+        completed = subprocess.run(
+            [
+                ffmpeg_path,
+                "-y",
+                "-i",
+                input_path,
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                converted_path,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            stderr = (completed.stderr or "").strip()
+            raise ValueError(
+                f".{normalized_ext} 파일을 전사용 wav로 변환하지 못했습니다."
+                + (f" ffmpeg 오류: {stderr[:240]}" if stderr else "")
+            )
+        return converted_path, True
+    except Exception:
+        if os.path.exists(converted_path):
+            os.unlink(converted_path)
+        raise
+
+
+def prepare_media_for_browser_playback(file_bytes: bytes, filename: str) -> tuple[bytes, str, str]:
+    import os
+    import subprocess
+    import tempfile
+
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if ext not in {"avi", "mkv", "mov"}:
+        return file_bytes, ext, ""
+
+    ffmpeg_path = _find_ffmpeg_binary()
+    if not ffmpeg_path:
+        return file_bytes, ext, ""
+
+    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as src_tmp:
+        src_tmp.write(file_bytes)
+        src_path = src_tmp.name
+
+    out_fd, out_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(out_fd)
+
+    try:
+        completed = subprocess.run(
+            [
+                ffmpeg_path,
+                "-y",
+                "-i",
+                src_path,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                out_path,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            return file_bytes, ext, ""
+        converted_bytes = open(out_path, "rb").read()
+        if not converted_bytes:
+            return file_bytes, ext, ""
+        return converted_bytes, "mp4", "video/mp4"
+    finally:
+        if os.path.exists(src_path):
+            os.unlink(src_path)
+        if os.path.exists(out_path):
+            os.unlink(out_path)
+
+
+def _looks_like_music_filename(filename: str) -> bool:
+    lower = (filename or "").lower()
+    keywords = ["가사", "lyric", "lyrics", "music", "뮤직", "ost", "mv", "official audio", "audio"]
+    return any(keyword in lower for keyword in keywords)
+
+
+def _is_transcript_credit_noise(text: str) -> bool:
+    normalized = " ".join((text or "").strip().lower().split())
+    if not normalized:
+        return True
+    credit_patterns = [
+        "한글자막 by",
+        "subtitle by",
+        "subtitles by",
+        "lyrics by",
+        "lyric by",
+    ]
+    return any(pattern in normalized for pattern in credit_patterns)
+
+
+def _extract_words_from_segment(segment: Any) -> list[dict[str, Any]]:
+    raw_words = getattr(segment, "words", None)
+    if not raw_words:
+        return []
+
+    words: list[dict[str, Any]] = []
+    for word in raw_words:
+        text = _hard_sanitize(_sanitize(getattr(word, "word", "") or "")).strip()
+        if not text:
+            continue
+        start_sec = getattr(word, "start", None)
+        end_sec = getattr(word, "end", None)
+        if not isinstance(start_sec, (int, float)) or not isinstance(end_sec, (int, float)):
+            continue
+        words.append({
+            "word": text,
+            "start_sec": float(start_sec),
+            "end_sec": float(max(start_sec, end_sec)),
+        })
+    return words
+
+
+def _refine_media_segments(segments: list[dict[str, Any]], *, is_music: bool) -> list[dict[str, Any]]:
+    refined: list[dict[str, Any]] = []
+    for segment in segments:
+        text = _hard_sanitize(_sanitize(segment.get("text", ""))).strip()
+        if not text or _is_transcript_credit_noise(text):
+            continue
+
+        start_sec = float(segment.get("start_sec", 0) or 0)
+        end_sec = float(max(start_sec, segment.get("end_sec", start_sec) or start_sec))
+        words = segment.get("words") if isinstance(segment.get("words"), list) else []
+
+        valid_words = [word for word in words if isinstance(word, dict)]
+        if valid_words:
+            start_candidates = [float(word["start_sec"]) for word in valid_words if isinstance(word.get("start_sec"), (int, float))]
+            end_candidates = [float(word["end_sec"]) for word in valid_words if isinstance(word.get("end_sec"), (int, float))]
+            if start_candidates:
+                start_sec = min(start_candidates)
+            if end_candidates:
+                end_sec = max(end_candidates)
+
+        refined.append({
+            "start_sec": start_sec,
+            "end_sec": max(start_sec, end_sec),
+            "text": text,
+        })
+
+    if not refined:
+        return []
+
+    if is_music:
+        if refined[0]["start_sec"] < 1.0:
+            refined[0]["start_sec"] = min(max(refined[0]["start_sec"], 0.0) + 1.0, refined[0]["end_sec"])
+
+        for idx in range(1, len(refined)):
+            prev = refined[idx - 1]
+            current = refined[idx]
+            # Keep segments monotonic and reduce overlaps that make music lyrics look early.
+            if current["start_sec"] < prev["end_sec"]:
+                midpoint = max(prev["start_sec"], min(prev["end_sec"], (prev["end_sec"] + current["start_sec"]) / 2))
+                prev["end_sec"] = midpoint
+                current["start_sec"] = max(midpoint, current["start_sec"])
+            current["start_sec"] = max(current["start_sec"], prev["start_sec"])
+            current["end_sec"] = max(current["start_sec"], current["end_sec"])
+
+    return refined
+
+
+def _parse_media_metadata(content: str) -> dict[str, Any]:
+    match = _MEDIA_META_RE.search(content or "")
+    if not match:
+        return {}
+    try:
+        parsed = json.loads(match.group(1))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _normalize_media_summary_payload(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, list):
+        sections = [item for item in payload if isinstance(item, dict)]
+        return {
+            "title": "전체 내용 요약",
+            "overview": "",
+            "sections": sections,
+        }
+
+    if isinstance(payload, dict):
+        title = str(payload.get("title", "")).strip() or "전체 내용 요약"
+        overview = str(payload.get("overview", "")).strip()
+        raw_sections = payload.get("sections", [])
+        sections = [item for item in raw_sections if isinstance(item, dict)] if isinstance(raw_sections, list) else []
+        return {
+            "title": title,
+            "overview": overview,
+            "sections": sections,
+        }
+
+    return {"title": "전체 내용 요약", "overview": "", "sections": []}
+
+
+def _parse_media_summary(content: str) -> dict[str, Any]:
+    match = _MEDIA_SUMMARY_RE.search(content or "")
+    if not match:
+        return {"title": "전체 내용 요약", "overview": "", "sections": []}
+    try:
+        parsed = json.loads(match.group(1))
+        return _normalize_media_summary_payload(parsed)
+    except Exception:
+        return {"title": "전체 내용 요약", "overview": "", "sections": []}
+
+
+def _strip_media_metadata(content: str) -> str:
+    cleaned = _MEDIA_META_RE.sub("", content or "")
+    cleaned = _MEDIA_SUMMARY_RE.sub("", cleaned)
+    cleaned = _MEDIA_TRANSCRIPT_HEADER_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _inject_media_summary(chunks: list[str], summary: dict[str, Any]) -> list[str]:
+    if not chunks or not summary or not summary.get("sections"):
+        return chunks
+    encoded = json.dumps(summary, ensure_ascii=False)
+    cleaned_first = _MEDIA_SUMMARY_RE.sub("", chunks[0]).strip()
+    chunks[0] = f"[MEDIA_SUMMARY]{encoded}[/MEDIA_SUMMARY]\n{cleaned_first}".strip()
+    return chunks
+
+
+def _build_media_timeline_from_chunks_v2(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    for row in rows or []:
+        content = row.get("content", "")
+        text = _strip_media_metadata(content)
+        if not text:
+            continue
+        meta = _parse_media_metadata(content)
+        start_sec = meta.get("start_sec")
+        if not isinstance(start_sec, (int, float)):
+            start_sec = 0
+        end_sec = meta.get("end_sec")
+        entry: dict[str, Any] = {
+            "time_sec": int(max(0, start_sec)),
+            "text": text,
+        }
+        if isinstance(end_sec, (int, float)):
+            entry["end_sec"] = int(max(entry["time_sec"], end_sec))
+        timeline.append(entry)
+    return timeline
+
+
+def _extract_media_transcript(file_bytes: bytes, filename: str) -> tuple[list[dict[str, Any]], int]:
+    import os
+    import tempfile
+
+    ext = filename.lower().rsplit(".", 1)[-1]
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+
+    prepared_path = tmp_path
+    prepared_is_temp = False
+    try:
+        prepared_path, prepared_is_temp = _prepare_media_file_for_transcription(tmp_path, ext)
+        with open(prepared_path, "rb") as f:
+            response = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                prompt=(
+                    "Transcribe the audio exactly as spoken. Do not translate. "
+                    "Keep Korean in Korean and English in English. "
+                    "If multiple languages are spoken, preserve each part in its original language."
+                ),
+                response_format="verbose_json",
+                timestamp_granularities=["segment", "word"],
+            )
+
+        segments = getattr(response, "segments", None)
+        if not segments:
+            text = getattr(response, "text", "") or ""
+            if text.strip():
+                return [{"start_sec": 0, "end_sec": 0, "text": text.strip()}], 0
+            return [], 0
+
+        normalized: list[dict[str, Any]] = []
+        for seg in segments:
+            raw_text = getattr(seg, "text", "") or ""
+            text = _hard_sanitize(_sanitize(raw_text)).strip()
+            if not text:
+                continue
+            start_sec = getattr(seg, "start", 0) or 0
+            end_sec = getattr(seg, "end", start_sec) or start_sec
+            normalized.append({
+                "start_sec": float(start_sec),
+                "end_sec": float(max(start_sec, end_sec)),
+                "text": text,
+                "words": _extract_words_from_segment(seg),
+            })
+        return _refine_media_segments(normalized, is_music=_looks_like_music_filename(filename)), 0
+    finally:
+        if prepared_is_temp and os.path.exists(prepared_path):
+            os.unlink(prepared_path)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def _build_media_chunks(segments: list[dict[str, Any]], filename: str) -> list[str]:
+    chunks: list[str] = []
+    for segment in segments:
+        text = _hard_sanitize(_sanitize(segment.get("text", ""))).strip()
+        if not text:
+            continue
+        meta = {
+            "filename": filename,
+            "start_sec": float(segment.get("start_sec", 0) or 0),
+            "end_sec": float(segment.get("end_sec", 0) or 0),
+        }
+        chunks.append(
+            f"[MEDIA_META]{json.dumps(meta, ensure_ascii=False)}[/MEDIA_META]\n[MEDIA_TRANSCRIPT]\n{text}"
+        )
+    return chunks
+
+
+def build_media_summary_from_chunks(rows: list[dict[str, Any]], filename: str) -> dict[str, Any]:
+    timeline = _build_media_timeline_from_chunks_v2(rows)
+    if not timeline:
+        return {"title": "전체 내용 요약", "overview": "", "sections": []}
+
+    transcript_lines = [
+        f"{_format_media_timestamp(item['time_sec'])} {item['text']}"
+        for item in timeline
+        if item.get("text")
+    ]
+    transcript = "\n".join(transcript_lines)
+    transcript = transcript[:12000]
+
+    prompt = f"""다음은 업로드된 비디오/오디오 '{filename}'의 시간별 전사입니다.
+전체 시간 흐름을 읽고, 짧은 메모가 아니라 README나 요약 보고서처럼 읽히는 문서형 요약을 만들어주세요.
+
+중요 규칙:
+- 전사 원문을 그대로 복사하지 말고, 내용을 이해한 뒤 자연스럽고 정리된 설명문으로 다시 작성하세요.
+- 전체 요약은 "제목 + 간단한 도입 설명 + 주제별 본문" 구조의 문서를 만든다는 느낌으로 작성하세요.
+- 맨 위의 title은 문서 제목처럼 구체적으로 쓰세요.
+- overview는 제목 바로 아래에 들어가는 짧은 소개 문단처럼 2~4문장으로 작성하세요.
+- sections는 시간 순서대로 정리하고, 각 section은 하나의 주제나 흐름 전환을 대표해야 합니다.
+- 각 section의 title은 소제목처럼 자연스럽고 구체적으로 작성하세요. '주제 1', '핵심 내용 2' 같은 generic 이름은 쓰지 마세요.
+- 각 section의 summary는 한 줄 메모가 아니라, 해당 구간에서 무엇을 설명하고 왜 중요한지 드러나는 2~5문장짜리 본문처럼 작성하세요.
+- 화면에서는 소제목 오른쪽에 시간만 따로 붙여 보여줄 예정이므로, summary 안에 시간을 다시 반복해서 쓰지 마세요.
+- 각 section에는 그 주제가 본격적으로 시작되는 대표 시작 시간만 start_sec에 넣으세요.
+- 불필요한 구분선, 번호 목록, 마크다운 기호를 넣지 말고, 문서 본문처럼 매끄럽게 읽히는 내용을 작성하세요.
+- 반드시 JSON 객체만 출력하세요.
+
+출력 형식:
+{{
+  "title": "전체 내용 요약 제목",
+  "overview": "영상/오디오 전체 내용을 소개하는 2~4문장 분량의 도입 설명",
+  "sections": [
+    {{
+      "title": "소제목 1",
+      "start_sec": 35,
+      "summary": "이 구간에서 다루는 핵심 내용, 맥락, 중요한 포인트를 문서 본문처럼 2~5문장으로 자세히 설명"
+    }}
+  ]
+}}
+
+시간별 전사:
+{transcript}
+"""
+
+    try:
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=900,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content or "{}"
+        parsed = json.loads(raw)
+        payload = _normalize_media_summary_payload(parsed)
+        sections = payload.get("sections", [])
+        if isinstance(sections, list):
+            normalized_sections: list[dict[str, Any]] = []
+            for item in sections:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title", "")).strip()
+                summary = str(item.get("summary", "")).strip()
+                start_sec = item.get("start_sec", 0)
+                if not title or not summary:
+                    continue
+                try:
+                    start_value = int(float(start_sec))
+                except Exception:
+                    start_value = 0
+                normalized_sections.append({
+                    "title": title,
+                    "start_sec": max(0, start_value),
+                    "summary": summary,
+                })
+            if normalized_sections:
+                return {
+                    "title": str(payload.get("title", "")).strip() or "전체 내용 요약",
+                    "overview": str(payload.get("overview", "")).strip(),
+                    "sections": normalized_sections,
+                }
+    except Exception:
+        pass
+
+    fallback: list[dict[str, Any]] = []
+    sample_points = timeline[: min(4, len(timeline))]
+    for idx, item in enumerate(sample_points, start=1):
+        fallback.append({
+            "title": item["text"][:18].strip() or f"핵심 내용 {idx}",
+            "start_sec": item["time_sec"],
+            "summary": item["text"][:180].strip(),
+        })
+    return {
+        "title": "전체 내용 요약",
+        "overview": f"{filename}의 핵심 내용을 시간 흐름에 따라 정리한 요약입니다.",
+        "sections": fallback,
+    }
 
 
 # ─────────────────────────────────────────────
@@ -158,23 +638,64 @@ def _extract_text_from_pptx(file_bytes: bytes) -> tuple[str, int]:
 
 
 def _extract_text_from_hwpx(file_bytes: bytes) -> tuple[str, int]:
-    """HWPX(zip 기반 XML)에서 텍스트 추출. (text, 0) 반환."""
+    """HWPX(zip 기반 XML)에서 텍스트 추출. (text, 0) 반환.
+
+    HWPX는 ZIP 컨테이너 안에 Contents/section*.xml 파일들이 있고,
+    실제 글자는 <hp:t> (로컬명 't') 요소에만 저장된다.
+    모든 요소를 순회하면 메타데이터·속성값이 섞여 깨진 텍스트가 나오므로
+    반드시 로컬명이 't'인 요소만 수집한다.
+    """
     import zipfile
     from xml.etree import ElementTree as ET
 
-    texts: list[str] = []
+    paragraphs: list[str] = []
     with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-        for name in sorted(z.namelist()):
-            if "Contents" in name and name.endswith(".xml"):
-                with z.open(name) as f:
-                    try:
-                        root = ET.fromstring(f.read())
-                        for elem in root.iter():
-                            if elem.text and elem.text.strip():
-                                texts.append(elem.text.strip())
-                    except Exception:
-                        pass
-    return "\n".join(texts), 0
+        # section*.xml 만 처리 (Contents/ 폴더)
+        section_files = sorted(
+            name for name in z.namelist()
+            if name.startswith("Contents/") and name.endswith(".xml")
+            and "section" in name.lower()
+        )
+        if not section_files:
+            # fallback: Contents 폴더의 모든 xml
+            section_files = sorted(
+                name for name in z.namelist()
+                if "Contents" in name and name.endswith(".xml")
+            )
+
+        for name in section_files:
+            with z.open(name) as f:
+                try:
+                    root = ET.fromstring(f.read())
+                except Exception:
+                    continue
+
+                # 단락(p) 단위로 묶어서 줄바꿈 보존
+                # 로컬명 'p' 요소를 단락으로 간주
+                p_tag_found = any(
+                    (elem.tag.split("}")[-1] == "p")
+                    for elem in root.iter()
+                )
+
+                if p_tag_found:
+                    for elem in root.iter():
+                        if elem.tag.split("}")[-1] != "p":
+                            continue
+                        # 이 단락 안의 모든 <t> 텍스트를 합침
+                        run_texts = [
+                            child.text
+                            for child in elem.iter()
+                            if child.tag.split("}")[-1] == "t" and child.text
+                        ]
+                        line = "".join(run_texts)
+                        paragraphs.append(line)
+                else:
+                    # 단락 구조가 없으면 <t> 만 수집
+                    for elem in root.iter():
+                        if elem.tag.split("}")[-1] == "t" and elem.text:
+                            paragraphs.append(elem.text)
+
+    return "\n".join(paragraphs), 0
 
 
 def _extract_text_from_hwp(file_bytes: bytes) -> tuple[str, int]:
@@ -188,9 +709,12 @@ def _extract_text_from_hwp(file_bytes: bytes) -> tuple[str, int]:
         ole = olefile.OleFileIO(io.BytesIO(file_bytes))
         section_idx = 0
         while True:
+            # HWP5 파일에 따라 Section0000 / Section0 두 가지 이름 형식이 존재
             section_name = f"BodyText/Section{section_idx:04d}"
             if not ole.exists(section_name):
-                break
+                section_name = f"BodyText/Section{section_idx}"
+                if not ole.exists(section_name):
+                    break
             stream_data = ole.openstream(section_name).read()
             try:
                 decompressed = zlib.decompress(stream_data, -15)
@@ -213,11 +737,26 @@ def _extract_text_from_hwp(file_bytes: bytes) -> tuple[str, int]:
                     pos += 4
                 data = decompressed[pos: pos + size]
                 pos += size
-                # Record type 67 = 단락 텍스트
+                # Record type 67 = 단락 텍스트 (HWPTAG_PARA_TEXT)
                 if rec_type == 67 and data:
                     try:
-                        text = data.decode("utf-16-le")
-                        text = "".join(c for c in text if c.isprintable() or c in "\n\t ")
+                        # HWP PARA_TEXT 포맷:
+                        # - 일반 문자: 2바이트 UTF-16-LE 코드포인트 (0x0020 이상)
+                        # - 인라인 컨트롤(0x0000~0x001F): 코드 2바이트 + 컨트롤 헤더 8바이트
+                        #   → 건너뛰지 않으면 헤더 바이트가 한자 등으로 잘못 디코딩됨
+                        text_chars: list[str] = []
+                        i = 0
+                        while i + 1 < len(data):
+                            code = struct.unpack_from("<H", data, i)[0]
+                            if code < 0x0020:
+                                # 인라인 컨트롤: 코드(2) + 헤더(8) = 10바이트 스킵
+                                i += 10
+                            else:
+                                ch = chr(code)
+                                if ch.isprintable() or ch in "\n\t ":
+                                    text_chars.append(ch)
+                                i += 2
+                        text = "".join(text_chars)
                         if text.strip():
                             texts.append(text.strip())
                     except Exception:
@@ -302,24 +841,9 @@ image_type 선택 기준:
 
 def _extract_text_from_video(file_bytes: bytes, filename: str) -> tuple[str, int]:
     """비디오/오디오에서 OpenAI Whisper로 STT. (text, 0) 반환."""
-    import tempfile
-    import os
-    ext = filename.lower().rsplit(".", 1)[-1]
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
-    try:
-        with open(tmp_path, "rb") as f:
-            response = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
-                response_format="text",
-            )
-        text = response if isinstance(response, str) else getattr(response, "text", "")
-        return text, 0
-    finally:
-        os.unlink(tmp_path)
+    segments, _ = _extract_media_transcript(file_bytes, filename)
+    text = "\n".join(segment["text"] for segment in segments if segment.get("text"))
+    return text, 0
 
 
 # ─────────────────────────────────────────────
@@ -344,6 +868,8 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple
     """
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else "pdf"
 
+    media_chunks: list[str] | None = None
+
     if ext == "pdf":
         text, page_count = _extract_text_from_pdf(file_bytes)
     elif ext == "docx":
@@ -357,7 +883,9 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple
     elif ext in IMAGE_EXTENSIONS:
         text, page_count = _extract_text_from_image(file_bytes, filename)
     elif ext in VIDEO_AUDIO_EXTENSIONS:
-        text, page_count = _extract_text_from_video(file_bytes, filename)
+        segments, page_count = _extract_media_transcript(file_bytes, filename)
+        media_chunks = _build_media_chunks(segments, filename)
+        text = "\n".join(segment["text"] for segment in segments if segment.get("text"))
     else:
         raise ValueError(f"지원하지 않는 파일 형식: .{ext}")
 
@@ -365,17 +893,21 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple
     if not text:
         return 0, page_count
 
-    # 비디오/오디오 파일은 청크 앞에 전사(STT) 태그를 붙여 AI가 인식할 수 있게 함
-    is_video_audio = ext in VIDEO_AUDIO_EXTENSIONS
-
     chunks: list[str] = []
-    step = CHUNK_SIZE - CHUNK_OVERLAP
-    for i in range(0, len(text), step):
-        chunk = _hard_sanitize(_sanitize(text[i: i + CHUNK_SIZE]))
-        if chunk.strip():
-            if is_video_audio:
-                chunk = f"[음성 전사 내용 - {filename}]\n{chunk}"
-            chunks.append(chunk)
+    if ext in VIDEO_AUDIO_EXTENSIONS:
+        chunks = media_chunks or []
+        summary = build_media_summary_from_chunks(
+            [{"content": chunk} for chunk in chunks],
+            filename,
+        )
+        if summary:
+            chunks = _inject_media_summary(chunks, summary)
+    else:
+        step = CHUNK_SIZE - CHUNK_OVERLAP
+        for i in range(0, len(text), step):
+            chunk = _hard_sanitize(_sanitize(text[i: i + CHUNK_SIZE]))
+            if chunk.strip():
+                chunks.append(chunk)
 
     if not chunks:
         return 0, page_count
@@ -421,9 +953,16 @@ def _extract_youtube_video_id(url: str) -> str | None:
     return None
 
 
+def _is_youtube_url(url: str) -> bool:
+    return _extract_youtube_video_id(url) is not None
+
+
 def _fetch_youtube_transcript(video_id: str) -> str:
     """youtube_transcript_api로 자막 텍스트 추출 (한국어 → 영어 순)."""
-    from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+    except ImportError as e:
+        raise ValueError("유튜브 자막 추출 기능이 서버에 설치되어 있지 않습니다. youtube-transcript-api를 설치해주세요.") from e
     api = YouTubeTranscriptApi()
     try:
         transcript = api.fetch(video_id, languages=["ko", "ko-KR", "en", "en-US"])
@@ -445,6 +984,52 @@ def _fetch_youtube_transcript(video_id: str) -> str:
     return text.strip()
 
 
+def _fetch_youtube_transcript_segments(video_id: str) -> list[dict[str, Any]]:
+    """youtube_transcript_api로 자막 세그먼트 추출."""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+    except ImportError as e:
+        raise ValueError("유튜브 자막 추출 기능이 서버에 설치되어 있지 않습니다. youtube-transcript-api를 설치해주세요.") from e
+
+    api = YouTubeTranscriptApi()
+    try:
+        transcript = api.fetch(video_id, languages=["ko", "ko-KR", "en", "en-US"])
+    except NoTranscriptFound:
+        try:
+            transcript_list = api.list(video_id)
+            transcript = None
+            for t in transcript_list:
+                transcript = api.fetch(video_id, languages=[t.language_code])
+                break
+            if transcript is None:
+                raise ValueError("유튜브 영상에 자막이 없습니다.")
+        except TranscriptsDisabled:
+            raise ValueError("이 유튜브 영상은 자막이 비활성화되어 있습니다.")
+    except TranscriptsDisabled:
+        raise ValueError("이 유튜브 영상은 자막이 비활성화되어 있습니다.")
+
+    segments: list[dict[str, Any]] = []
+    snippets = getattr(transcript, "snippets", None) or []
+    for snippet in snippets:
+        text = _hard_sanitize(_sanitize(getattr(snippet, "text", "") or "")).replace("\n", " ").strip()
+        if not text:
+            continue
+        start = getattr(snippet, "start", None)
+        duration = getattr(snippet, "duration", None)
+        if not isinstance(start, (int, float)):
+            start = getattr(snippet, "start_sec", 0)
+        if not isinstance(duration, (int, float)):
+            duration = getattr(snippet, "duration_sec", 0)
+        start_sec = float(start or 0)
+        end_sec = start_sec + float(duration or 0)
+        segments.append({
+            "start_sec": max(0.0, start_sec),
+            "end_sec": max(start_sec, end_sec),
+            "text": text,
+        })
+    return segments
+
+
 def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
     """URL에서 텍스트를 추출하여 임베딩과 함께 Supabase document_chunks에 저장.
 
@@ -459,11 +1044,40 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
     video_id = _extract_youtube_video_id(url)
     if video_id:
         try:
-            text = _fetch_youtube_transcript(video_id)
+            segments = _fetch_youtube_transcript_segments(video_id)
         except ValueError:
             raise
         except Exception as e:
             raise ValueError(f"유튜브 자막 추출 실패: {str(e)}")
+        if not segments:
+            raise ValueError("유튜브 영상에서 충분한 자막을 찾지 못했습니다.")
+
+        chunks = _build_media_chunks(segments, f"{video_id}.youtube")
+        summary = build_media_summary_from_chunks(
+            [{"content": chunk} for chunk in chunks],
+            f"YouTube-{video_id}",
+        )
+        if summary:
+            chunks = _inject_media_summary(chunks, summary)
+
+        try:
+            embeddings = _embed_batch(chunks)
+        except Exception as e:
+            print(f"[WARNING] 임베딩 생성 실패, 임베딩 없이 저장: {e}")
+            embeddings = [None] * len(chunks)  # type: ignore
+
+        records = [
+            {
+                "doc_id": doc_id,
+                "chunk_index": idx,
+                "content": content,
+                "embedding": emb,
+            }
+            for idx, (content, emb) in enumerate(zip(chunks, embeddings))
+        ]
+        _db_safe_insert("document_chunks", records)
+        print(f"[INFO] ingest_url: {len(records)} YouTube transcript chunks 저장 완료")
+        return len(records), 0
     else:
         # ── 일반 웹페이지 처리 ──
         headers = {
@@ -663,28 +1277,29 @@ def _get_context_semantic(
     question: str,
     top_k: int = TOP_K,
     labeled: bool = False,
-) -> str:
-    """임베딩 기반 코사인 유사도로 각 문서에서 top-k 청크를 선택하여 컨텍스트 구성."""
+) -> tuple[str, list[dict]]:
+    """임베딩 기반 코사인 유사도로 각 문서에서 top-k 청크를 선택하여 컨텍스트 구성.
+    (context_str, source_chunks) 튜플 반환."""
     if not doc_ids or not question:
-        return _get_context(doc_ids)
+        return _get_context(doc_ids), []
 
     # 질문 임베딩
     try:
         query_embedding = _embed_batch([question])[0]
     except Exception as e:
         print(f"[WARNING] 질문 임베딩 실패, 순차 검색으로 fallback: {e}")
-        return _get_context(doc_ids, labeled=labeled)
+        return _get_context(doc_ids, labeled=labeled), []
 
-    # 문서명 조회
+    # 문서명 조회 (항상 수행 — 출처 추적용)
     doc_name_map: dict[str, str] = {}
-    if labeled:
-        try:
-            name_result = supabase_admin.table("documents").select("id, filename").in_("id", doc_ids).execute()
-            doc_name_map = {row["id"]: row["filename"] for row in name_result.data}
-        except Exception:
-            pass
+    try:
+        name_result = supabase_admin.table("documents").select("id, filename").in_("id", doc_ids).execute()
+        doc_name_map = {row["id"]: row["filename"] for row in name_result.data}
+    except Exception:
+        pass
 
     parts: list[str] = []
+    source_chunks: list[dict] = []
 
     for doc_id in doc_ids:
         # 해당 문서의 청크 + 임베딩 조회
@@ -709,21 +1324,53 @@ def _get_context_semantic(
             embeddings = [r["embedding"] for r in rows_with_emb]
             scores = _cosine_similarity(query_embedding, embeddings)
             top_indices = np.argsort(scores)[::-1][:top_k]
-            selected_chunks = [rows_with_emb[i]["content"] for i in top_indices]
             # 원래 chunk_index 순서로 정렬
             selected_with_idx = sorted(
                 [(rows_with_emb[i]["chunk_index"], rows_with_emb[i]["content"]) for i in top_indices],
                 key=lambda x: x[0],
             )
-            selected_chunks = [c for _, c in selected_with_idx]
+            selected_chunks = [_strip_media_metadata(c) for _, c in selected_with_idx]
         else:
             # 임베딩 없으면 앞에서 top_k개
-            selected_chunks = [r["content"] for r in rows[:top_k]]
+            selected_with_idx = [(r["chunk_index"], _strip_media_metadata(r["content"])) for r in rows[:top_k]]
+            selected_chunks = [text for _, text in selected_with_idx]
 
         if not selected_chunks:
             continue
 
-        doc_text = "\n\n".join(selected_chunks)
+        # 출처 청크 메타데이터 수집 (전역 1-based 번호 부여)
+        doc_filename = doc_name_map.get(doc_id, doc_id)
+
+        # /chunks 엔드포인트는 overlap(100자) 제거 후 "\n\n".join 으로 텍스트를 복원.
+        # 각 청크의 char_offset 을 동일한 방식으로 계산한다.
+        running = 0
+        offset_map: dict[int, int] = {}
+        length_map: dict[int, int] = {}  # overlap 제거 후 실제 표시 길이
+        for j, row in enumerate(rows):
+            ci = row["chunk_index"]
+            content: str = row["content"]
+            display = content if j == 0 else (content[CHUNK_OVERLAP:] if len(content) > CHUNK_OVERLAP else content)
+            offset_map[ci] = running
+            length_map[ci] = len(display)
+            running += len(display)
+            # separator 없음 — documents.py 와 동일하게 ""로 join
+
+        numbered_parts: list[str] = []
+        for ci, text in selected_with_idx:
+            num = len(source_chunks) + 1
+            source_chunks.append({
+                "num": num,
+                "doc_id": doc_id,
+                "filename": doc_filename,
+                "chunk_index": ci,
+                "text": text[:200],  # 툴팁 미리보기용
+                "full_text": text,   # evidence extraction용 (응답 전 제거됨)
+                "char_offset": offset_map.get(ci, -1),
+                "char_length": length_map.get(ci, len(text)),  # AI가 실제 읽은 청크 전체 범위
+            })
+            numbered_parts.append(f"[출처 {num}]\n{text}")
+
+        doc_text = "\n\n".join(numbered_parts)
         if labeled:
             doc_name = doc_name_map.get(doc_id, doc_id)
             parts.append(f"[문서명: {doc_name}]\n{doc_text}")
@@ -731,7 +1378,88 @@ def _get_context_semantic(
             parts.append(doc_text)
 
     separator = "\n\n=====\n\n" if labeled else "\n\n"
-    return separator.join(parts)
+    return separator.join(parts), source_chunks
+
+
+def _get_semantic_rows(doc_ids: list[str], question: str, top_k: int = TOP_K) -> list[dict[str, Any]]:
+    if not doc_ids or not question:
+        return []
+
+    try:
+        query_embedding = _embed_batch([question])[0]
+    except Exception:
+        query_embedding = None
+
+    name_result = supabase_admin.table("documents").select("id, filename").in_("id", doc_ids).execute()
+    doc_name_map = {row["id"]: row["filename"] for row in (name_result.data or [])}
+
+    selected: list[dict[str, Any]] = []
+    for doc_id in doc_ids:
+        result = (
+            supabase_admin.table("document_chunks")
+            .select("content, embedding, chunk_index")
+            .eq("doc_id", doc_id)
+            .order("chunk_index")
+            .execute()
+        )
+        rows = result.data or []
+        if not rows:
+            continue
+
+        chosen_rows: list[dict[str, Any]]
+        if query_embedding is not None:
+            rows_with_emb = [r for r in rows if r.get("embedding")]
+            if rows_with_emb:
+                embeddings = [r["embedding"] for r in rows_with_emb]
+                scores = _cosine_similarity(query_embedding, embeddings)
+                top_indices = np.argsort(scores)[::-1][:top_k]
+                chosen_rows = [rows_with_emb[i] for i in top_indices]
+                chosen_rows.sort(key=lambda item: item.get("chunk_index", 0))
+            else:
+                chosen_rows = rows[:top_k]
+        else:
+            chosen_rows = rows[:top_k]
+
+        for row in chosen_rows:
+            selected.append({
+                "doc_id": doc_id,
+                "filename": doc_name_map.get(doc_id, doc_id),
+                "chunk_index": row.get("chunk_index", 0),
+                "total_chunks": len(rows),
+                "content": row.get("content", ""),
+            })
+    return selected
+
+
+def _build_media_references(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    references: list[dict[str, Any]] = []
+    for row in rows:
+        meta = _parse_media_metadata(row.get("content", ""))
+        references.append({
+            "doc_id": row.get("doc_id", ""),
+            "filename": row.get("filename", ""),
+            "chunk_index": row.get("chunk_index", 0),
+            "total_chunks": row.get("total_chunks", 0),
+            "start_sec": meta.get("start_sec"),
+            "end_sec": meta.get("end_sec"),
+            "excerpt": _strip_media_metadata(row.get("content", ""))[:320],
+        })
+    return references
+
+
+def _format_reference_lines(references: list[dict[str, Any]], limit: int = 6) -> str:
+    lines: list[str] = []
+    for ref in references[:limit]:
+        start_sec = ref.get("start_sec")
+        end_sec = ref.get("end_sec")
+        if not isinstance(start_sec, (int, float)):
+            continue
+        if isinstance(end_sec, (int, float)) and end_sec > start_sec:
+            time_label = f"{_format_media_timestamp(start_sec)} - {_format_media_timestamp(end_sec)}"
+        else:
+            time_label = _format_media_timestamp(start_sec)
+        lines.append(f"- {time_label}: {ref.get('excerpt', '')}")
+    return "\n".join(lines)
 
 
 def _get_context(doc_ids: list[str], max_chars: int = 10000, labeled: bool = False) -> str:
@@ -757,7 +1485,7 @@ def _get_context(doc_ids: list[str], max_chars: int = 10000, labeled: bool = Fal
                 .order("chunk_index")
                 .execute()
             )
-            chunks = [row["content"] for row in result.data]
+            chunks = [_strip_media_metadata(row["content"]) for row in result.data]
             if not chunks:
                 continue
             doc_text = "\n\n".join(chunks)[:per_doc_chars]
@@ -773,7 +1501,7 @@ def _get_context(doc_ids: list[str], max_chars: int = 10000, labeled: bool = Fal
         .order("chunk_index")
         .execute()
     )
-    chunks = [row["content"] for row in result.data]
+    chunks = [_strip_media_metadata(row["content"]) for row in result.data]
     return "\n\n".join(chunks)[:max_chars]
 
 
@@ -782,6 +1510,39 @@ def _get_filenames(doc_ids: list[str]) -> list[str]:
         return []
     result = supabase_admin.table("documents").select("filename").in_("id", doc_ids).execute()
     return [row["filename"] for row in result.data]
+
+
+def _get_doc_filename_map(doc_ids: list[str]) -> dict[str, str]:
+    if not doc_ids:
+        return {}
+    result = supabase_admin.table("documents").select("id, filename").in_("id", doc_ids).execute()
+    return {row["id"]: row["filename"] for row in (result.data or [])}
+
+
+def _get_media_doc_ids(doc_ids: list[str]) -> list[str]:
+    if not doc_ids:
+        return []
+    result = supabase_admin.table("documents").select("id, filename, storage_path").in_("id", doc_ids).execute()
+    media_doc_ids: list[str] = []
+    for row in (result.data or []):
+        filename = row.get("filename", "") or ""
+        storage_path = row.get("storage_path", "") or ""
+        ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+        if ext in VIDEO_AUDIO_EXTENSIONS or _is_youtube_url(storage_path):
+            media_doc_ids.append(row["id"])
+    return media_doc_ids
+
+
+def _get_youtube_doc_ids(doc_ids: list[str]) -> list[str]:
+    if not doc_ids:
+        return []
+    result = supabase_admin.table("documents").select("id, storage_path").in_("id", doc_ids).execute()
+    youtube_doc_ids: list[str] = []
+    for row in (result.data or []):
+        storage_path = row.get("storage_path", "") or ""
+        if _is_youtube_url(storage_path):
+            youtube_doc_ids.append(row["id"])
+    return youtube_doc_ids
 
 
 # ─────────────────────────────────────────────
@@ -900,19 +1661,110 @@ def _download_image_b64(storage_path: str) -> bytes | None:
         return None
 
 
+def _extract_evidence_passages(
+    answer: str,
+    source_chunks: list[dict],
+    client: "OpenAI",
+    model: str,
+) -> None:
+    """
+    LLM 답변에서 인용된 각 청크의 정확한 근거 구절을 추출하여
+    char_offset / char_length 를 in-place 로 정밀화한다.
+    각 청크별 LLM 호출은 ThreadPoolExecutor 로 병렬 실행.
+    """
+    cited_nums = set(int(m) for m in re.findall(r'\[(\d+)\]', answer))
+
+    def extract_one(chunk: dict) -> None:
+        num = chunk["num"]
+        if num not in cited_nums:
+            return
+
+        full_text: str = chunk.get("full_text", "")
+        if not full_text:
+            return
+
+        # [N] 바로 앞 문장을 컨텍스트로 수집 (최대 200자)
+        pattern = re.compile(r'([^\n]{5,200})\s*\[' + str(num) + r'\]')
+        m = pattern.search(answer)
+        context_sentence = m.group(1).strip() if m else ""
+
+        try:
+            print(f"[evidence] num={num} context_sentence={context_sentence[:80]!r}")
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "아래 【문서 청크】에서 【답변 문장】의 근거가 된 구절을 찾아, "
+                            "문서 청크 원문에서 그대로 복사하여 출력하세요. "
+                            "변형하거나 요약하지 말고, 해당 구절만 출력하세요."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"【답변 문장】\n{context_sentence}\n\n"
+                            f"【문서 청크】\n{full_text}"
+                        ),
+                    },
+                ],
+                temperature=0.0,
+                max_tokens=300,
+            )
+            extracted = (resp.choices[0].message.content or "").strip().strip('"').strip("'").strip()
+            print(f"[evidence] num={num} extracted={extracted[:80]!r} len={len(extracted)}")
+
+            if not extracted or len(extracted) < 5:
+                print(f"[evidence] num={num} extracted too short, skipping")
+                return
+
+            # 청크 내에서 해당 구절의 시작 위치 탐색
+            chunk_start: int = chunk["char_offset"]
+            ci: int = chunk.get("chunk_index", 0)
+            overlap_adj = 0 if ci == 0 else CHUNK_OVERLAP
+
+            search_key = extracted[:60]
+            idx = full_text.lower().find(search_key.lower())
+            print(f"[evidence] num={num} idx={idx} chunk_start={chunk_start} ci={ci} overlap_adj={overlap_adj}")
+            if idx >= 0:
+                doc_pos = chunk_start + (idx - overlap_adj)
+                if doc_pos < 0:
+                    doc_pos = chunk_start
+                chunk["char_offset"] = doc_pos
+                chunk["char_length"] = min(len(extracted), len(full_text) - idx)
+                print(f"[evidence] num={num} → offset={doc_pos} length={chunk['char_length']}")
+        except Exception as e:
+            print(f"[evidence] num={num} EXCEPTION: {e}")
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(extract_one, chunk) for chunk in source_chunks]
+        for f in as_completed(futures):
+            try:
+                f.result()
+            except Exception:
+                pass
+
+
 def chat_with_docs(
     doc_ids: list[str],
     question: str,
     model: str = "gpt-4o-mini",
     level: str = "intermediate",
     chat_history: list | None = None,
-) -> tuple[str, list[str]]:
-    """문서 기반 RAG 질의응답. (answer, sources) 반환."""
+) -> tuple[str, list[str], list[dict[str, Any]]]:
+    """문서 기반 RAG 질의응답. (answer, sources, references) 반환."""
     import base64
 
     is_multi = len(doc_ids) > 1
     level_hint = LEVEL_PROMPTS.get(level, LEVEL_PROMPTS["intermediate"])
-    doc_filenames = _get_filenames(doc_ids)
+    filename_map = _get_doc_filename_map(doc_ids)
+    doc_filenames = [filename_map.get(doc_id, doc_id) for doc_id in doc_ids]
+    media_doc_ids = _get_media_doc_ids(doc_ids)
+    youtube_doc_ids = _get_youtube_doc_ids(doc_ids)
+    youtube_only = bool(youtube_doc_ids) and set(youtube_doc_ids) == set(media_doc_ids) and set(doc_ids) == set(media_doc_ids)
+    semantic_rows = _get_semantic_rows(doc_ids, question, top_k=TOP_K)
+    references = _build_media_references(semantic_rows)
 
     # ── 이미지 문서 처리 ──────────────────────────
     image_docs = _get_image_docs(doc_ids)
@@ -937,18 +1789,53 @@ def chat_with_docs(
 
     # ── 컨텍스트 구성 ─────────────────────────────
     context_ids = non_image_ids if has_non_image else doc_ids
-    context = _get_context_semantic(context_ids, question, top_k=TOP_K, labeled=is_multi) if context_ids else ""
+    media_context_ids = [doc_id for doc_id in context_ids if doc_id in media_doc_ids]
+    semantic_context_ids = [doc_id for doc_id in context_ids if doc_id not in media_context_ids]
+
+    context_parts: list[str] = []
+    source_chunks: list[dict[str, Any]] = []
+    if media_context_ids:
+        media_context = _get_context(media_context_ids, max_chars=24000, labeled=is_multi)
+        if media_context:
+            context_parts.append(media_context)
+    if semantic_context_ids:
+        semantic_context, source_chunks = _get_context_semantic(semantic_context_ids, question, top_k=TOP_K, labeled=is_multi)
+        if semantic_context:
+            context_parts.append(semantic_context)
+
+    context = "\n\n=====\n\n".join(part for part in context_parts if part)
 
     # 비디오/오디오 여부
-    has_video = any(
-        name.lower().rsplit(".", 1)[-1] in VIDEO_AUDIO_EXTENSIONS
-        for name in doc_filenames if "." in name
-    )
-    video_note = (
-        "\n\n중요: 비디오 또는 오디오 파일이 포함되어 있습니다. "
-        "[음성 전사 내용 - 파일명] 태그가 붙은 내용은 해당 영상/음성의 음성을 텍스트로 변환한 것입니다."
-        if has_video else ""
-    )
+    has_video = bool(media_doc_ids)
+    video_note = ""
+    if has_video:
+        joined_ref_lines = _format_reference_lines(references)
+        if youtube_only:
+            video_note = (
+                "\n\n중요: 이 문서는 유튜브 자막 기반 문서입니다. "
+                "1차 답변에서는 먼저 자막 텍스트만 읽고 질문에 정확히 답하세요. "
+                "이 단계에서는 타임스탬프를 억지로 넣지 말고, 질문에 대한 설명만 자연스럽게 정리하세요. "
+                "추측하지 말고 자막에 근거가 있는 내용만 답하세요."
+            )
+        else:
+            video_note = (
+                "\n\n중요: 비디오 또는 오디오 파일이 포함되어 있습니다. "
+                "답변은 반드시 전사 텍스트를 바탕으로 작성하고, 관련 내용이 있으면 답변 본문 안에 바로 타임스탬프를 넣어주세요. "
+                "예: 드래그 장면(0:17): ..., 사라지는 장면(0:23-0:31): ... "
+                "답변 아래에 별도의 '관련 시점' 목록은 만들지 마세요. "
+                "타임스탬프를 고를 때는 어떤 용어를 소개하거나 이름을 붙이는 시점이 아니라, "
+                "질문과 직접 관련된 내용이 실제로 설명되거나 시연되기 시작하는 지점을 기준으로 삼으세요. "
+                "즉 제목을 붙이는 문장보다, 의미를 설명하는 문장, 행동이 드러나는 문장, 핵심 내용이 시작되는 문장을 우선하세요. "
+                "질문이 어떤 개념, 장면, 행동, 차이, 이유, 방법, 흐름, 인물, 사건, 주제의 위치를 묻는 경우에도 같은 원칙을 적용하세요. "
+                "질문과 직접 대응되는 설명 구간을 먼저 찾고 그 구간의 시간을 붙이세요. "
+                "근거가 여러 개면 시간들을 나열만 하지 말고, 정말 이어지는 설명이면 범위(예: 0:35-0:59)로 묶어서 쓰세요. "
+                "답변이 여러 포인트로 나뉘는 주제라면 짧은 도입 설명 뒤에 '-' 불릿 목록으로 나눠 설명해도 됩니다. "
+                "예: 한 문장 요약 후, '- 항목명(시간): 설명' 형식으로 2~4개 핵심 포인트를 정리하세요. "
+                "비교, 원인, 특징, 단계, 사례처럼 여러 요소를 구분해서 설명하는 질문에서는 불릿 형식을 우선적으로 사용하세요. "
+                "추측하지 말고 전사에 근거가 있는 내용만 답하세요."
+            )
+        if joined_ref_lines:
+            video_note += f"\n\n관련 전사 구간:\n{joined_ref_lines}"
 
     # ── 이미지 타입별 분석 가이드 ─────────────────
     IMAGE_TYPE_GUIDE = {
@@ -1016,23 +1903,6 @@ def chat_with_docs(
 {context}
 </context>"""
 
-    elif is_multi:
-        names_str = ", ".join(f"'{n}'" for n in doc_filenames)
-    # 비디오/오디오 파일 여부 확인 (시스템 프롬프트에 안내 추가용)
-    video_audio_exts = VIDEO_AUDIO_EXTENSIONS
-    doc_filenames = _get_filenames(doc_ids)
-    has_video = any(
-        name.lower().rsplit(".", 1)[-1] in video_audio_exts
-        for name in doc_filenames
-        if "." in name
-    )
-    video_note = (
-        "\n\n중요: 비디오 또는 오디오 파일이 포함되어 있습니다. "
-        "[음성 전사 내용 - 파일명] 태그가 붙은 내용은 해당 영상/음성의 음성을 텍스트로 변환한 것입니다. "
-        "'동영상이 뭘 말하나요?', '영상 내용 요약해줘' 같은 질문에는 이 전사 내용을 바탕으로 답변하세요."
-        if has_video else ""
-    )
-
     if is_multi:
         doc_names = doc_filenames
         names_str = ", ".join(f"'{n}'" for n in doc_names)
@@ -1056,6 +1926,14 @@ def chat_with_docs(
 <context>
 {context}
 </context>"""
+
+    # 텍스트 출처가 있을 때 인용 번호 지시 추가
+    if source_chunks:
+        system_msg += (
+            "\n\n답변 시 문서 내용을 인용하는 부분에 [1], [2] 형식으로 출처 번호를 자연스럽게 붙이세요. "
+            "예: '...JPA는 1차 캐시를 활용합니다 [1].' "
+            "모든 문장에 필요하지 않고, 핵심 근거가 되는 내용에만 표시하세요."
+        )
 
     # ── 메시지 구성 ───────────────────────────────
     messages: list[dict] = [{"role": "system", "content": system_msg}]
@@ -1094,6 +1972,41 @@ def chat_with_docs(
     )
     answer = response.choices[0].message.content or ""
 
+    if youtube_only and answer.strip():
+        aligned_rows = _get_semantic_rows(youtube_doc_ids, answer, top_k=max(TOP_K, 6))
+        aligned_references = _build_media_references(aligned_rows)
+        aligned_ref_lines = _format_reference_lines(aligned_references)
+        if aligned_ref_lines:
+            rewrite_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "너는 유튜브 자막을 근거로 답변을 다듬는 도우미다. "
+                        "초안 답변의 의미와 구조는 유지하되, 아래 자막 근거를 다시 읽고 "
+                        "질문과 직접 관련된 설명 부분의 시간만 답변 본문 안에 자연스럽게 붙여 다시 작성하라. "
+                        "별도의 관련 시점 목록은 만들지 말고, 이어지는 설명이면 범위 표기를 우선하라."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"질문:\n{question}\n\n"
+                        f"초안 답변:\n{answer}\n\n"
+                        f"자막 근거:\n{aligned_ref_lines}"
+                    ),
+                },
+            ]
+            rewrite_response = client.chat.completions.create(
+                model=safe_model,
+                messages=rewrite_messages,
+                temperature=0.2,
+                max_tokens=2000,
+            )
+            rewritten_answer = rewrite_response.choices[0].message.content or ""
+            if rewritten_answer.strip():
+                answer = rewritten_answer
+                references = aligned_references
+
     # ── 이미지 직접 참조 질문에서 잘못 붙은 📌 제거 ──
     if has_images and _IMAGE_DIRECT_REF_RE.search(question):
         if answer.lstrip().startswith("📌"):
@@ -1111,8 +2024,15 @@ def chat_with_docs(
                 skip_blank = False
             answer = "\n".join(filtered).lstrip()
 
-    sources = _get_filenames(doc_ids)
-    return answer, sources
+    # ── 근거 구절 정밀 추출 (evidence extraction) ──
+    if source_chunks:
+        _extract_evidence_passages(answer, source_chunks, client, safe_model)
+        # full_text 는 내부 처리 전용이므로 응답에서 제거
+        for chunk in source_chunks:
+            chunk.pop("full_text", None)
+
+    sources: list[Any] = source_chunks if source_chunks else _get_filenames(doc_ids)
+    return answer, sources, references
 
 
 # ─────────────────────────────────────────────
@@ -2098,6 +3018,8 @@ def generate_suggestions(
             file_types.add("ppt")
         else:
             file_types.add("document")
+    if any(_is_youtube_url(fn) for fn in filenames):
+        file_types.add("video_audio")
 
     # 텍스트 컨텍스트 (비이미지 문서)
     context_ids = non_image_ids if non_image_ids else doc_ids
