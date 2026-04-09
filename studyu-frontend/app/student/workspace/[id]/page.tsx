@@ -8,7 +8,7 @@ import { Resizable } from 're-resizable';
 
 import { TopNavBar } from "@/components/workspace/student/TopNavBar";
 import { WeeklyPlanCard } from "@/components/workspace/student/WeeklyPlanCard";
-import { StudentChatPanel } from "@/components/workspace/student/StudentChatPanel";
+import { StudentChatPanel, SourceChunk } from "@/components/workspace/student/StudentChatPanel";
 import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer";
 import { StudentSourceViewer } from "@/components/workspace/student/StudentSourceViewer";
 
@@ -60,6 +60,8 @@ export default function StudentWorkspacePage() {
   const [selectedSourceError, setSelectedSourceError] = useState("");
   const [isSourceLoading, setIsSourceLoading] = useState(false);
   const [selectedSourceTranscript, setSelectedSourceTranscript] = useState<string | undefined>(undefined);
+  const [highlightRange, setHighlightRange] = useState<{ start: number; length: number } | null>(null);
+  const pendingHighlightRef = useRef<{ start: number; length: number } | null>(null);
 
   const [selectedLLM, setSelectedLLM] = useState('gpt-4o');
   const [selectedDifficulty, setSelectedDifficulty] = useState('intermediate');
@@ -350,7 +352,14 @@ export default function StudentWorkspacePage() {
       const nextSourceTextPromise = needsText
         ? fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } })
             .then((r) => r.json().catch(() => ({})))
-            .then((data) => { if (data?.text) setSelectedSourceTranscript(data.text); })
+            .then((data) => {
+              // TEXT_ONLY 파일(HWP 등)은 텍스트가 없어도 transcript 뷰를 표시하기 위해 항상 설정
+              if (TEXT_ONLY_EXTS.has(ext)) {
+                setSelectedSourceTranscript(data?.text ?? "");
+              } else if (data?.text) {
+                setSelectedSourceTranscript(data.text);
+              }
+            })
         : Promise.resolve();
 
       let nextAccessUrl = "";
@@ -389,6 +398,31 @@ export default function StudentWorkspacePage() {
       setSelectedSourceError("문서를 여는 중 오류가 발생했습니다.");
     } finally {
       setIsSourceLoading(false);
+    }
+  };
+
+  // 소스 로딩 완료 후 대기 중인 하이라이트 적용
+  useEffect(() => {
+    if (!isSourceLoading && pendingHighlightRef.current) {
+      setHighlightRange(pendingHighlightRef.current);
+      pendingHighlightRef.current = null;
+    }
+  }, [isSourceLoading]);
+
+  const handleCitationClick = (chunk: SourceChunk) => {
+    const doc = docs.find((d: DocumentInfo) => d.id === chunk.doc_id);
+    if (!doc) return;
+    // char_offset 이 있으면 정확한 위치, 없으면 null (뷰어가 fallback 처리)
+    const range =
+      chunk.char_offset !== undefined && chunk.char_offset >= 0 && chunk.char_length
+        ? { start: chunk.char_offset, length: chunk.char_length }
+        : null;
+    if (selectedSource?.id === chunk.doc_id) {
+      setHighlightRange(range);
+    } else {
+      setHighlightRange(null);
+      pendingHighlightRef.current = range;
+      void openSourceDocument(doc as DocumentInfo);
     }
   };
 
@@ -442,6 +476,7 @@ export default function StudentWorkspacePage() {
                   loading={isSourceLoading}
                   error={selectedSourceError}
                   transcriptText={selectedSourceTranscript}
+                  highlightRange={highlightRange ?? undefined}
                   onClose={closeSource}
                 />
               </div>
@@ -455,7 +490,7 @@ export default function StudentWorkspacePage() {
                 handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
                 className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
               >
-                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} />
+                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} onCitationClick={handleCitationClick} />
               </Resizable>
             </div>
           );
@@ -489,7 +524,7 @@ export default function StudentWorkspacePage() {
                 handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
                 className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
               >
-                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} />
+                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} onCitationClick={handleCitationClick} />
               </Resizable>
             </div>
           );
@@ -693,7 +728,7 @@ export default function StudentWorkspacePage() {
                   }}
                   className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
                 >
-                  <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} onClose={() => setIsChatOpen(false)} />
+                  <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} onClose={() => setIsChatOpen(false)} onCitationClick={handleCitationClick} />
                 </Resizable>
               )}
             </div>

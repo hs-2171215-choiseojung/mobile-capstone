@@ -9,6 +9,16 @@ interface Doc {
   name: string;
 }
 
+export interface SourceChunk {
+  num: number;
+  doc_id: string;
+  filename: string;
+  chunk_index: number;
+  text: string;
+  char_offset?: number;
+  char_length?: number;
+}
+
 interface StudentChatPanelProps {
   notebookId: string;
   userId?: string;
@@ -17,11 +27,40 @@ interface StudentChatPanelProps {
   selectedLLM?: string;
   selectedDifficulty?: string;
   onClose?: () => void;
+  onCitationClick?: (chunk: SourceChunk) => void;
 }
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, selectedDifficulty, onClose }: StudentChatPanelProps) {
+function renderWithCitations(
+  content: string,
+  sources: SourceChunk[],
+  onCitationClick?: (chunk: SourceChunk) => void,
+) {
+  const parts = content.split(/(\[\d+\])/g);
+  return parts.map((part, i) => {
+    const match = part.match(/^\[(\d+)\]$/);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      const chunk = sources.find((s) => s.num === num);
+      if (chunk) {
+        return (
+          <button
+            key={i}
+            onClick={() => onCitationClick?.(chunk)}
+            title={chunk.text}
+            className="inline-flex items-center justify-center w-[16px] h-[16px] rounded-full bg-[#155dfc] text-white text-[9px] font-bold mx-0.5 align-super leading-none hover:bg-[#0d4ac4] transition-colors shrink-0"
+          >
+            {num}
+          </button>
+        );
+      }
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
+export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, selectedDifficulty, onClose, onCitationClick }: StudentChatPanelProps) {
   const [messages, setMessages] = useState<any[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -152,7 +191,7 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
       }
 
       const data = await res.json();
-      setMessages(prev => [...prev, { type: 'ai', content: data.answer }]);
+      setMessages(prev => [...prev, { type: 'ai', content: data.answer, sources: data.sources ?? [] }]);
 
       // 클릭한 인덱스 자리만 새 질문으로 교체
       askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
@@ -264,15 +303,18 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
         {messages.map((msg, index) => (
           <div key={index} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div 
-              className={`max-w-[85%] px-4 py-3 rounded-2xl text-[14px] leading-relaxed whitespace-pre-wrap ${
+              className={`max-w-[85%] px-4 py-3 rounded-2xl text-[14px] leading-relaxed ${
                 msg.type === 'user' 
-                  ? 'bg-[#155dfc] text-white rounded-tr-sm' 
+                  ? 'bg-[#155dfc] text-white rounded-tr-sm whitespace-pre-wrap' 
                   : msg.type === 'system'
-                  ? 'bg-red-50 text-red-600 border border-red-100'
+                  ? 'bg-red-50 text-red-600 border border-red-100 whitespace-pre-wrap'
                   : 'bg-[#f8f9fb] text-[#1a1d26] border border-[#e7e9ed] rounded-tl-sm'
               }`}
             >
-              {msg.content}
+              {msg.type === 'ai' && msg.sources && msg.sources.length > 0
+                ? <span className="whitespace-pre-wrap">{renderWithCitations(msg.content, msg.sources as SourceChunk[], onCitationClick)}</span>
+                : msg.content
+              }
             </div>
           </div>
         ))}

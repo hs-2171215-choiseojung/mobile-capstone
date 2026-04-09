@@ -14,6 +14,7 @@ RAG 파이프라인 (Supabase 영속 저장, pdfplumber + OpenAI)
 import io
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pdfplumber
 from openai import OpenAI
@@ -158,23 +159,64 @@ def _extract_text_from_pptx(file_bytes: bytes) -> tuple[str, int]:
 
 
 def _extract_text_from_hwpx(file_bytes: bytes) -> tuple[str, int]:
-    """HWPX(zip 기반 XML)에서 텍스트 추출. (text, 0) 반환."""
+    """HWPX(zip 기반 XML)에서 텍스트 추출. (text, 0) 반환.
+
+    HWPX는 ZIP 컨테이너 안에 Contents/section*.xml 파일들이 있고,
+    실제 글자는 <hp:t> (로컬명 't') 요소에만 저장된다.
+    모든 요소를 순회하면 메타데이터·속성값이 섞여 깨진 텍스트가 나오므로
+    반드시 로컬명이 't'인 요소만 수집한다.
+    """
     import zipfile
     from xml.etree import ElementTree as ET
 
-    texts: list[str] = []
+    paragraphs: list[str] = []
     with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-        for name in sorted(z.namelist()):
-            if "Contents" in name and name.endswith(".xml"):
-                with z.open(name) as f:
-                    try:
-                        root = ET.fromstring(f.read())
-                        for elem in root.iter():
-                            if elem.text and elem.text.strip():
-                                texts.append(elem.text.strip())
-                    except Exception:
-                        pass
-    return "\n".join(texts), 0
+        # section*.xml 만 처리 (Contents/ 폴더)
+        section_files = sorted(
+            name for name in z.namelist()
+            if name.startswith("Contents/") and name.endswith(".xml")
+            and "section" in name.lower()
+        )
+        if not section_files:
+            # fallback: Contents 폴더의 모든 xml
+            section_files = sorted(
+                name for name in z.namelist()
+                if "Contents" in name and name.endswith(".xml")
+            )
+
+        for name in section_files:
+            with z.open(name) as f:
+                try:
+                    root = ET.fromstring(f.read())
+                except Exception:
+                    continue
+
+                # 단락(p) 단위로 묶어서 줄바꿈 보존
+                # 로컬명 'p' 요소를 단락으로 간주
+                p_tag_found = any(
+                    (elem.tag.split("}")[-1] == "p")
+                    for elem in root.iter()
+                )
+
+                if p_tag_found:
+                    for elem in root.iter():
+                        if elem.tag.split("}")[-1] != "p":
+                            continue
+                        # 이 단락 안의 모든 <t> 텍스트를 합침
+                        run_texts = [
+                            child.text
+                            for child in elem.iter()
+                            if child.tag.split("}")[-1] == "t" and child.text
+                        ]
+                        line = "".join(run_texts)
+                        paragraphs.append(line)
+                else:
+                    # 단락 구조가 없으면 <t> 만 수집
+                    for elem in root.iter():
+                        if elem.tag.split("}")[-1] == "t" and elem.text:
+                            paragraphs.append(elem.text)
+
+    return "\n".join(paragraphs), 0
 
 
 def _extract_text_from_hwp(file_bytes: bytes) -> tuple[str, int]:
@@ -188,9 +230,12 @@ def _extract_text_from_hwp(file_bytes: bytes) -> tuple[str, int]:
         ole = olefile.OleFileIO(io.BytesIO(file_bytes))
         section_idx = 0
         while True:
+            # HWP5 파일에 따라 Section0000 / Section0 두 가지 이름 형식이 존재
             section_name = f"BodyText/Section{section_idx:04d}"
             if not ole.exists(section_name):
-                break
+                section_name = f"BodyText/Section{section_idx}"
+                if not ole.exists(section_name):
+                    break
             stream_data = ole.openstream(section_name).read()
             try:
                 decompressed = zlib.decompress(stream_data, -15)
@@ -213,11 +258,26 @@ def _extract_text_from_hwp(file_bytes: bytes) -> tuple[str, int]:
                     pos += 4
                 data = decompressed[pos: pos + size]
                 pos += size
-                # Record type 67 = 단락 텍스트
+                # Record type 67 = 단락 텍스트 (HWPTAG_PARA_TEXT)
                 if rec_type == 67 and data:
                     try:
-                        text = data.decode("utf-16-le")
-                        text = "".join(c for c in text if c.isprintable() or c in "\n\t ")
+                        # HWP PARA_TEXT 포맷:
+                        # - 일반 문자: 2바이트 UTF-16-LE 코드포인트 (0x0020 이상)
+                        # - 인라인 컨트롤(0x0000~0x001F): 코드 2바이트 + 컨트롤 헤더 8바이트
+                        #   → 건너뛰지 않으면 헤더 바이트가 한자 등으로 잘못 디코딩됨
+                        text_chars: list[str] = []
+                        i = 0
+                        while i + 1 < len(data):
+                            code = struct.unpack_from("<H", data, i)[0]
+                            if code < 0x0020:
+                                # 인라인 컨트롤: 코드(2) + 헤더(8) = 10바이트 스킵
+                                i += 10
+                            else:
+                                ch = chr(code)
+                                if ch.isprintable() or ch in "\n\t ":
+                                    text_chars.append(ch)
+                                i += 2
+                        text = "".join(text_chars)
                         if text.strip():
                             texts.append(text.strip())
                     except Exception:
@@ -663,28 +723,29 @@ def _get_context_semantic(
     question: str,
     top_k: int = TOP_K,
     labeled: bool = False,
-) -> str:
-    """임베딩 기반 코사인 유사도로 각 문서에서 top-k 청크를 선택하여 컨텍스트 구성."""
+) -> tuple[str, list[dict]]:
+    """임베딩 기반 코사인 유사도로 각 문서에서 top-k 청크를 선택하여 컨텍스트 구성.
+    (context_str, source_chunks) 튜플 반환."""
     if not doc_ids or not question:
-        return _get_context(doc_ids)
+        return _get_context(doc_ids), []
 
     # 질문 임베딩
     try:
         query_embedding = _embed_batch([question])[0]
     except Exception as e:
         print(f"[WARNING] 질문 임베딩 실패, 순차 검색으로 fallback: {e}")
-        return _get_context(doc_ids, labeled=labeled)
+        return _get_context(doc_ids, labeled=labeled), []
 
-    # 문서명 조회
+    # 문서명 조회 (항상 수행 — 출처 추적용)
     doc_name_map: dict[str, str] = {}
-    if labeled:
-        try:
-            name_result = supabase_admin.table("documents").select("id, filename").in_("id", doc_ids).execute()
-            doc_name_map = {row["id"]: row["filename"] for row in name_result.data}
-        except Exception:
-            pass
+    try:
+        name_result = supabase_admin.table("documents").select("id, filename").in_("id", doc_ids).execute()
+        doc_name_map = {row["id"]: row["filename"] for row in name_result.data}
+    except Exception:
+        pass
 
     parts: list[str] = []
+    source_chunks: list[dict] = []
 
     for doc_id in doc_ids:
         # 해당 문서의 청크 + 임베딩 조회
@@ -709,7 +770,6 @@ def _get_context_semantic(
             embeddings = [r["embedding"] for r in rows_with_emb]
             scores = _cosine_similarity(query_embedding, embeddings)
             top_indices = np.argsort(scores)[::-1][:top_k]
-            selected_chunks = [rows_with_emb[i]["content"] for i in top_indices]
             # 원래 chunk_index 순서로 정렬
             selected_with_idx = sorted(
                 [(rows_with_emb[i]["chunk_index"], rows_with_emb[i]["content"]) for i in top_indices],
@@ -718,12 +778,45 @@ def _get_context_semantic(
             selected_chunks = [c for _, c in selected_with_idx]
         else:
             # 임베딩 없으면 앞에서 top_k개
+            selected_with_idx = [(r["chunk_index"], r["content"]) for r in rows[:top_k]]
             selected_chunks = [r["content"] for r in rows[:top_k]]
 
         if not selected_chunks:
             continue
 
-        doc_text = "\n\n".join(selected_chunks)
+        # 출처 청크 메타데이터 수집 (전역 1-based 번호 부여)
+        doc_filename = doc_name_map.get(doc_id, doc_id)
+
+        # /chunks 엔드포인트는 overlap(100자) 제거 후 "\n\n".join 으로 텍스트를 복원.
+        # 각 청크의 char_offset 을 동일한 방식으로 계산한다.
+        running = 0
+        offset_map: dict[int, int] = {}
+        length_map: dict[int, int] = {}  # overlap 제거 후 실제 표시 길이
+        for j, row in enumerate(rows):
+            ci = row["chunk_index"]
+            content: str = row["content"]
+            display = content if j == 0 else (content[CHUNK_OVERLAP:] if len(content) > CHUNK_OVERLAP else content)
+            offset_map[ci] = running
+            length_map[ci] = len(display)
+            running += len(display)
+            # separator 없음 — documents.py 와 동일하게 ""로 join
+
+        numbered_parts: list[str] = []
+        for ci, text in selected_with_idx:
+            num = len(source_chunks) + 1
+            source_chunks.append({
+                "num": num,
+                "doc_id": doc_id,
+                "filename": doc_filename,
+                "chunk_index": ci,
+                "text": text[:200],  # 툴팁 미리보기용
+                "full_text": text,   # evidence extraction용 (응답 전 제거됨)
+                "char_offset": offset_map.get(ci, -1),
+                "char_length": length_map.get(ci, len(text)),  # AI가 실제 읽은 청크 전체 범위
+            })
+            numbered_parts.append(f"[출처 {num}]\n{text}")
+
+        doc_text = "\n\n".join(numbered_parts)
         if labeled:
             doc_name = doc_name_map.get(doc_id, doc_id)
             parts.append(f"[문서명: {doc_name}]\n{doc_text}")
@@ -731,7 +824,7 @@ def _get_context_semantic(
             parts.append(doc_text)
 
     separator = "\n\n=====\n\n" if labeled else "\n\n"
-    return separator.join(parts)
+    return separator.join(parts), source_chunks
 
 
 def _get_context(doc_ids: list[str], max_chars: int = 10000, labeled: bool = False) -> str:
@@ -900,6 +993,91 @@ def _download_image_b64(storage_path: str) -> bytes | None:
         return None
 
 
+def _extract_evidence_passages(
+    answer: str,
+    source_chunks: list[dict],
+    client: "OpenAI",
+    model: str,
+) -> None:
+    """
+    LLM 답변에서 인용된 각 청크의 정확한 근거 구절을 추출하여
+    char_offset / char_length 를 in-place 로 정밀화한다.
+    각 청크별 LLM 호출은 ThreadPoolExecutor 로 병렬 실행.
+    """
+    cited_nums = set(int(m) for m in re.findall(r'\[(\d+)\]', answer))
+
+    def extract_one(chunk: dict) -> None:
+        num = chunk["num"]
+        if num not in cited_nums:
+            return
+
+        full_text: str = chunk.get("full_text", "")
+        if not full_text:
+            return
+
+        # [N] 바로 앞 문장을 컨텍스트로 수집 (최대 200자)
+        pattern = re.compile(r'([^\n]{5,200})\s*\[' + str(num) + r'\]')
+        m = pattern.search(answer)
+        context_sentence = m.group(1).strip() if m else ""
+
+        try:
+            print(f"[evidence] num={num} context_sentence={context_sentence[:80]!r}")
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "아래 【문서 청크】에서 【답변 문장】의 근거가 된 구절을 찾아, "
+                            "문서 청크 원문에서 그대로 복사하여 출력하세요. "
+                            "변형하거나 요약하지 말고, 해당 구절만 출력하세요."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"【답변 문장】\n{context_sentence}\n\n"
+                            f"【문서 청크】\n{full_text}"
+                        ),
+                    },
+                ],
+                temperature=0.0,
+                max_tokens=300,
+            )
+            extracted = (resp.choices[0].message.content or "").strip().strip('"').strip("'").strip()
+            print(f"[evidence] num={num} extracted={extracted[:80]!r} len={len(extracted)}")
+
+            if not extracted or len(extracted) < 5:
+                print(f"[evidence] num={num} extracted too short, skipping")
+                return
+
+            # 청크 내에서 해당 구절의 시작 위치 탐색
+            chunk_start: int = chunk["char_offset"]
+            ci: int = chunk.get("chunk_index", 0)
+            overlap_adj = 0 if ci == 0 else CHUNK_OVERLAP
+
+            search_key = extracted[:60]
+            idx = full_text.lower().find(search_key.lower())
+            print(f"[evidence] num={num} idx={idx} chunk_start={chunk_start} ci={ci} overlap_adj={overlap_adj}")
+            if idx >= 0:
+                doc_pos = chunk_start + (idx - overlap_adj)
+                if doc_pos < 0:
+                    doc_pos = chunk_start
+                chunk["char_offset"] = doc_pos
+                chunk["char_length"] = min(len(extracted), len(full_text) - idx)
+                print(f"[evidence] num={num} → offset={doc_pos} length={chunk['char_length']}")
+        except Exception as e:
+            print(f"[evidence] num={num} EXCEPTION: {e}")
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(extract_one, chunk) for chunk in source_chunks]
+        for f in as_completed(futures):
+            try:
+                f.result()
+            except Exception:
+                pass
+
+
 def chat_with_docs(
     doc_ids: list[str],
     question: str,
@@ -937,7 +1115,7 @@ def chat_with_docs(
 
     # ── 컨텍스트 구성 ─────────────────────────────
     context_ids = non_image_ids if has_non_image else doc_ids
-    context = _get_context_semantic(context_ids, question, top_k=TOP_K, labeled=is_multi) if context_ids else ""
+    context, source_chunks = _get_context_semantic(context_ids, question, top_k=TOP_K, labeled=is_multi) if context_ids else ("", [])
 
     # 비디오/오디오 여부
     has_video = any(
@@ -1057,6 +1235,14 @@ def chat_with_docs(
 {context}
 </context>"""
 
+    # 텍스트 출처가 있을 때 인용 번호 지시 추가
+    if source_chunks:
+        system_msg += (
+            "\n\n답변 시 문서 내용을 인용하는 부분에 [1], [2] 형식으로 출처 번호를 자연스럽게 붙이세요. "
+            "예: '...JPA는 1차 캐시를 활용합니다 [1].' "
+            "모든 문장에 필요하지 않고, 핵심 근거가 되는 내용에만 표시하세요."
+        )
+
     # ── 메시지 구성 ───────────────────────────────
     messages: list[dict] = [{"role": "system", "content": system_msg}]
 
@@ -1111,8 +1297,14 @@ def chat_with_docs(
                 skip_blank = False
             answer = "\n".join(filtered).lstrip()
 
-    sources = _get_filenames(doc_ids)
-    return answer, sources
+    # ── 근거 구절 정밀 추출 (evidence extraction) ──
+    if source_chunks:
+        _extract_evidence_passages(answer, source_chunks, client, safe_model)
+        # full_text 는 내부 처리 전용이므로 응답에서 제거
+        for chunk in source_chunks:
+            chunk.pop("full_text", None)
+
+    return answer, source_chunks
 
 
 # ─────────────────────────────────────────────

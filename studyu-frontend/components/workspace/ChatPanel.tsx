@@ -5,10 +5,17 @@ import type { Doc } from "./SourcePanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+interface SourceChunk {
+  doc_id: string;
+  filename: string;
+  chunk_index: number;
+  text: string;
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
-  sources?: string[];
+  sources?: SourceChunk[];
 }
 
 const MODELS = [
@@ -398,11 +405,19 @@ export default function ChatPanel({ activeDocIds, docs, getToken, notebookTitle 
               {msg.content}
               {msg.sources && msg.sources.length > 0 && (
                 <div className="mt-2 pt-2 border-t border-gray-200 flex flex-wrap gap-1">
-                  {msg.sources.map((src) => (
-                    <span key={src} className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">
-                      {src}
-                    </span>
-                  ))}
+                  {msg.sources.map((src, idx) => {
+                    const filename = typeof src === "string" ? src : src.filename;
+                    const excerpt = typeof src === "string" ? undefined : src.text;
+                    return (
+                      <span
+                        key={idx}
+                        className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full"
+                        title={excerpt ?? filename}
+                      >
+                        📄 {filename}
+                      </span>
+                    );
+                  })}
                 </div>
               )}
             </div>

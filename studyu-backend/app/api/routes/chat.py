@@ -29,7 +29,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    sources: list[str]
+    sources: list[Any]
     session_id: str
 
 

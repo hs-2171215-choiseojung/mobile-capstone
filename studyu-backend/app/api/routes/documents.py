@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.supabase import supabase_admin
-from app.services.rag import ingest_document, ingest_url, SUPPORTED_EXTENSIONS
+from app.services.rag import ingest_document, ingest_url, SUPPORTED_EXTENSIONS, CHUNK_OVERLAP
 from app.services.tts import tts_with_timestamps, ELEVENLABS_VOICES, DEFAULT_VOICE, serialize_summary
 from app.services.audio_cache import load_cached_summary, save_cached_summary
 
@@ -509,12 +509,26 @@ async def get_document_chunks(
 
     chunks_res = (
         supabase_admin.table("document_chunks")
-        .select("content")
+        .select("content, chunk_index")
         .eq("doc_id", document_id)
         .order("chunk_index")
         .execute()
     )
-    text = "\n\n".join(c["content"] for c in (chunks_res.data or []))
+    rows = chunks_res.data or []
+
+    # 청크는 CHUNK_OVERLAP(100자) 슬라이딩 윈도우로 생성되므로
+    # 두 번째 청크부터는 앞 CHUNK_OVERLAP 글자가 이전 청크 끝과 중복됨.
+    # 원본 텍스트 복원: 첫 청크는 그대로, 나머지는 overlap 부분 제거 후 바로 이어붙임.
+    # separator 없이 ""로 join — 원본 줄바꿈은 텍스트 내부에 이미 포함되어 있음.
+    parts: list[str] = []
+    for i, row in enumerate(rows):
+        content: str = row["content"]
+        if i == 0:
+            parts.append(content)
+        else:
+            parts.append(content[CHUNK_OVERLAP:] if len(content) > CHUNK_OVERLAP else content)
+
+    text = "".join(parts)
     return {"text": text}
 
 
