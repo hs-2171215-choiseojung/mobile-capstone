@@ -32,6 +32,7 @@ interface StudentChatPanelProps {
   onSeekToTimestamp?: (seconds: number) => void;
   onClose?: () => void;
   onCitationClick?: (chunk: SourceChunk) => void;
+  onSlideClick?: (slideNum: number) => void;
 }
 
 interface ChatReference {
@@ -271,6 +272,7 @@ export function StudentChatPanel({
   onSeekToTimestamp,
   onClose,
   onCitationClick,
+  onSlideClick,
 }: StudentChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
@@ -413,11 +415,18 @@ export function StudentChatPanel({
         },
       ]);
 
+      // PPT 추천 질문이 있으면 칩 전체 교체 (기존 setSuggestions 방식 그대로)
+      const pptSuggestions: string[] = Array.isArray(data.suggested_questions) ? data.suggested_questions : [];
+      if (pptSuggestions.length > 0) {
+        const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
+        setSuggestions(pptSuggestions.slice(0, 3).map((text, i) => ({ text, category: CATS[i % 3] })) as Suggestion[]);
+      }
+
       // 클릭한 인덱스 자리만 새 질문으로 교체
       askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
       const replacingIndex = clickedIndexRef.current;
       clickedIndexRef.current = -1; // 리셋
-      if (replacingIndex >= 0) {
+      if (replacingIndex >= 0 && pptSuggestions.length === 0) {
         setSuggestions((prev) => {
           const currentTexts = prev.map((s) => s.text);
           getToken().then((t) =>
@@ -452,11 +461,15 @@ export function StudentChatPanel({
   };
 
   const renderMessageContent = (content: string, enableTimestampLinks: boolean) => {
-    if (!enableTimestampLinks) {
+    const hasSlideRefs = onSlideClick && /\[슬라이드\s*\d+\]/g.test(content);
+    if (!enableTimestampLinks && !hasSlideRefs) {
       return <>{content}</>;
     }
 
-    const matches = Array.from(content.matchAll(/\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?/g));
+    // Combined pattern: timestamp ranges OR [슬라이드 N]
+    const combinedPattern = /(\[슬라이드\s*(\d+)\])|(\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?)/g;
+    const matches = Array.from(content.matchAll(combinedPattern));
+
     if (matches.length === 0) {
       return <>{content}</>;
     }
@@ -467,26 +480,43 @@ export function StudentChatPanel({
     matches.forEach((match, index) => {
       const matchedText = match[0];
       const matchIndex = match.index ?? 0;
-      const rangeStart = matchedText.split(/\s*-\s*/)[0] ?? matchedText;
-      const seconds = parseTimestampToSeconds(rangeStart);
+      const isSlideRef = Boolean(match[1]); // [슬라이드 N] group
+      const slideNum = match[2] ? parseInt(match[2], 10) : null;
 
       if (matchIndex > lastIndex) {
         nodes.push(<span key={`text-${index}-${lastIndex}`}>{content.slice(lastIndex, matchIndex)}</span>);
       }
 
-      if (seconds === null) {
-        nodes.push(<span key={`raw-${index}`}>{matchedText}</span>);
-      } else {
+      if (isSlideRef && slideNum !== null && onSlideClick) {
         nodes.push(
           <button
-            key={`ts-${index}-${matchedText}`}
+            key={`slide-${index}-${slideNum}`}
             type="button"
-            onClick={() => onSeekToTimestamp?.(seconds)}
+            onClick={() => onSlideClick(slideNum)}
             className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
           >
             {matchedText}
           </button>
         );
+      } else if (!isSlideRef && enableTimestampLinks) {
+        const rangeStart = matchedText.split(/\s*-\s*/)[0] ?? matchedText;
+        const seconds = parseTimestampToSeconds(rangeStart);
+        if (seconds === null) {
+          nodes.push(<span key={`raw-${index}`}>{matchedText}</span>);
+        } else {
+          nodes.push(
+            <button
+              key={`ts-${index}-${matchedText}`}
+              type="button"
+              onClick={() => onSeekToTimestamp?.(seconds)}
+              className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
+            >
+              {matchedText}
+            </button>
+          );
+        }
+      } else {
+        nodes.push(<span key={`raw-${index}`}>{matchedText}</span>);
       }
 
       lastIndex = matchIndex + matchedText.length;

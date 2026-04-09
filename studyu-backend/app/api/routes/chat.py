@@ -32,6 +32,7 @@ class ChatResponse(BaseModel):
     sources: list[Any]
     references: list[dict[str, Any]] = []
     session_id: str
+    suggested_questions: list[str] = []
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -49,7 +50,7 @@ async def chat(
         _history_cache[session_key] = []
     chat_history = _history_cache[session_key]
 
-    answer, sources, references = chat_with_docs(
+    answer, sources, references, suggested_questions = chat_with_docs(
         doc_ids=doc_ids,
         question=req.question,
         model=req.model or "gpt-4o-mini",
@@ -65,6 +66,7 @@ async def chat(
         sources=sources,
         references=references,
         session_id=req.session_id or "default",
+        suggested_questions=suggested_questions,
     )
 
 
