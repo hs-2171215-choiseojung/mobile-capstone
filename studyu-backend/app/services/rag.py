@@ -619,21 +619,50 @@ def _extract_text_from_docx(file_bytes: bytes) -> tuple[str, int]:
     return "\n".join(paragraphs), 0
 
 
-def _extract_text_from_pptx(file_bytes: bytes) -> tuple[str, int]:
-    """PPTX에서 텍스트 추출. (text, slide_count) 반환."""
+def _extract_text_from_pptx(file_bytes: bytes, vision_descriptions: dict | None = None) -> tuple[str, int]:
+    """PPTX에서 텍스트 추출. vision_descriptions가 있으면 이미지/영상 설명도 포함.
+
+    Args:
+        vision_descriptions: {slide_num(int): description} — _generate_and_upload_slides에서 전달
+    Returns:
+        (text, slide_count)
+    """
     from pptx import Presentation
+    from pptx.enum.shapes import PP_PLACEHOLDER
     prs = Presentation(io.BytesIO(file_bytes))
     slides_text: list[str] = []
-    for slide in prs.slides:
-        lines: list[str] = []
+
+    for slide_idx, slide in enumerate(prs.slides, start=1):
+        lines: list[str] = [f"[슬라이드 {slide_idx}]"]
+
+        # 텍스트 추출
         for shape in slide.shapes:
             if shape.has_text_frame:
                 for para in shape.text_frame.paragraphs:
                     line = " ".join(run.text for run in para.runs).strip()
                     if line:
                         lines.append(line)
-        if lines:
-            slides_text.append("\n".join(lines))
+
+        # 이미지 포함 여부 감지 (PICTURE = 13)
+        has_picture = any(shape.shape_type == 13 for shape in slide.shapes)
+
+        # 영상 포함 여부 감지
+        has_video = any(
+            "video" in rel.reltype.lower()
+            for rel in slide.part.rels.values()
+        )
+
+        # Vision AI 설명 추가
+        if vision_descriptions and slide_idx in vision_descriptions:
+            lines.append(f"[시각 자료 설명] {vision_descriptions[slide_idx]}")
+        elif has_picture:
+            lines.append("[이 슬라이드에는 이미지가 포함되어 있습니다]")
+
+        if has_video:
+            lines.append("[이 슬라이드에는 동영상이 포함되어 있습니다]")
+
+        slides_text.append("\n".join(lines))
+
     return "\n\n".join(slides_text), len(prs.slides)
 
 
@@ -860,7 +889,7 @@ VIDEO_AUDIO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
 
 
-def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple[int, int]:
+def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vision: dict | None = None) -> tuple[int, int]:
     """파일을 청크로 분할하고 임베딩을 포함하여 Supabase에 저장.
 
     Returns:
@@ -875,7 +904,7 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple
     elif ext == "docx":
         text, page_count = _extract_text_from_docx(file_bytes)
     elif ext in ("pptx", "ppt"):
-        text, page_count = _extract_text_from_pptx(file_bytes)
+        text, page_count = _extract_text_from_pptx(file_bytes, vision_descriptions=pptx_vision or {})
     elif ext == "hwpx":
         text, page_count = _extract_text_from_hwpx(file_bytes)
     elif ext == "hwp":
@@ -902,6 +931,26 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "") -> tuple
         )
         if summary:
             chunks = _inject_media_summary(chunks, summary)
+    elif ext in ("pptx", "ppt"):
+        # PPT: [슬라이드 N] 마커 기준으로 슬라이드별 청킹
+        # → 슬라이드 번호가 청크마다 명확히 유지됨
+        slide_parts = re.split(r'(?=\[슬라이드\s*\d+\])', text)
+        for part in slide_parts:
+            part = _hard_sanitize(_sanitize(part)).strip()
+            if not part:
+                continue
+            # 슬라이드가 너무 길면 CHUNK_SIZE 단위로 추가 분할 (슬라이드 마커 보존)
+            if len(part) <= CHUNK_SIZE * 2:
+                chunks.append(part)
+            else:
+                header_match = re.match(r'(\[슬라이드\s*\d+\])', part)
+                header = header_match.group(1) + "\n" if header_match else ""
+                body = part[len(header):]
+                step = CHUNK_SIZE - CHUNK_OVERLAP
+                for i in range(0, len(body), step):
+                    sub = _hard_sanitize(_sanitize(header + body[i: i + CHUNK_SIZE]))
+                    if sub.strip():
+                        chunks.append(sub)
     else:
         step = CHUNK_SIZE - CHUNK_OVERLAP
         for i in range(0, len(text), step):
@@ -1030,6 +1079,140 @@ def _fetch_youtube_transcript_segments(video_id: str) -> list[dict[str, Any]]:
     return segments
 
 
+# ── URL 스크래핑 헬퍼 ────────────────────────────────────────
+
+def _decode_html(raw_bytes: bytes, content_type: str = "") -> str:
+    """HTTP 응답 바이트를 올바른 인코딩으로 디코딩."""
+    import re as _re
+    charset: str | None = None
+    for part in content_type.split(";"):
+        part = part.strip()
+        if part.lower().startswith("charset="):
+            charset = part[8:].strip().strip('"\'')
+            break
+    if not charset:
+        head = raw_bytes[:4096].decode("ascii", errors="ignore").lower()
+        for pat in [r'charset=["\']?([a-z0-9\-_]+)', r'content=["\'][^"\']*charset=([a-z0-9\-_]+)']:
+            m = _re.search(pat, head)
+            if m:
+                charset = m.group(1)
+                break
+    if charset:
+        try:
+            return raw_bytes.decode(charset, errors="replace")
+        except (LookupError, UnicodeDecodeError):
+            pass
+    try:
+        return raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw_bytes.decode("latin-1", errors="replace")
+
+
+def _text_quality_score(t: str) -> float:
+    """추출된 텍스트의 품질을 0~1로 평가."""
+    if not t or len(t) < 20:
+        return 0.0
+    replacement_chars = t.count("\ufffd")
+    if replacement_chars / len(t) > 0.05:
+        return 0.0
+    non_printable = sum(1 for c in t if ord(c) < 32 and c not in "\n\r\t")
+    if non_printable / len(t) > 0.03:
+        return 0.0
+    readable = sum(1 for c in t if c.isalpha() or c.isdigit() or c in " \n\t.,;:!?")
+    if readable / len(t) < 0.4:
+        return 0.0
+    if t.count(" ") / len(t) < 0.04:
+        return 0.0
+    import re as _re
+    js_patterns = [r"\bfunction\s*\(", r"\bvar\s+\w+\s*=", r"document\.getElementById",
+                   r"window\.onload", r"jQuery\(", r"\.addEventListener\("]
+    js_hits = sum(1 for p in js_patterns if _re.search(p, t))
+    if js_hits >= 3:
+        return 0.2
+    special = sum(1 for c in t if not c.isalnum() and c not in " \n\r\t.,;:!?-_'\"()[]{}/@#$%^&*+=<>/\\|`~")
+    score = 1.0 - min(special / max(len(t), 1), 0.5)
+    return round(score, 3)
+
+
+def _clean_text(t: str) -> str:
+    """JS 코드 라인, base64, 독립 URL 라인, HTML 엔티티 제거."""
+    import re as _re
+    import html as _html
+    t = _html.unescape(t)
+    lines = t.splitlines()
+    cleaned = []
+    js_line_re = _re.compile(
+        r"^\s*(var |let |const |function |if\s*\(|else\s*{|\}|\);|//|/\*|\*/|import |export |return |document\.|window\.|jQuery|\$\()"
+    )
+    base64_re = _re.compile(r"^[A-Za-z0-9+/]{60,}={0,2}$")
+    url_only_re = _re.compile(r"^\s*https?://\S+\s*$")
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            cleaned.append("")
+            continue
+        if js_line_re.match(stripped):
+            continue
+        if base64_re.match(stripped):
+            continue
+        if url_only_re.match(stripped):
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
+
+
+def _is_bot_protected(html: str) -> bool:
+    """Cloudflare/DDoS-Guard 차단 페이지 여부 감지."""
+    markers = ["_cf_chl_", "jschl_vc", "__ddg", "DDoS-Guard",
+               "cf-browser-verification", "challenge-form", "cf_chl_prog"]
+    return any(m in html for m in markers)
+
+
+def _is_spa(html: str) -> bool:
+    """Next.js/Nuxt/React 등 SPA 감지."""
+    markers = ["__NEXT_DATA__", "__NUXT__", "ng-version=",
+               "data-reactroot", "window.__INITIAL_STATE__", "__REACT_QUERY_STATE__"]
+    return any(m in html for m in markers)
+
+
+def _fetch_via_jina(target_url: str) -> str:
+    """r.jina.ai를 통해 순수 텍스트 추출 (JS 렌더링, 봇 차단 우회)."""
+    import httpx as _httpx
+    try:
+        jina_url = f"https://r.jina.ai/{target_url}"
+        resp = _httpx.get(jina_url, headers={
+            "Accept": "text/plain",
+            "X-Return-Format": "text",
+            "X-With-Generated-Alt": "true",
+        }, timeout=45, follow_redirects=True)
+        if resp.status_code == 200 and len(resp.text.strip()) > 50:
+            return _clean_text(resp.text.strip())
+    except Exception as e:
+        print(f"[INFO] Jina Reader 실패: {e}")
+    return ""
+
+
+def _fetch_via_google_cache(target_url: str) -> str:
+    """Google 캐시에서 텍스트 추출 폴백."""
+    import httpx as _httpx
+    from bs4 import BeautifulSoup
+    try:
+        cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{target_url}"
+        resp = _httpx.get(cache_url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        }, timeout=20, follow_redirects=True)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "footer"]):
+                tag.decompose()
+            text = soup.get_text(separator="\n", strip=True)
+            return _clean_text(text) if len(text) > 100 else ""
+    except Exception as e:
+        print(f"[INFO] Google Cache 실패: {e}")
+    return ""
+
+
 def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
     """URL에서 텍스트를 추출하여 임베딩과 함께 Supabase document_chunks에 저장.
 
@@ -1080,7 +1263,10 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
         return len(records), 0
     else:
         # ── 일반 웹페이지 처리 ──
-        headers = {
+        from bs4 import BeautifulSoup
+        from urllib.parse import urljoin, urlparse
+
+        req_headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -1096,19 +1282,38 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
             "Sec-Fetch-Site": "none",
         }
 
+        # ── 1단계: 직접 HTTP 요청 ──
+        html_content = ""
+        text = ""
+        skip_to_jina = False
+        fetch_failed = False
+
         try:
-            response = httpx.get(url, headers=headers, timeout=30, follow_redirects=True)
+            response = httpx.get(url, headers=req_headers, timeout=30, follow_redirects=True)
             response.raise_for_status()
-            html_content = response.text
+            raw = response.content
+            # 바이너리 감지: null byte > 0.5% → Jina로 건너뜀
+            null_ratio = raw.count(b"\x00") / max(len(raw), 1)
+            if null_ratio > 0.005:
+                print(f"[INFO] ingest_url: 바이너리 응답 감지 ({null_ratio:.3f}), Jina로 전환")
+                skip_to_jina = True
+            else:
+                html_content = _decode_html(raw, response.headers.get("content-type", ""))
+                # 봇 차단 / SPA 감지
+                if _is_bot_protected(html_content):
+                    print(f"[INFO] ingest_url: 봇 차단 페이지 감지, Jina로 전환")
+                    skip_to_jina = True
+                elif _is_spa(html_content):
+                    print(f"[INFO] ingest_url: SPA 감지, Jina로 전환")
+                    skip_to_jina = True
         except httpx.HTTPStatusError as e:
-            raise ValueError(f"URL 접근 실패 (HTTP {e.response.status_code}): 접근이 제한된 페이지일 수 있습니다.")
+            print(f"[INFO] ingest_url: HTTP {e.response.status_code}, Jina로 전환")
+            fetch_failed = True
         except Exception as e:
-            raise ValueError(f"URL을 가져오는 데 실패했습니다: {str(e)}")
+            print(f"[INFO] ingest_url: 직접 요청 실패 ({e}), Jina로 전환")
+            fetch_failed = True
 
-        from bs4 import BeautifulSoup
-        from urllib.parse import urljoin, urlparse
-
-        def _extract_meta(html: str) -> str:
+        def _extract_meta_local(html: str) -> str:
             try:
                 soup = BeautifulSoup(html, "html.parser")
                 parts = []
@@ -1124,30 +1329,25 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
             except Exception:
                 return ""
 
-        def _extract_body(html: str, referer: str = "") -> str:
+        def _extract_body_local(html: str) -> str:
             """HTML에서 본문 텍스트 추출. trafilatura → 콘텐츠 셀렉터 → p태그 → 전체 순."""
-            text = ""
+            t = ""
             try:
                 import trafilatura
-                text = trafilatura.extract(html, include_tables=True, favor_recall=True) or ""
+                t = trafilatura.extract(html, include_tables=True, favor_recall=True) or ""
             except Exception:
                 pass
-
-            if len(text.strip()) < 100:
+            if len(t.strip()) < 100:
                 try:
                     soup = BeautifulSoup(html, "html.parser")
                     for tag in soup(["script", "style", "nav", "footer", "header", "aside", "menu"]):
                         tag.decompose()
-
                     content_text = ""
                     for selector in [
-                        # Naver blog
                         ".se-main-container", "#postViewArea", ".se_component_wrap",
-                        # 일반
                         "article", "main", "[role='main']",
                         ".content", "#content", ".post", ".article",
                         ".entry-content", "#article-body", ".post-content",
-                        # Tistory
                         ".tt_article_useless_p_margin", "#article-view",
                     ]:
                         nodes = soup.select(selector)
@@ -1155,23 +1355,18 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
                             content_text = "\n".join(n.get_text(separator="\n", strip=True) for n in nodes)
                             if len(content_text) > 200:
                                 break
-
                     if len(content_text) < 200:
                         paragraphs = [p.get_text(strip=True) for p in soup.find_all("p") if len(p.get_text(strip=True)) > 20]
                         content_text = "\n".join(paragraphs)
-
                     if len(content_text) < 200:
                         content_text = soup.get_text(separator="\n", strip=True)
-
-                    if len(content_text) > len(text):
-                        text = content_text
+                    if len(content_text) > len(t):
+                        t = content_text
                 except Exception:
                     pass
+            return t.strip()
 
-            return text.strip()
-
-        def _follow_iframe(html: str, base_url: str, req_headers: dict) -> str:
-            """페이지에 iframe이 있으면 그 내용을 가져와 본문 추출."""
+        def _follow_iframe_local(html: str, base_url: str) -> str:
             try:
                 soup = BeautifulSoup(html, "html.parser")
                 for iframe in soup.find_all("iframe"):
@@ -1179,20 +1374,14 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
                     if not src or src.startswith("javascript"):
                         continue
                     iframe_url = urljoin(base_url, src)
-                    # 같은 도메인 또는 신뢰 도메인만
                     base_host = urlparse(base_url).netloc
                     iframe_host = urlparse(iframe_url).netloc
                     if base_host not in iframe_host and iframe_host not in base_host:
                         continue
                     try:
-                        iframe_resp = httpx.get(
-                            iframe_url,
-                            headers={**req_headers, "Referer": base_url},
-                            timeout=20,
-                            follow_redirects=True,
-                        )
+                        iframe_resp = httpx.get(iframe_url, headers={**req_headers, "Referer": base_url}, timeout=20, follow_redirects=True)
                         if iframe_resp.status_code == 200:
-                            t = _extract_body(iframe_resp.text, referer=base_url)
+                            t = _extract_body_local(iframe_resp.text)
                             if len(t) > 100:
                                 return t
                     except Exception:
@@ -1201,32 +1390,45 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
                 pass
             return ""
 
-        meta_text = _extract_meta(html_content)
+        # 직접 추출 시도 (Jina로 건너뛰지 않는 경우)
+        if not skip_to_jina and not fetch_failed and html_content:
+            meta_text = _extract_meta_local(html_content)
+            text = _extract_body_local(html_content)
+            if len(text) < 100:
+                iframe_text = _follow_iframe_local(html_content, url)
+                if len(iframe_text) > len(text):
+                    text = iframe_text
+            if len(text) < 100:
+                try:
+                    import trafilatura
+                    downloaded = trafilatura.fetch_url(url)
+                    if downloaded:
+                        t2 = trafilatura.extract(downloaded, favor_recall=True) or ""
+                        if len(t2) > len(text):
+                            text = t2
+                except Exception:
+                    pass
+            if meta_text:
+                text = (meta_text + "\n\n" + text).strip()
 
-        # 1. 본문 직접 추출
-        text = _extract_body(html_content)
+        # ── 2단계: 품질 부족하면 Jina Reader ──
+        quality = _text_quality_score(text)
+        if skip_to_jina or fetch_failed or len(text) < 200 or quality < 0.4:
+            print(f"[INFO] ingest_url: Jina Reader 시도 (text={len(text)}자, quality={quality})")
+            jina_text = _fetch_via_jina(url)
+            jina_quality = _text_quality_score(jina_text)
+            if jina_text and (jina_quality > quality or len(jina_text) > len(text) * 1.2):
+                print(f"[INFO] ingest_url: Jina 결과 사용 ({len(jina_text)}자, quality={jina_quality})")
+                text = jina_text
 
-        # 2. 짧으면 iframe 추적
+        # ── 3단계: 여전히 부족하면 Google Cache ──
         if len(text) < 100:
-            iframe_text = _follow_iframe(html_content, url, headers)
-            if len(iframe_text) > len(text):
-                text = iframe_text
+            print(f"[INFO] ingest_url: Google Cache 폴백 시도")
+            cache_text = _fetch_via_google_cache(url)
+            if len(cache_text) > len(text):
+                text = cache_text
 
-        # 3. 여전히 짧으면 trafilatura.fetch_url 재시도
-        if len(text) < 100:
-            try:
-                import trafilatura
-                downloaded = trafilatura.fetch_url(url)
-                if downloaded:
-                    t2 = trafilatura.extract(downloaded, favor_recall=True) or ""
-                    if len(t2) > len(text):
-                        text = t2
-            except Exception:
-                pass
-
-        # 메타 정보 결합
-        if meta_text:
-            text = (meta_text + "\n\n" + text).strip()
+        text = _clean_text(text)
 
     text = _hard_sanitize(_sanitize(text)).strip()
     if len(text) < 50:
@@ -1460,6 +1662,41 @@ def _format_reference_lines(references: list[dict[str, Any]], limit: int = 6) ->
             time_label = _format_media_timestamp(start_sec)
         lines.append(f"- {time_label}: {ref.get('excerpt', '')}")
     return "\n".join(lines)
+
+
+def _get_ppt_full_context(doc_ids: list[str], max_chars: int = 48000) -> str:
+    """PPT 전체 질문용: 슬라이드별 청크를 균등하게 샘플링해서 반환.
+    앞 슬라이드에 치우치지 않도록 전체 슬라이드를 고르게 포함."""
+    if not doc_ids:
+        return ""
+    result = (
+        supabase_admin.table("document_chunks")
+        .select("content, chunk_index")
+        .in_("doc_id", doc_ids)
+        .order("chunk_index")
+        .execute()
+    )
+    all_chunks = [row["content"] for row in result.data if row.get("content", "").strip()]
+    if not all_chunks:
+        return ""
+
+    total = len(all_chunks)
+    # 전체가 max_chars 이하면 그냥 전부 반환
+    full_text = "\n\n".join(all_chunks)
+    if len(full_text) <= max_chars:
+        return full_text
+
+    # 균등 샘플링: 전체에서 고르게 N개 선택
+    avg_len = sum(len(c) for c in all_chunks) / total
+    n_samples = max(1, int(max_chars / max(avg_len, 1)))
+    n_samples = min(n_samples, total)
+
+    if n_samples >= total:
+        return full_text[:max_chars]
+
+    step = total / n_samples
+    sampled = [all_chunks[int(i * step)] for i in range(n_samples)]
+    return "\n\n".join(sampled)[:max_chars]
 
 
 def _get_context(doc_ids: list[str], max_chars: int = 10000, labeled: bool = False) -> str:
@@ -1760,6 +1997,30 @@ def chat_with_docs(
     level_hint = LEVEL_PROMPTS.get(level, LEVEL_PROMPTS["intermediate"])
     filename_map = _get_doc_filename_map(doc_ids)
     doc_filenames = [filename_map.get(doc_id, doc_id) for doc_id in doc_ids]
+
+    # URL 소스 / PPT 여부 확인
+    try:
+        doc_meta_result = supabase_admin.table("documents").select("id, filename, storage_path").in_("id", doc_ids).execute()
+        doc_meta_map = {row["id"]: row for row in doc_meta_result.data}
+    except Exception:
+        doc_meta_map = {}
+    is_url_doc = any(
+        str(doc_meta_map.get(d, {}).get("storage_path", "")).startswith("http")
+        for d in doc_ids
+    )
+    is_ppt_doc = (not is_url_doc) and any(
+        str(doc_meta_map.get(d, {}).get("filename", "")).lower().rsplit(".", 1)[-1] in ("pptx", "ppt")
+        for d in doc_ids
+    )
+    # 전체 문서 조회 의도 감지 (PPT 전용)
+    _FULL_DOC_RE = re.compile(
+        r"(전체|모든\s*슬라이드|슬라이드\s*별|슬라이드별|처음부터|이어서|다음\s*슬라이드|전부|순서대로|차례로|전체적으로\s*설명|모두\s*설명"
+        r"|핵심\s*개념|주요\s*개념|핵심\s*내용|주요\s*내용|요약|정리|개요|전반적|전반|내용\s*설명|설명해\s*줘|설명해줘"
+        r"|무엇|무슨\s*내용|어떤\s*내용|다루|소개|강의\s*내용|자료\s*내용|ppt\s*내용)",
+        re.IGNORECASE,
+    )
+    is_full_doc_query = is_ppt_doc and bool(_FULL_DOC_RE.search(question))
+
     media_doc_ids = _get_media_doc_ids(doc_ids)
     youtube_doc_ids = _get_youtube_doc_ids(doc_ids)
     youtube_only = bool(youtube_doc_ids) and set(youtube_doc_ids) == set(media_doc_ids) and set(doc_ids) == set(media_doc_ids)
@@ -1799,7 +2060,12 @@ def chat_with_docs(
         if media_context:
             context_parts.append(media_context)
     if semantic_context_ids:
-        semantic_context, source_chunks = _get_context_semantic(semantic_context_ids, question, top_k=TOP_K, labeled=is_multi)
+        if is_full_doc_query:
+            # PPT 전체 슬라이드 요청: 슬라이드별 균등 샘플링 (치우침 방지)
+            semantic_context = _get_ppt_full_context(semantic_context_ids)
+            source_chunks = []
+        else:
+            semantic_context, source_chunks = _get_context_semantic(semantic_context_ids, question, top_k=TOP_K, labeled=is_multi)
         if semantic_context:
             context_parts.append(semantic_context)
 
@@ -1917,6 +2183,71 @@ def chat_with_docs(
 {context}
 </context>"""
 
+    elif is_ppt_doc:
+        # PPT 전용 프롬프트
+        ppt_name = doc_filenames[0] if doc_filenames else "슬라이드 자료"
+        system_msg = f"""당신은 '{ppt_name}' PPT 자료를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
+
+【슬라이드 인용 규칙】
+- 내용을 설명할 때는 반드시 해당 슬라이드 번호를 [슬라이드 N] 형식으로 명시하세요.
+  예: "[슬라이드 3]에 따르면 ~", "이 개념은 [슬라이드 5]에서 확인할 수 있습니다."
+- 여러 슬라이드에 걸친 내용이면 관련 슬라이드를 모두 명시하세요.
+  예: "[슬라이드 2]와 [슬라이드 4]를 종합하면 ~"
+- 슬라이드 번호는 반드시 [슬라이드 N] 형식을 정확히 지켜주세요 (클릭 가능한 링크로 변환됩니다).
+- 단순 인용에 그치지 말고, 슬라이드 간 흐름과 연결 관계를 함께 설명하세요.
+
+【시각 자료 및 영상 활용 규칙】
+- context에 [시각 자료] 항목이 있으면 해당 이미지·차트·다이어그램의 내용을 답변에 반드시 포함하세요.
+- context에 [동영상 음성 내용] 항목이 있으면 영상에서 설명하는 내용을 근거로 활용하세요.
+- 텍스트와 시각 자료를 함께 종합하여 더 풍부하게 설명하세요.
+
+【답변 원칙】
+- PPT 전체 흐름에서 질문이 어느 위치에 해당하는지 간단히 짚고 답변하세요.
+- 학생이 특정 슬라이드를 직접 언급하지 않는다면 PPT 전체 내용을 기반으로 답변하는 것을 우선하세요.
+- 슬라이드 자료에 없는 내용은 "이 내용은 슬라이드에 없지만," 이라고 먼저 밝힌 뒤 일반 지식으로 보완하세요.
+- 슬라이드 내용에만 그치지 말고, 개념의 의미와 실제 활용까지 연결해서 설명하세요.
+- 설명이 길어질 경우 절대 중간에 끊지 마세요. 시작한 설명은 반드시 완결하세요.
+- "이어서", "계속", "다음" 등의 요청이 오면 이전 대화에서 이미 설명한 내용은 반복하지 말고, 아직 다루지 않은 슬라이드나 개념부터 이어서 설명하세요.
+
+【추천 질문】
+- 답변을 마친 후, 이 대화의 흐름에서 학생이 자연스럽게 궁금해할 만한 질문 2~3개를 제안하세요.
+- 반드시 아래 마커 형식으로 답변 맨 끝에 추가하세요 (답변 본문과 분리):
+[SUGGESTED_QUESTIONS]
+- (질문 1)
+- (질문 2)
+- (질문 3, 선택)
+[/SUGGESTED_QUESTIONS]
+- 질문은 지금 답변한 내용과 직접 이어지는 심화·응용 질문으로 구성하세요.
+
+답변 시 {level_hint}
+
+<context>
+{context}
+</context>"""
+
+    elif is_url_doc:
+        # URL 소스 전용 프롬프트
+        url_sources = [
+            str(doc_meta_map.get(d, {}).get("storage_path", ""))
+            for d in doc_ids
+            if str(doc_meta_map.get(d, {}).get("storage_path", "")).startswith("http")
+        ]
+        url_list = "\n".join(f"- {u}" for u in url_sources) if url_sources else ""
+        system_msg = f"""당신은 아래 웹사이트에서 추출한 텍스트를 참고하여 질문에 답변하는 AI 어시스턴트입니다.
+
+참조 웹사이트:
+{url_list}
+
+【답변 규칙】
+1. <context>에 관련 내용이 있으면 웹사이트 내용을 우선적으로 활용하여 답변하세요.
+2. <context>에 내용이 없거나 불충분한 경우, 알고 있는 지식으로 답변하되 반드시 "이 웹사이트에는 해당 내용이 없어 일반 지식을 바탕으로 답변합니다." 라고 먼저 밝히세요.
+3. 웹사이트 내용과 일반 지식이 섞일 경우 각각 출처를 명확히 구분하세요.
+답변 시 {level_hint}{video_note}
+
+<context>
+{context}
+</context>"""
+
     else:
         system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
 아래 문서 내용을 바탕으로 질문에 답변하세요.
@@ -1968,7 +2299,7 @@ def chat_with_docs(
         model=safe_model,
         messages=messages,  # type: ignore
         temperature=0.3,
-        max_tokens=2000,
+        max_tokens=4000,
     )
     answer = response.choices[0].message.content or ""
 
@@ -2031,8 +2362,29 @@ def chat_with_docs(
         for chunk in source_chunks:
             chunk.pop("full_text", None)
 
+    # PPT 추천 질문 파싱: [SUGGESTED_QUESTIONS]...[/SUGGESTED_QUESTIONS] 마커 추출
+    suggested_questions: list[str] = []
+    if is_ppt_doc and "[SUGGESTED_QUESTIONS]" in answer:
+        try:
+            sq_match = re.search(r"\[SUGGESTED_QUESTIONS\](.*?)\[/SUGGESTED_QUESTIONS\]", answer, re.DOTALL)
+            if sq_match:
+                sq_block = sq_match.group(1)
+                for line in sq_block.strip().splitlines():
+                    q = re.sub(r"^[-*\d.)\s]+", "", line).strip()
+                    if q:
+                        suggested_questions.append(q)
+                # 답변 본문에서 마커 블록 제거
+                answer = answer[:sq_match.start()].rstrip()
+                print(f"[PPT] 추천 질문 파싱 완료: {suggested_questions}")
+            else:
+                print(f"[PPT] 마커 매칭 실패. answer 끝부분: {answer[-200:]}")
+        except Exception as e:
+            print(f"[PPT] 추천 질문 파싱 오류: {e}")
+    elif is_ppt_doc:
+        print(f"[PPT] SUGGESTED_QUESTIONS 마커 없음. answer 끝부분: {answer[-200:]}")
+
     sources: list[Any] = source_chunks if source_chunks else _get_filenames(doc_ids)
-    return answer, sources, references
+    return answer, sources, references, suggested_questions
 
 
 # ─────────────────────────────────────────────

@@ -11,6 +11,7 @@ import { WeeklyPlanCard } from "@/components/workspace/student/WeeklyPlanCard";
 import { StudentChatPanel, SourceChunk } from "@/components/workspace/student/StudentChatPanel";
 import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer";
 import { StudentSourceViewer } from "@/components/workspace/student/StudentSourceViewer";
+import { PptSlideViewer } from "@/components/workspace/PptSlideViewer";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -102,6 +103,8 @@ export default function StudentWorkspacePage() {
   const [selectedSourceSeekRequest, setSelectedSourceSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
   const [highlightRange, setHighlightRange] = useState<{ start: number; length: number } | null>(null);
   const pendingHighlightRef = useRef<{ start: number; length: number } | null>(null);
+  const [currentSlide, setCurrentSlide] = useState<number | null>(null);
+  const [chatRequestedSlide, setChatRequestedSlide] = useState<number | null>(null);
 
   const [selectedLLM, setSelectedLLM] = useState('gpt-4o');
   const [selectedDifficulty, setSelectedDifficulty] = useState('intermediate');
@@ -488,14 +491,7 @@ export default function StudentWorkspacePage() {
       }
 
       if (needsPreviewPdf) {
-        const previewResponse = await fetch(`${API}/api/documents/${doc.id}/preview-pdf`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-
-        if (previewResponse.ok) {
-          const blob = await previewResponse.blob();
-          setSelectedSourceUrl(URL.createObjectURL(blob));
-        } else if (resolvedAccessUrl) {
+        if (resolvedAccessUrl) {
           setSelectedSourceUrl(getOfficeEmbedUrl(resolvedAccessUrl));
         }
       }
@@ -626,58 +622,81 @@ export default function StudentWorkspacePage() {
           const normalizeType = (t: string) => ({ memo: "notepad", summary: "report", plan: "mindmap", data: "table" }[t] || t);
           const itemNeedsNoChat = selectedItem && CHAT_TYPES.has(normalizeType(selectedItem.type ?? ""));
 
-          if (selectedSource) return (
-            /* 소스 문서: 뷰어 + 우측 채팅 (Resizable) */
-            <div className="flex flex-1 overflow-hidden">
-              <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative min-h-0">
-                <StudentSourceViewer
-                  source={selectedSource}
-                  sourceUrl={selectedSourceUrl}
-                  sourceFileUrl={selectedSourceDownloadUrl || selectedSourceUrl}
-                  loading={isSourceLoading}
-                  error={selectedSourceError}
-                  transcriptText={selectedSourceTranscript}
-                  mediaTimeline={selectedSourceTimeline}
-                  mediaSummaryData={selectedSourceSummary}
-                  mediaSummaryLoading={selectedSourceSummaryLoading}
-                  showMediaSummaryToggle
-                  onRequestMediaSummary={() => {
-                    void requestSelectedSourceSummary();
-                  }}
-                  seekRequest={selectedSourceSeekRequest}
-                  onMediaInfoChange={({ kind, duration }) => {
-                    setSelectedSourceMediaType(kind);
-                    setSelectedSourceMediaDuration(duration);
-                  }}
-                  highlightRange={highlightRange ?? undefined}
-                  onClose={closeSource}
-                />
+          if (selectedSource) {
+            const srcExt = selectedSource.filename.toLowerCase().split(".").pop() ?? selectedSource.file_type;
+            const isPpt = PREVIEWABLE_OFFICE_EXTS.has(srcExt) && !selectedSource.storage_path?.startsWith("http");
+            return (
+              /* 소스 문서: 뷰어 + 우측 채팅 (Resizable) */
+              <div className="flex flex-1 overflow-hidden">
+                <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative min-h-0">
+                  {isPpt ? (
+                    /* PPT: WebP 슬라이드 뷰어 */
+                    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                      {/* 헤더 (닫기 버튼) */}
+                      <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-white">
+                        <span className="text-[13px] font-medium text-gray-700 truncate">{selectedSource.filename}</span>
+                        <button onClick={closeSource} className="text-gray-400 hover:text-gray-700 p-1 rounded">✕</button>
+                      </div>
+                      <div className="flex-1 min-h-0">
+                        <PptSlideViewer
+                          docId={selectedSource.id}
+                          currentSlide={chatRequestedSlide}
+                          onSlideChange={(n) => setCurrentSlide(n)}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <StudentSourceViewer
+                      source={selectedSource}
+                      sourceUrl={selectedSourceUrl}
+                      sourceFileUrl={selectedSourceDownloadUrl || selectedSourceUrl}
+                      loading={isSourceLoading}
+                      error={selectedSourceError}
+                      transcriptText={selectedSourceTranscript}
+                      mediaTimeline={selectedSourceTimeline}
+                      mediaSummaryData={selectedSourceSummary}
+                      mediaSummaryLoading={selectedSourceSummaryLoading}
+                      showMediaSummaryToggle
+                      onRequestMediaSummary={() => {
+                        void requestSelectedSourceSummary();
+                      }}
+                      seekRequest={selectedSourceSeekRequest}
+                      onMediaInfoChange={({ kind, duration }) => {
+                        setSelectedSourceMediaType(kind);
+                        setSelectedSourceMediaDuration(duration);
+                      }}
+                      highlightRange={highlightRange ?? undefined}
+                      onClose={closeSource}
+                    />
+                  )}
+                </div>
+                <Resizable
+                  size={{ width: chatWidth, height: '100%' }}
+                  minWidth={280}
+                  maxWidth={640}
+                  enable={{ left: true }}
+                  onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
+                  handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
+                  handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
+                  className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
+                >
+                  <StudentChatPanel
+                    activeDocIds={activeDocIds}
+                    docs={docs}
+                    notebookId={notebookId}
+                    selectedLLM={selectedLLM}
+                    selectedDifficulty={selectedDifficulty}
+                    activeSourceId={selectedSource.id}
+                    activeSourceMediaType={selectedSourceMediaType}
+                    activeSourceMediaDuration={selectedSourceMediaDuration}
+                    onSeekToTimestamp={(seconds) => setSelectedSourceSeekRequest({ seconds, nonce: Date.now() })}
+                    onCitationClick={handleCitationClick}
+                    onSlideClick={isPpt ? (n) => setChatRequestedSlide(n) : undefined}
+                  />
+                </Resizable>
               </div>
-              <Resizable
-                size={{ width: chatWidth, height: '100%' }}
-                minWidth={280}
-                maxWidth={640}
-                enable={{ left: true }}
-                onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
-                handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
-                handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
-                className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
-              >
-                <StudentChatPanel
-                  activeDocIds={activeDocIds}
-                  docs={docs}
-                  notebookId={notebookId}
-                  selectedLLM={selectedLLM}
-                  selectedDifficulty={selectedDifficulty}
-                  activeSourceId={selectedSource.id}
-                  activeSourceMediaType={selectedSourceMediaType}
-                  activeSourceMediaDuration={selectedSourceMediaDuration}
-                  onSeekToTimestamp={(seconds) => setSelectedSourceSeekRequest({ seconds, nonce: Date.now() })}
-                  onCitationClick={handleCitationClick}
-                />
-              </Resizable>
-            </div>
-          );
+            );
+          }
 
           if (selectedItem && itemNeedsNoChat) return (
             /* 퀴즈·마인드맵·표·플래시카드: 단독 전체화면 */

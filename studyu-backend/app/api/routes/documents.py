@@ -48,6 +48,182 @@ from app.services.rag import (
 router = APIRouter()
 
 STORAGE_BUCKET = "documents"
+SLIDE_ASSETS_PREFIX = "slide-assets"
+
+
+def _generate_and_upload_slides(file_bytes: bytes, doc_id: str) -> tuple[int, dict]:
+    """PPT/PPTX → WebP 슬라이드 이미지 생성 + 영상 추출 + Vision AI 분석.
+
+    Returns:
+        (total_slides, vision_descriptions)
+        vision_descriptions: {slide_num(int): description_str}
+        실패 시 (0, {})
+    """
+    import subprocess, tempfile, os, base64
+    import fitz  # PyMuPDF
+    from PIL import Image
+    import io as _io
+    from pptx import Presentation
+    from openai import OpenAI
+
+    prefix = f"{SLIDE_ASSETS_PREFIX}/{doc_id}"
+    vision_descriptions: dict = {}
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ppt_path = os.path.join(tmpdir, "input.pptx")
+        with open(ppt_path, "wb") as f:
+            f.write(file_bytes)
+
+        # 1) PPTX에서 영상 파일 직접 추출 + Whisper 트랜스크립션
+        VIDEO_EXTS = {"mp4", "mov", "avi", "wmv", "webm", "mkv"}
+        VIDEO_MIME = {"mp4": "video/mp4", "mov": "video/quicktime", "avi": "video/x-msvideo",
+                      "wmv": "video/x-ms-wmv", "webm": "video/webm", "mkv": "video/x-matroska"}
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        # 중복 업로드 방지용 (같은 media_part가 여러 slide에 연결될 수 있음)
+        uploaded_parts: set = set()
+        try:
+            prs = Presentation(ppt_path)
+            for slide_idx, slide in enumerate(prs.slides, start=1):
+                for rel in slide.part.rels.values():
+                    reltype = rel.reltype.lower()
+                    if "video" in reltype or ("media" in reltype and "audio" not in reltype):
+                        try:
+                            media_part = rel.target_part
+                            part_name = str(media_part.partname)
+                            ext = part_name.rsplit(".", 1)[-1].lower()
+                            if ext not in VIDEO_EXTS:
+                                continue
+                            if part_name in uploaded_parts:
+                                continue
+                            uploaded_parts.add(part_name)
+
+                            video_bytes = media_part.blob
+                            mime = VIDEO_MIME.get(ext, "video/mp4")
+                            supabase_admin.storage.from_(STORAGE_BUCKET).upload(
+                                f"{prefix}/video_{slide_idx}.{ext}",
+                                video_bytes,
+                                {"content-type": mime, "upsert": "true"},
+                            )
+                            print(f"[slides] 슬라이드 {slide_idx} 영상 업로드: video_{slide_idx}.{ext}")
+
+                            # Whisper로 영상 내 음성 트랜스크립션
+                            try:
+                                import tempfile as _tf
+                                with _tf.NamedTemporaryFile(suffix=f".{ext}", delete=False) as vtmp:
+                                    vtmp.write(video_bytes)
+                                    vtmp_path = vtmp.name
+                                with open(vtmp_path, "rb") as vf:
+                                    transcript_resp = client.audio.transcriptions.create(
+                                        model="whisper-1",
+                                        file=vf,
+                                        prompt="Transcribe the audio exactly as spoken. Keep Korean in Korean and English in English.",
+                                        response_format="text",
+                                    )
+                                transcript_text = (transcript_resp or "").strip()
+                                import os as _os; _os.unlink(vtmp_path)
+                                if transcript_text:
+                                    vision_descriptions[slide_idx] = (
+                                        vision_descriptions.get(slide_idx, "") +
+                                        f"\n[동영상 음성 내용] {transcript_text}"
+                                    )
+                                    print(f"[slides] 슬라이드 {slide_idx} 영상 트랜스크립션 완료 ({len(transcript_text)}자)")
+                                else:
+                                    vision_descriptions[slide_idx] = (
+                                        vision_descriptions.get(slide_idx, "") +
+                                        "\n[동영상이 포함되어 있으나 음성 내용이 없습니다]"
+                                    )
+                            except Exception as te:
+                                print(f"[slides] Whisper 트랜스크립션 실패 (슬라이드 {slide_idx}): {te}")
+                                vision_descriptions[slide_idx] = (
+                                    vision_descriptions.get(slide_idx, "") +
+                                    "\n[동영상이 포함되어 있습니다]"
+                                )
+                        except Exception as ve:
+                            print(f"[slides] 영상 추출 실패 (슬라이드 {slide_idx}): {ve}")
+        except Exception as e:
+            print(f"[slides] PPTX 영상 추출 오류: {e}")
+
+        # 2) LibreOffice로 PDF 변환
+        try:
+            result = subprocess.run(
+                ["soffice", "--headless", "--convert-to", "pdf", "--outdir", tmpdir, ppt_path],
+                capture_output=True, timeout=120
+            )
+            if result.returncode != 0:
+                print(f"[slides] soffice 변환 실패: {result.stderr.decode()}")
+                return 0, {}
+        except Exception as e:
+            print(f"[slides] soffice 실행 오류: {e}")
+            return 0, {}
+
+        pdf_path = os.path.join(tmpdir, "input.pdf")
+        if not os.path.exists(pdf_path):
+            print("[slides] PDF 파일이 생성되지 않았습니다.")
+            return 0, {}
+
+        # 3) PDF → WebP 슬라이드 이미지 (PyMuPDF → Pillow) + Vision AI 분석
+        try:
+            doc = fitz.open(pdf_path)
+            total = len(doc)
+
+            for i, page in enumerate(doc, start=1):
+                mat = fitz.Matrix(1.5, 1.5)
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                png_bytes = pix.tobytes("png")
+                img = Image.open(_io.BytesIO(png_bytes))
+                buf = _io.BytesIO()
+                img.save(buf, format="WEBP", quality=85)
+                webp_bytes = buf.getvalue()
+
+                # WebP 업로드
+                supabase_admin.storage.from_(STORAGE_BUCKET).upload(
+                    f"{prefix}/{i}.webp",
+                    webp_bytes,
+                    {"content-type": "image/webp", "upsert": "true"},
+                )
+
+                # Vision AI로 슬라이드 시각 요소 분석 (gpt-4o, high detail)
+                try:
+                    b64 = base64.b64encode(webp_bytes).decode()
+                    resp = client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {
+                                    "url": f"data:image/webp;base64,{b64}",
+                                    "detail": "high"
+                                }},
+                                {"type": "text", "text": (
+                                    "이 PPT 슬라이드에서 텍스트 외의 시각적 요소를 분석해주세요.\n"
+                                    "- 이미지/사진: 무엇을 나타내는지, 어떤 장면인지\n"
+                                    "- 차트/그래프: 종류, 데이터 값, 추세, 축 레이블\n"
+                                    "- 다이어그램/흐름도: 구조, 관계, 흐름\n"
+                                    "- 표: 항목과 값\n"
+                                    "- 코드/스크린샷: 내용 요약\n"
+                                    "시각적 요소가 없고 텍스트만 있으면 정확히 '없음'이라고만 답하세요.\n"
+                                    "한국어로 상세하게 설명하세요."
+                                )}
+                            ]
+                        }],
+                        max_tokens=800,
+                    )
+                    desc = resp.choices[0].message.content.strip()
+                    if desc and desc != "없음":
+                        existing = vision_descriptions.get(i, "")
+                        vision_descriptions[i] = (existing + f"\n[시각 자료] {desc}").strip()
+                        print(f"[slides] 슬라이드 {i} Vision 분석 완료")
+                except Exception as ve:
+                    print(f"[slides] Vision AI 실패 (슬라이드 {i}): {ve}")
+
+            doc.close()
+            print(f"[slides] 슬라이드 {total}장 처리 완료: {prefix}")
+            return total, vision_descriptions
+
+        except Exception as e:
+            print(f"[slides] 이미지 생성/업로드 오류: {e}")
+            import traceback; traceback.print_exc()
+            return 0, {}
 
 STORAGE_CONTENT_TYPES = {
     "pdf": "application/pdf",
@@ -168,16 +344,21 @@ async def upload_document(
             supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
         raise HTTPException(status_code=500, detail=f"문서 등록 실패: {str(e)}")
 
-    # 3. RAG 청킹 → document_chunks 저장
+    # 3. PPT/PPTX: 슬라이드 이미지 생성 + 영상 추출 + Vision AI 분석 (RAG보다 먼저)
+    pptx_vision: dict = {}
+    if ext in ("pptx", "ppt"):
+        _, pptx_vision = _generate_and_upload_slides(file_bytes, doc_id)
+
+    # 4. RAG 청킹 → document_chunks 저장
     try:
-        chunk_count, page_count = ingest_document(file_bytes, doc_id, filename=file.filename)
+        chunk_count, page_count = ingest_document(file_bytes, doc_id, filename=file.filename, pptx_vision=pptx_vision)
     except Exception as e:
         import traceback
         traceback.print_exc()
         supabase_admin.table("documents").update({"status": "error"}).eq("id", doc_id).execute()
         raise HTTPException(status_code=500, detail=f"파일 파싱 실패: {str(e)}")
 
-    # 4. 상태 업데이트
+    # 5. 상태 업데이트
     supabase_admin.table("documents").update({
         "status": "ready",
         "chunk_count": chunk_count,
@@ -345,6 +526,80 @@ async def get_document_access_url(
         raise HTTPException(status_code=500, detail="문서 URL 생성에 실패했습니다.")
 
     return {"url": signed_url, "kind": "signed", "expires_in": 3600}
+
+
+@router.get("/documents/{document_id}/slides")
+async def get_document_slides(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """PPT 슬라이드 에셋 정보 반환.
+    meta.json 로드 후 각 슬라이드의 signed URL (webp + 영상) 반환."""
+    doc_res = (
+        supabase_admin.table("documents")
+        .select("id, notebook_id, user_id, filename, status")
+        .eq("id", document_id)
+        .limit(1)
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+    doc = doc_res.data[0]
+
+    # 권한 확인
+    nb = supabase_admin.table("notebooks").select("user_id").eq("id", doc["notebook_id"]).single().execute().data
+    is_owner = nb and nb.get("user_id") == user["id"]
+    if not is_owner:
+        enrolled = supabase_admin.table("notebook_enrollments").select("id").eq("notebook_id", doc["notebook_id"]).eq("student_id", user["id"]).execute().data
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    prefix = f"{SLIDE_ASSETS_PREFIX}/{document_id}"
+
+    # 파일 목록으로 슬라이드 수 및 영상 파일 파악
+    try:
+        file_list = supabase_admin.storage.from_(STORAGE_BUCKET).list(prefix)
+    except Exception:
+        raise HTTPException(status_code=404, detail="슬라이드 에셋이 없습니다. PPT 처리 중이거나 지원하지 않는 파일입니다.")
+
+    if not file_list:
+        raise HTTPException(status_code=404, detail="슬라이드 에셋이 없습니다. PPT 처리 중이거나 지원하지 않는 파일입니다.")
+
+    # N.webp 파일만 필터링해서 total 계산
+    import re as _re
+    slide_nums = []
+    videos: dict = {}  # {"3": "mp4", ...}
+    for f in file_list:
+        name = f.get("name", "")
+        m = _re.match(r'^(\d+)\.webp$', name)
+        if m:
+            slide_nums.append(int(m.group(1)))
+        v = _re.match(r'^video_(\d+)\.(\w+)$', name)
+        if v:
+            videos[v.group(1)] = v.group(2)
+
+    if not slide_nums:
+        raise HTTPException(status_code=404, detail="슬라이드 에셋이 없습니다. PPT 처리 중이거나 지원하지 않는 파일입니다.")
+
+    total = max(slide_nums)
+
+    def _signed(path: str, expires: int = 3600) -> str:
+        try:
+            resp = supabase_admin.storage.from_(STORAGE_BUCKET).create_signed_url(path, expires)
+            return resp.get("signedURL") or resp.get("signedUrl") or ""
+        except Exception:
+            return ""
+
+    slides = []
+    for i in range(1, total + 1):
+        img_url = _signed(f"{prefix}/{i}.webp")
+        video_url = ""
+        if str(i) in videos:
+            ext = videos[str(i)]
+            video_url = _signed(f"{prefix}/video_{i}.{ext}")
+        slides.append({"slide_number": i, "image_url": img_url, "video_url": video_url})
+
+    return {"total": total, "slides": slides}
 
 
 _IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp"}
@@ -570,6 +825,70 @@ async def get_document_chunks(
     text = "\n\n".join(_strip_media_metadata(c["content"]) for c in rows)
     timeline = _build_media_timeline_from_chunks_v2(rows)
     return {"text": text, "timeline": timeline}
+
+
+# ── TODO: REMOVE_BEFORE_LAUNCH — PPT 슬라이드 분석 확인용 임시 엔드포인트 ──────
+@router.get("/documents/{document_id}/debug-chunks")
+async def debug_document_chunks(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """PPT 슬라이드 분석 결과 전체 확인용 (원본 청크 그대로 반환).
+    TODO: REMOVE_BEFORE_LAUNCH"""
+    doc_res = (
+        supabase_admin.table("documents")
+        .select("user_id, notebook_id, filename, storage_path")
+        .eq("id", document_id)
+        .single()
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+    if doc_res.data["user_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    chunks_res = (
+        supabase_admin.table("document_chunks")
+        .select("chunk_index, content")
+        .eq("doc_id", document_id)
+        .order("chunk_index")
+        .execute()
+    )
+    rows = chunks_res.data or []
+
+    # storage에서 meta.json / summaries.json 로드 시도
+    from app.api.routes.documents import STORAGE_BUCKET, SLIDE_ASSETS_PREFIX
+    import json as _json
+
+    meta = None
+    summaries = None
+    try:
+        meta_bytes = supabase_admin.storage.from_(STORAGE_BUCKET).download(
+            f"{SLIDE_ASSETS_PREFIX}/{document_id}/meta.json"
+        )
+        meta = _json.loads(meta_bytes)
+    except Exception:
+        pass
+    try:
+        sum_bytes = supabase_admin.storage.from_(STORAGE_BUCKET).download(
+            f"{SLIDE_ASSETS_PREFIX}/{document_id}/summaries.json"
+        )
+        summaries = _json.loads(sum_bytes)
+    except Exception:
+        pass
+
+    return {
+        "doc_id": document_id,
+        "filename": doc_res.data.get("filename"),
+        "total_chunks": len(rows),
+        "slide_meta": meta,
+        "slide_summaries": summaries,
+        "chunks": [
+            {"index": r["chunk_index"], "content": r["content"]}
+            for r in rows
+        ],
+    }
+# ── TODO: REMOVE_BEFORE_LAUNCH 끝 ────────────────────────────────────────────
 
 
 @router.get("/documents/{document_id}/media-summary")

@@ -560,10 +560,9 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         return;
       }
 
-      // PPTX/PPT: preview-pdf + access-url(다운로드) + 텍스트
+      // PPTX/PPT: Office Online 뷰어 (학생 화면과 동일)
       if (PREVIEWABLE_OFFICE_EXTS.has(ext)) {
-        const [previewRes, urlRes, textRes] = await Promise.all([
-          fetch(`${API}/api/documents/${effectiveDoc.id}/preview-pdf`, { headers: { Authorization: `Bearer ${token}` } }),
+        const [urlRes, textRes] = await Promise.all([
           fetch(`${API}/api/documents/${effectiveDoc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
           fetch(`${API}/api/documents/${effectiveDoc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
         ]);
@@ -571,10 +570,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         const textData = await textRes.json();
         setViewerFileUrl(urlData.url ?? null);
         setViewerText(textData.text ?? "");
-        if (previewRes.ok) {
-          const blob = await previewRes.blob();
-          setViewerUrl(URL.createObjectURL(blob));
-        } else if (urlData.url) {
+        if (urlData.url) {
           setViewerUrl(getOfficeEmbedUrl(urlData.url));
         }
         return;
