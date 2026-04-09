@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[Any]
+    references: list[dict[str, Any]] = []
     session_id: str
 
 
@@ -48,7 +49,7 @@ async def chat(
         _history_cache[session_key] = []
     chat_history = _history_cache[session_key]
 
-    answer, sources = chat_with_docs(
+    answer, sources, references = chat_with_docs(
         doc_ids=doc_ids,
         question=req.question,
         model=req.model or "gpt-4o-mini",
@@ -62,6 +63,7 @@ async def chat(
     return ChatResponse(
         answer=answer,
         sources=sources,
+        references=references,
         session_id=req.session_id or "default",
     )
 

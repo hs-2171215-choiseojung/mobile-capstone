@@ -179,37 +179,57 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   // Study plan (Supabase DB)
   const [weeks, setWeeks] = useState<Week[]>([]);
   const [weeksLoaded, setWeeksLoaded] = useState(false);
+  const [weeksReadyForSave, setWeeksReadyForSave] = useState(false);
 
   // 초기 로드
   useEffect(() => {
     setWeeksLoaded(false);
+    setWeeksReadyForSave(false);
     getToken().then((token) => {
       fetch(`${API}/api/notebooks/${notebook.id}/study-plan`, {
         headers: { Authorization: `Bearer ${token}` },
       })
-        .then((r) => r.json())
+        .then(async (r) => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            throw new Error(data?.detail ?? "주차 정보를 불러오지 못했습니다.");
+          }
+          return data;
+        })
         .then((data) => {
           setWeeks(Array.isArray(data.plan_data) ? data.plan_data : []);
+          setWeeksReadyForSave(true);
         })
-        .catch(() => setWeeks([]))
+        .catch((error) => {
+          console.error("[study-plan] load failed", error);
+        })
         .finally(() => setWeeksLoaded(true));
     });
   }, [notebook.id]);
 
   // 변경 시 저장 (debounce 500ms)
   useEffect(() => {
-    if (!weeksLoaded) return;
+    if (!weeksLoaded || !weeksReadyForSave) return;
     const timer = setTimeout(() => {
       getToken().then((token) => {
         fetch(`${API}/api/notebooks/${notebook.id}/study-plan`, {
           method: "PUT",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ plan_data: weeks }),
-        }).catch(() => {});
+        })
+          .then(async (r) => {
+            if (!r.ok) {
+              const data = await r.json().catch(() => ({}));
+              throw new Error(data?.detail ?? "주차 저장에 실패했습니다.");
+            }
+          })
+          .catch((error) => {
+            console.error("[study-plan] save failed", error);
+          });
       });
     }, 500);
     return () => clearTimeout(timer);
-  }, [weeks, notebook.id, weeksLoaded]);
+  }, [weeks, notebook.id, weeksLoaded, weeksReadyForSave]);
 
   // Sidebar widths
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
@@ -463,26 +483,31 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   }
 
   async function handleViewDoc(doc: { id: string; name: string; type: string }) {
+    const resolvedDoc = docs.find((entry) => entry.id === doc.id);
+    const effectiveDoc = resolvedDoc
+      ? { id: resolvedDoc.id, name: resolvedDoc.name ?? doc.name, type: resolvedDoc.type ?? doc.type }
+      : doc;
+
     setViewerStudioItem(null);
-    setViewerDoc(doc);
-    setActiveDocIds([doc.id]);
-    setActiveChunkDocIds(new Set([doc.id]));
+    setViewerDoc(effectiveDoc);
+    setActiveDocIds([effectiveDoc.id]);
+    setActiveChunkDocIds(new Set([effectiveDoc.id]));
     setViewerUrl(null);
     setViewerFileUrl(null);
     setViewerText(null);
     setViewerLoading(true);
     try {
       const token = await getToken();
-      const ext = doc.name.toLowerCase().split(".").pop() ?? doc.type;
+      const ext = effectiveDoc.name.toLowerCase().split(".").pop() ?? effectiveDoc.type;
       const AUDIO_EXTS = new Set(["mp3", "m4a"]);
       const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
       const TEXT_ONLY_EXTS = new Set(["docx", "pptx", "ppt", "hwp", "hwpx"]);
 
       // URL 타입: 원본 URL + 텍스트
-      if (doc.type === "url") {
+      if (effectiveDoc.type === "url") {
         const [urlRes, textRes] = await Promise.all([
-          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
-          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${effectiveDoc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${effectiveDoc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
         ]);
         const urlData = await urlRes.json();
         const textData = await textRes.json();
@@ -494,8 +519,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       // 오디오: URL + 텍스트
       if (AUDIO_EXTS.has(ext)) {
         const [urlRes, textRes] = await Promise.all([
-          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
-          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${effectiveDoc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${effectiveDoc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
         ]);
         const urlData = await urlRes.json();
         const textData = await textRes.json();
@@ -508,8 +533,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       // 비디오: URL + 텍스트
       if (VIDEO_EXTS.has(ext)) {
         const [urlRes, textRes] = await Promise.all([
-          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
-          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${effectiveDoc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${effectiveDoc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
         ]);
         const urlData = await urlRes.json();
         const textData = await textRes.json();
@@ -538,9 +563,9 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       // PPTX/PPT: preview-pdf + access-url(다운로드) + 텍스트
       if (PREVIEWABLE_OFFICE_EXTS.has(ext)) {
         const [previewRes, urlRes, textRes] = await Promise.all([
-          fetch(`${API}/api/documents/${doc.id}/preview-pdf`, { headers: { Authorization: `Bearer ${token}` } }),
-          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
-          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${effectiveDoc.id}/preview-pdf`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${effectiveDoc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${effectiveDoc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
         ]);
         const urlData = await urlRes.json();
         const textData = await textRes.json();
@@ -557,7 +582,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
 
       // HWP: 텍스트만
       if (TEXT_ONLY_EXTS.has(ext)) {
-        const res = await fetch(`${API}/api/documents/${doc.id}/chunks`, {
+        const res = await fetch(`${API}/api/documents/${effectiveDoc.id}/chunks`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
@@ -566,7 +591,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       }
 
       // PDF, 이미지: URL만
-      const res = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
+      const res = await fetch(`${API}/api/documents/${effectiveDoc.id}/access-url`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
@@ -591,10 +616,20 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail ?? "삭제 실패"); }
-      const nextDocs = docs.filter((d) => d.id !== docId);
-      setDocs(nextDocs);
+      let nextDocsSnapshot: Doc[] = [];
+      setDocs((prev) => {
+        const next = prev.filter((d) => d.id !== docId);
+        nextDocsSnapshot = next;
+        return next;
+      });
+      setWeeks((prev) =>
+        prev.map((week) => ({
+          ...week,
+          sources: week.sources.filter((source) => source.docId !== docId && (source as any).doc_id !== docId),
+        }))
+      );
       if (viewerDoc?.id === docId) {
-        resetViewerState(nextDocs);
+        resetViewerState(nextDocsSnapshot);
       } else {
         setActiveDocIds((prev) => prev.filter((id) => id !== docId));
         setActiveChunkDocIds((prev) => { const n = new Set(prev); n.delete(docId); return n; });
