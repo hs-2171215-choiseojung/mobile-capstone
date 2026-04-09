@@ -83,6 +83,7 @@ export interface SharedSourceViewerProps {
   error?: string;
   onClose: () => void;
   transcriptText?: string;
+  highlightRange?: { start: number; length: number };
 }
 
 export function SharedSourceViewer({
@@ -93,6 +94,7 @@ export function SharedSourceViewer({
   error,
   onClose,
   transcriptText,
+  highlightRange,
 }: SharedSourceViewerProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -101,6 +103,7 @@ export function SharedSourceViewer({
   const audioUrlRef = useRef<string>("");
   const summaryCache = useRef<Map<string, SummaryCache>>(new Map());
   const abortControllerRef = useRef<AbortController | null>(null);
+  const highlightMarkRef = useRef<HTMLElement | null>(null);
 
   const [audioSummaryState, setAudioSummaryState] = useState<"idle" | "loading" | "playing" | "paused">("idle");
   const [hasSummary, setHasSummary] = useState(false);
@@ -115,6 +118,37 @@ export function SharedSourceViewer({
   const [selectedVoice, setSelectedVoice] = useState("sarah");
   const [subtitlePosition, setSubtitlePosition] = useState<"bottom" | "top">("bottom");
   const [summaryError, setSummaryError] = useState("");
+  const [activeTab, setActiveTab] = useState<"document" | "text">("document");
+
+  // highlightRange 가 설정되면 자동으로 텍스트 탭으로 전환 (DOCX/HWP/HWPX)
+  useEffect(() => {
+    if (highlightRange) setActiveTab("text");
+  }, [highlightRange]);
+
+  useEffect(() => {
+    if (highlightRange && highlightMarkRef.current) {
+      highlightMarkRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [highlightRange]);
+
+  function renderTranscript(text: string, range?: { start: number; length: number }) {
+    if (!range || range.start < 0 || range.length <= 0) return <>{text}</>;
+    const start = Math.max(0, Math.min(range.start, text.length));
+    const end = Math.min(start + range.length, text.length);
+    if (start >= end) return <>{text}</>;
+    return (
+      <>
+        {text.slice(0, start)}
+        <mark
+          ref={(el) => { highlightMarkRef.current = el; }}
+          className="bg-yellow-300 text-gray-900 rounded-sm"
+        >
+          {text.slice(start, end)}
+        </mark>
+        {text.slice(end)}
+      </>
+    );
+  }
 
   const lowerType = source.file_type.toLowerCase();
   const fileExt = source.filename.toLowerCase().split(".").pop() ?? "";
@@ -414,6 +448,14 @@ export function SharedSourceViewer({
     }
   };
 
+  // DOCX/HWP/HWPX: sourceUrl + transcriptText 둘 다 있고, 이미지/비디오/오디오/유튜브가 아닌 경우 탭 표시
+  const hasBothViews = Boolean(
+    sourceUrl && transcriptText !== undefined && !isImage && !isVideo && !isAudio && !isEmbeddableYoutube && !isUrlSource
+  );
+
+  // 탭바: 하이라이트 점 표시 여부 (DOCX/HWP/HWPX)
+  const hasHighlight = Boolean(highlightRange && highlightRange.start >= 0);
+
   return (
     <div className="h-full w-full bg-white flex flex-col">
       {/* 헤더 */}
@@ -471,6 +513,35 @@ export function SharedSourceViewer({
         </div>
       </div>
 
+      {/* 탭 바 — DOCX/HWP/HWPX: sourceUrl + transcriptText 둘 다 있을 때만 표시 */}
+      {hasBothViews && (
+        <div className="shrink-0 flex border-b border-gray-200 bg-white px-4">
+          <button
+            onClick={() => setActiveTab("document")}
+            className={`px-4 py-2 text-[13px] font-medium border-b-2 transition-colors ${
+              activeTab === "document"
+                ? "border-[#155dfc] text-[#155dfc]"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            문서 보기
+          </button>
+          <button
+            onClick={() => setActiveTab("text")}
+            className={`px-4 py-2 text-[13px] font-medium border-b-2 transition-colors ${
+              activeTab === "text"
+                ? "border-[#155dfc] text-[#155dfc]"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            텍스트 보기
+            {hasHighlight && activeTab !== "text" && (
+              <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-[#155dfc] inline-block align-middle" />
+            )}
+          </button>
+        </div>
+      )}
+
       {/* 본문 (자막 오버레이 포함) */}
       <div className="flex-1 bg-[#f8f9fb] p-3 overflow-auto relative">
         {loading ? (
@@ -482,15 +553,28 @@ export function SharedSourceViewer({
           <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 gap-3">
             <p className="text-sm">{error}</p>
           </div>
-        ) : !sourceUrl && transcriptText ? (
+        ) : !sourceUrl && transcriptText !== undefined ? (
           <div className="h-full p-4 overflow-y-auto">
             <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">
-              {transcriptText}
+              {transcriptText
+                ? renderTranscript(transcriptText, highlightRange)
+                : <span className="text-gray-400">텍스트를 추출하지 못했습니다. 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.</span>
+              }
             </div>
           </div>
         ) : !sourceUrl ? (
           <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 gap-3">
             <p className="text-sm">표시할 문서 URL이 없습니다.</p>
+          </div>
+        ) : hasBothViews && activeTab === "text" ? (
+          /* 텍스트 탭 (DOCX·PPTX 등) */
+          <div className="h-full p-4 overflow-y-auto">
+            <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">
+              {transcriptText
+                ? renderTranscript(transcriptText, highlightRange)
+                : <span className="text-gray-400">텍스트를 불러오는 중입니다...</span>
+              }
+            </div>
           </div>
         ) : isImage ? (
           <div className="h-full flex items-center justify-center">

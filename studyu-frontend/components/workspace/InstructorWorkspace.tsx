@@ -80,9 +80,17 @@ export interface Week {
   tasks: WeekTask[];
 }
 
+interface SourceChunk {
+  doc_id: string;
+  filename: string;
+  chunk_index: number;
+  text: string;
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
+  sources?: SourceChunk[];
 }
 
 interface StudioTaskItem {
@@ -511,7 +519,23 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         return;
       }
 
-      // DOCX/PPT: preview-pdf + access-url(다운로드) + 텍스트
+      // DOCX: access-url + 텍스트 (Microsoft Office Online 뷰어 사용)
+      if (ext === "docx") {
+        const [urlRes, textRes] = await Promise.all([
+          fetch(`${API}/api/documents/${doc.id}/access-url`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        const urlData = await urlRes.json();
+        const textData = await textRes.json();
+        setViewerFileUrl(urlData.url ?? null);
+        setViewerText(textData.text ?? "");
+        if (urlData.url) {
+          setViewerUrl(getOfficeEmbedUrl(urlData.url));
+        }
+        return;
+      }
+
+      // PPTX/PPT: preview-pdf + access-url(다운로드) + 텍스트
       if (PREVIEWABLE_OFFICE_EXTS.has(ext)) {
         const [previewRes, urlRes, textRes] = await Promise.all([
           fetch(`${API}/api/documents/${doc.id}/preview-pdf`, { headers: { Authorization: `Bearer ${token}` } }),
@@ -1255,7 +1279,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "오류");
-      setMessages((prev) => [...prev, { role: "assistant", content: data.answer }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: data.answer, sources: data.sources ?? [] }]);
     } catch (e) {
       setMessages((prev) => [...prev, { role: "assistant", content: `오류가 발생했습니다: ${e instanceof Error ? e.message : "알 수 없는 오류"}` }]);
     } finally {
@@ -2298,6 +2322,23 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                         </div>
                         <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-2.5 max-w-[72%] border border-gray-100 shadow-sm">
                           <p className="text-gray-700" style={{ fontSize: "0.84rem", lineHeight: 1.6 }}>{msg.content}</p>
+                          {msg.sources && msg.sources.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-gray-100 flex flex-wrap gap-1">
+                              {msg.sources.map((src, idx) => (
+                                <button
+                                  key={idx}
+                                  onClick={() => {
+                                    const doc = docs.find((d) => d.id === src.doc_id);
+                                    if (doc) handleViewDoc({ id: doc.id, name: doc.name ?? "", type: doc.type ?? "" });
+                                  }}
+                                  className="text-[11px] px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full border border-blue-100 hover:bg-blue-100 transition-colors max-w-[180px] truncate"
+                                  title={src.text}
+                                >
+                                  📄 {src.filename}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
                     )
