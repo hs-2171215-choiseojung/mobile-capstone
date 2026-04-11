@@ -33,6 +33,7 @@ interface StudentChatPanelProps {
   onClose?: () => void;
   onCitationClick?: (chunk: SourceChunk) => void;
   onSlideClick?: (slideNum: number) => void;
+  onPageClick?: (pageNum: number) => void;
 }
 
 interface ChatReference {
@@ -241,20 +242,8 @@ function renderWithCitations(
   return parts.map((part, i) => {
     const match = part.match(/^\[(\d+)\]$/);
     if (match) {
-      const num = parseInt(match[1], 10);
-      const chunk = sources.find((s) => s.num === num);
-      if (chunk) {
-        return (
-          <button
-            key={i}
-            onClick={() => onCitationClick?.(chunk)}
-            title={chunk.text}
-            className="inline-flex items-center justify-center w-[16px] h-[16px] rounded-full bg-[#155dfc] text-white text-[9px] font-bold mx-0.5 align-super leading-none hover:bg-[#0d4ac4] transition-colors shrink-0"
-          >
-            {num}
-          </button>
-        );
-      }
+      // 소스 인용 번호 숨김
+      return <span key={i} />;
     }
     return <span key={i}>{renderText ? renderText(part) : part}</span>;
   });
@@ -273,25 +262,41 @@ export function StudentChatPanel({
   onClose,
   onCitationClick,
   onSlideClick,
+  onPageClick,
 }: StudentChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
-  interface Suggestion { text: string; category: "이해" | "분석" | "적용"; }
+  interface Suggestion { text: string; category: "이해" | "분석" | "적용"; isOld?: boolean; }
   const CATEGORY_STYLE: Record<string, { bg: string; text: string; border: string }> = {
     이해: { bg: "bg-blue-50",   text: "text-blue-600",  border: "border-blue-200" },
     분석: { bg: "bg-purple-50", text: "text-purple-600", border: "border-purple-200" },
     적용: { bg: "bg-green-50",  text: "text-green-600",  border: "border-green-200" },
   };
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([
-    { text: "이 자료의 핵심 개념을 설명해줘", category: "이해" },
-    { text: "주요 내용들 간의 관계를 분석해줘", category: "분석" },
-    { text: "실제로 어떻게 활용할 수 있을까?", category: "적용" },
-  ]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>(() => {
+    // 마운트 시 localStorage에서 즉시 복원 (effect 순서 문제 회피)
+    try {
+      const saved = localStorage.getItem(`${chatKey}_suggestions`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed as Suggestion[];
+      }
+    } catch {}
+    return [
+      { text: "이 자료의 핵심 개념을 설명해줘", category: "이해" },
+      { text: "주요 내용들 간의 관계를 분석해줘", category: "분석" },
+      { text: "실제로 어떻게 활용할 수 있을까?", category: "적용" },
+    ];
+  });
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionsPage, setSuggestionsPage] = useState(0);
   const askedQuestionsRef = useRef<string[]>([]);
   const clickedIndexRef = useRef<number>(-1);
+  const suggestionFromChatRef = useRef(false);
+  const suggestionFetchAbortRef = useRef<AbortController | null>(null);
+  const suggestionsRef = useRef<Suggestion[]>(suggestions);
+  const lastAnswerRef = useRef<string>("");
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -302,26 +307,54 @@ export function StudentChatPanel({
 
   const chatKeyRef = useRef(chatKey);
 
-  // activeDocIds 변경 시 추천 질문 fetch
+  // activeDocIds 변경 시 추천 질문 fetch (localStorage에 없을 때만)
   useEffect(() => {
     const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
     if (targetDocIds.length === 0) return;
-    let cancelled = false;
+    suggestionFromChatRef.current = false;
+    setSuggestionsPage(0);
+
+    // localStorage에 저장된 추천 질문 복원 시도
+    const savedKey = `${chatKey}_suggestions`;
+    const saved = localStorage.getItem(savedKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setSuggestions(parsed as Suggestion[]);
+          setSuggestionsPage(Math.floor((parsed.length - 1) / 3));
+          askedQuestionsRef.current = [];
+          return;
+        }
+      } catch {}
+    }
+
+    // 없으면 fetch
+    const abort = new AbortController();
+    suggestionFetchAbortRef.current = abort;
     setSuggestionsLoading(true);
     getToken().then((token) =>
       fetch(`${API}/api/chat/suggestions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ doc_ids: targetDocIds, asked_questions: [] }),
+        signal: abort.signal,
       })
         .then((r) => r.json())
-        .then((data) => { if (!cancelled && data.questions?.length) setSuggestions(data.questions.slice(0, 3) as Suggestion[]); })
+        .then((data) => {
+          if (!abort.signal.aborted && !suggestionFromChatRef.current && data.questions?.length) {
+            const newSugs = data.questions.slice(0, 3) as Suggestion[];
+            setSuggestions(newSugs);
+            try { localStorage.setItem(`${chatKey}_suggestions`, JSON.stringify(newSugs)); } catch {}
+          }
+        })
         .catch(() => {})
-        .finally(() => { if (!cancelled) setSuggestionsLoading(false); })
+        .finally(() => { if (!abort.signal.aborted) setSuggestionsLoading(false); })
     );
     askedQuestionsRef.current = [];
-    return () => { cancelled = true; };
+    return () => { abort.abort(); };
   }, [activeDocIds.join(","), docs.map(d => d.id).join(",")]);
+
 
   // activeDocIds 변경 시 해당 자료의 채팅 히스토리 로드
   useEffect(() => {
@@ -342,6 +375,10 @@ export function StudentChatPanel({
   }, [chatKey]);
 
   useEffect(() => {
+    suggestionsRef.current = suggestions;
+  }, [suggestions]);
+
+  useEffect(() => {
     if (isLoaded) {
       localStorage.setItem(chatKeyRef.current, JSON.stringify(messages));
     }
@@ -359,6 +396,7 @@ export function StudentChatPanel({
     if (confirm("대화 내역을 모두 지우시겠습니까?")) {
       setMessages([]);
       localStorage.removeItem(chatKeyRef.current);
+      localStorage.removeItem(`${chatKeyRef.current}_suggestions`);
     }
   };
 
@@ -415,43 +453,61 @@ export function StudentChatPanel({
         },
       ]);
 
-      // PPT 추천 질문이 있으면 칩 전체 교체 (기존 setSuggestions 방식 그대로)
-      const pptSuggestions: string[] = Array.isArray(data.suggested_questions) ? data.suggested_questions : [];
-      if (pptSuggestions.length > 0) {
-        const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
-        setSuggestions(pptSuggestions.slice(0, 3).map((text, i) => ({ text, category: CATS[i % 3] })) as Suggestion[]);
-      }
-
-      // 클릭한 인덱스 자리만 새 질문으로 교체
+      // 추천 질문 처리
+      lastAnswerRef.current = data.answer ?? "";
       askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
       const replacingIndex = clickedIndexRef.current;
-      clickedIndexRef.current = -1; // 리셋
-      if (replacingIndex >= 0 && pptSuggestions.length === 0) {
-        setSuggestions((prev) => {
-          const currentTexts = prev.map((s) => s.text);
-          getToken().then((t) =>
-            fetch(`${API}/api/chat/suggestions`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
-              body: JSON.stringify({
-                doc_ids: targetDocIds,
-                asked_questions: [...askedQuestionsRef.current, ...currentTexts],
-              }),
+      clickedIndexRef.current = -1;
+
+      const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
+      const pptSuggestions: string[] = Array.isArray(data.suggested_questions) ? data.suggested_questions : [];
+
+      const applyNewSuggestions = (newQuestions: string[]) => {
+        const currentSuggestions = suggestionsRef.current;
+        const marked = replacingIndex >= 0
+          ? currentSuggestions.map((s: Suggestion, idx: number) => idx === replacingIndex ? { ...s, isOld: true } : s)
+          : currentSuggestions;
+        const newChips = newQuestions.slice(0, 3).map((text, i) => ({
+          text,
+          category: CATS[i % 3],
+          isOld: false,
+        })) as Suggestion[];
+        const nextSuggestions = [...marked, ...newChips];
+        setSuggestions(nextSuggestions);
+        setSuggestionsPage(Math.floor((nextSuggestions.length - 1) / 3));
+        try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(nextSuggestions)); } catch {}
+      };
+
+      if (pptSuggestions.length > 0) {
+        // AI 답변에서 추천 질문이 왔을 때
+        suggestionFetchAbortRef.current?.abort();
+        suggestionFromChatRef.current = true;
+        setSuggestionsLoading(false);
+        applyNewSuggestions(pptSuggestions);
+      } else {
+        // 추천 질문이 없을 때: /api/chat/suggestions fallback 호출
+        const currentTexts = suggestionsRef.current.map((s) => s.text);
+        getToken().then((t) =>
+          fetch(`${API}/api/chat/suggestions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+            body: JSON.stringify({
+              doc_ids: targetDocIds,
+              asked_questions: [...askedQuestionsRef.current, ...currentTexts],
+              last_answer: lastAnswerRef.current,
+            }),
+          })
+            .then((r) => r.json())
+            .then((d) => {
+              if (d.questions?.length) {
+                const texts = (d.questions as Array<string | Suggestion>).map((q) =>
+                  typeof q === "string" ? q : q.text
+                );
+                applyNewSuggestions(texts);
+              }
             })
-              .then((r) => r.json())
-              .then((d) => {
-                if (d.questions?.length) {
-                  setSuggestions((p) => {
-                    const next = [...p];
-                    next[replacingIndex] = d.questions[0] as Suggestion;
-                    return next;
-                  });
-                }
-              })
-              .catch(() => {})
-          );
-          return prev;
-        });
+            .catch(() => {})
+        );
       }
     } catch (error: any) {
       setMessages(prev => [...prev, { type: 'system', content: `[오류] ${error.message}` }]);
@@ -461,13 +517,18 @@ export function StudentChatPanel({
   };
 
   const renderMessageContent = (content: string, enableTimestampLinks: boolean) => {
-    const hasSlideRefs = onSlideClick && /\[슬라이드\s*\d+\]/g.test(content);
-    if (!enableTimestampLinks && !hasSlideRefs) {
+    const hasSlideRefs = onSlideClick && /\[슬라이드[\s\d,~\-~]+\]/g.test(content);
+    const hasPageRefs = onPageClick && /페이지\s*\d+/g.test(content);
+    if (!enableTimestampLinks && !hasSlideRefs && !hasPageRefs) {
       return <>{content}</>;
     }
 
-    // Combined pattern: timestamp ranges OR [슬라이드 N]
-    const combinedPattern = /(\[슬라이드\s*(\d+)\])|(\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?)/g;
+    // Combined pattern:
+    //   그룹1: [슬라이드 N] 또는 [슬라이드 N, M, ...] (복수 슬라이드 포함)
+    //   그룹2: [출처 N, 페이지 N] 또는 [페이지 N] 등 "페이지 N" 포함 대괄호
+    //   그룹3: 괄호 없이 "페이지 N" 단독
+    //   그룹4+: timestamp ranges
+    const combinedPattern = /(\[슬라이드[\s\d,~\-~]+\])|(\[[^\]]*페이지\s*(\d+)[^\]]*\])|((?<!\[)(?<!\w)페이지\s*(\d+)(?!\])(?!\w))|(\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?)/g;
     const matches = Array.from(content.matchAll(combinedPattern));
 
     if (matches.length === 0) {
@@ -480,25 +541,57 @@ export function StudentChatPanel({
     matches.forEach((match, index) => {
       const matchedText = match[0];
       const matchIndex = match.index ?? 0;
-      const isSlideRef = Boolean(match[1]); // [슬라이드 N] group
-      const slideNum = match[2] ? parseInt(match[2], 10) : null;
+      const isSlideRef = Boolean(match[1]);
+      const isPageRef = Boolean(match[2] || match[4]);
+      const pageNum = match[3] ? parseInt(match[3], 10) : match[5] ? parseInt(match[5], 10) : null;
 
       if (matchIndex > lastIndex) {
         nodes.push(<span key={`text-${index}-${lastIndex}`}>{content.slice(lastIndex, matchIndex)}</span>);
       }
 
-      if (isSlideRef && slideNum !== null && onSlideClick) {
+      if (isSlideRef && onSlideClick) {
+        // [슬라이드 9, 10] 같은 복수 슬라이드 파싱
+        const nums = Array.from(matchedText.matchAll(/\d+/g)).map(m => parseInt(m[0], 10));
+        if (nums.length === 1) {
+          nodes.push(
+            <button
+              key={`slide-${index}-${nums[0]}`}
+              type="button"
+              onClick={() => onSlideClick(nums[0])}
+              className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
+            >
+              {matchedText}
+            </button>
+          );
+        } else {
+          // 복수: [슬라이드 9], [슬라이드 10] 버튼으로 분리
+          nodes.push(
+            <span key={`slide-multi-${index}`}>
+              {nums.map((n, ni) => (
+                <button
+                  key={`slide-${index}-${n}`}
+                  type="button"
+                  onClick={() => onSlideClick(n)}
+                  className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff] mr-0.5"
+                >
+                  {`[슬라이드 ${n}]`}
+                </button>
+              ))}
+            </span>
+          );
+        }
+      } else if (isPageRef && pageNum !== null && onPageClick) {
         nodes.push(
           <button
-            key={`slide-${index}-${slideNum}`}
+            key={`page-${index}-${pageNum}`}
             type="button"
-            onClick={() => onSlideClick(slideNum)}
+            onClick={() => onPageClick(pageNum)}
             className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
           >
             {matchedText}
           </button>
         );
-      } else if (!isSlideRef && enableTimestampLinks) {
+      } else if (!isSlideRef && !isPageRef && enableTimestampLinks) {
         const rangeStart = matchedText.split(/\s*-\s*/)[0] ?? matchedText;
         const seconds = parseTimestampToSeconds(rangeStart);
         if (seconds === null) {
@@ -648,63 +741,76 @@ export function StudentChatPanel({
       </div>
 
       {/* 추천 질문 — 채팅 시작 후에만 표시 */}
-      {messages.length > 0 && <div className="shrink-0 px-3 py-3 border-t border-[#e7e9ed] bg-[#f8f9fb]">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[11px] font-medium text-[#99a1af] flex items-center gap-1.5">
-            <span className="text-amber-400 text-xs">✦</span>
-            이런 건 어떠세요?
-          </span>
-          <button
-            onClick={() => {
-              const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
-              if (!targetDocIds.length || suggestionsLoading) return;
-              setSuggestionsLoading(true);
-              getToken().then((token) =>
-                fetch(`${API}/api/chat/suggestions`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                  body: JSON.stringify({ doc_ids: targetDocIds, asked_questions: [...askedQuestionsRef.current, ...suggestions.map(s => s.text)] }),
-                })
-                  .then((r) => r.json())
-                  .then((d) => { if (d.questions?.length) setSuggestions(d.questions.slice(0, 3) as Suggestion[]); })
-                  .catch(() => {})
-                  .finally(() => setSuggestionsLoading(false))
-              );
-            }}
-            disabled={suggestionsLoading}
-            title="새 질문 추천받기"
-            className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
-          >
-            <svg className={`w-3.5 h-3.5 ${suggestionsLoading ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none">
-              <path d="M1 4v6h6M23 20v-6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          {suggestionsLoading
-            ? Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="h-8 rounded-lg bg-[#e7e9ed]/60 animate-pulse" />
-              ))
-            : suggestions.map((s, i) => {
-                const borderColor = ["border-l-blue-400", "border-l-purple-400", "border-l-emerald-400"][i] ?? "border-l-blue-400";
-                return (
-                  <button
-                    key={s.text}
-                    onClick={() => { clickedIndexRef.current = i; setInputValue(s.text); }}
-                    disabled={isLoading}
-                    className={`w-full flex items-center gap-2.5 pl-3 pr-2.5 py-2.5 bg-white rounded-lg border border-[#e7e9ed] border-l-2 ${borderColor} text-left hover:border-[#c8cdd5] hover:shadow-sm transition-all disabled:opacity-40 group`}
-                  >
-                    <span className="text-[12px] text-[#414751] flex-1 leading-snug">{s.text}</span>
-                    <svg className="w-3.5 h-3.5 text-[#c8cdd5] group-hover:text-[#155dfc] shrink-0 transition-colors" viewBox="0 0 24 24" fill="none">
-                      <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  </button>
-                );
-              })
-          }
-        </div>
-      </div>}
+      {messages.length > 0 && (() => {
+        const PAGE_SIZE = 3;
+        const totalPages = Math.max(1, Math.ceil(suggestions.length / PAGE_SIZE));
+        const clampedPage = Math.min(suggestionsPage, totalPages - 1);
+        const pageSlice = suggestions.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE);
+        const BORDER_COLORS = ["border-l-blue-400", "border-l-purple-400", "border-l-emerald-400"];
+        return (
+          <div className="shrink-0 px-3 py-3 border-t border-[#e7e9ed] bg-[#f8f9fb]">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[11px] font-medium text-[#99a1af] flex items-center gap-1.5">
+                <span className="text-amber-400 text-xs">✦</span>
+                이런 건 어떠세요?
+              </span>
+              <div className="flex items-center gap-0.5">
+                {totalPages > 1 && (
+                  <>
+                    <button
+                      onClick={() => setSuggestionsPage((p) => Math.max(0, p - 1))}
+                      disabled={clampedPage === 0}
+                      className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
+                    >
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+                        <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </button>
+                    <span className="text-[10px] text-[#c8cdd5] px-0.5">{clampedPage + 1}/{totalPages}</span>
+                    <button
+                      onClick={() => setSuggestionsPage((p) => Math.min(totalPages - 1, p + 1))}
+                      disabled={clampedPage === totalPages - 1}
+                      className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
+                    >
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+                        <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              {suggestionsLoading
+                ? Array.from({ length: PAGE_SIZE }).map((_, i) => (
+                    <div key={i} className="h-8 rounded-lg bg-[#e7e9ed]/60 animate-pulse" />
+                  ))
+                : pageSlice.map((s, i) => {
+                    const globalIdx = clampedPage * PAGE_SIZE + i;
+                    const borderColor = BORDER_COLORS[i % BORDER_COLORS.length];
+                    return (
+                      <button
+                        key={s.text}
+                        onClick={() => { clickedIndexRef.current = globalIdx; setInputValue(s.text); }}
+                        disabled={isLoading}
+                        className={`w-full flex items-center gap-2.5 pl-3 pr-2.5 py-2.5 rounded-lg border border-l-2 ${borderColor} text-left transition-all disabled:opacity-40 group ${
+                          s.isOld
+                            ? "bg-[#f8f9fb] opacity-50 hover:opacity-70"
+                            : "bg-white hover:border-[#c8cdd5] hover:shadow-sm"
+                        }`}
+                      >
+                        <span className={`text-[12px] flex-1 leading-snug ${s.isOld ? "text-[#99a1af]" : "text-[#414751]"}`}>{s.text}</span>
+                        <svg className="w-3.5 h-3.5 text-[#c8cdd5] group-hover:text-[#155dfc] shrink-0 transition-colors" viewBox="0 0 24 24" fill="none">
+                          <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </button>
+                    );
+                  })
+              }
+            </div>
+          </div>
+        );
+      })()}
 
       {/* 입력 영역 */}
       <div className="p-3 bg-white flex flex-col gap-2 shrink-0">

@@ -625,50 +625,40 @@ export default function StudentWorkspacePage() {
           if (selectedSource) {
             const srcExt = selectedSource.filename.toLowerCase().split(".").pop() ?? selectedSource.file_type;
             const isPpt = PREVIEWABLE_OFFICE_EXTS.has(srcExt) && !selectedSource.storage_path?.startsWith("http");
+            const isPdf = srcExt === "pdf";
             return (
               /* 소스 문서: 뷰어 + 우측 채팅 (Resizable) */
               <div className="flex flex-1 overflow-hidden">
                 <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative min-h-0">
-                  {isPpt ? (
-                    /* PPT: WebP 슬라이드 뷰어 */
-                    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                      {/* 헤더 (닫기 버튼) */}
-                      <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-white">
-                        <span className="text-[13px] font-medium text-gray-700 truncate">{selectedSource.filename}</span>
-                        <button onClick={closeSource} className="text-gray-400 hover:text-gray-700 p-1 rounded">✕</button>
-                      </div>
-                      <div className="flex-1 min-h-0">
-                        <PptSlideViewer
-                          docId={selectedSource.id}
-                          currentSlide={chatRequestedSlide}
-                          onSlideChange={(n) => setCurrentSlide(n)}
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    <StudentSourceViewer
-                      source={selectedSource}
-                      sourceUrl={selectedSourceUrl}
-                      sourceFileUrl={selectedSourceDownloadUrl || selectedSourceUrl}
-                      loading={isSourceLoading}
-                      error={selectedSourceError}
-                      transcriptText={selectedSourceTranscript}
-                      mediaTimeline={selectedSourceTimeline}
-                      mediaSummaryData={selectedSourceSummary}
-                      mediaSummaryLoading={selectedSourceSummaryLoading}
-                      showMediaSummaryToggle
-                      onRequestMediaSummary={() => {
-                        void requestSelectedSourceSummary();
-                      }}
-                      seekRequest={selectedSourceSeekRequest}
-                      onMediaInfoChange={({ kind, duration }) => {
-                        setSelectedSourceMediaType(kind);
-                        setSelectedSourceMediaDuration(duration);
-                      }}
-                      highlightRange={highlightRange ?? undefined}
-                      onClose={closeSource}
-                    />
-                  )}
+                  <StudentSourceViewer
+                    source={selectedSource}
+                    sourceUrl={selectedSourceUrl}
+                    sourceFileUrl={selectedSourceDownloadUrl || selectedSourceUrl}
+                    loading={isSourceLoading}
+                    error={selectedSourceError}
+                    transcriptText={selectedSourceTranscript}
+                    mediaTimeline={selectedSourceTimeline}
+                    mediaSummaryData={selectedSourceSummary}
+                    mediaSummaryLoading={selectedSourceSummaryLoading}
+                    showMediaSummaryToggle
+                    onRequestMediaSummary={() => {
+                      void requestSelectedSourceSummary();
+                    }}
+                    seekRequest={selectedSourceSeekRequest}
+                    onMediaInfoChange={({ kind, duration }) => {
+                      setSelectedSourceMediaType(kind);
+                      setSelectedSourceMediaDuration(duration);
+                    }}
+                    highlightRange={highlightRange ?? undefined}
+                    onClose={closeSource}
+                    customViewer={isPpt ? (
+                      <PptSlideViewer
+                        docId={selectedSource.id}
+                        currentSlide={chatRequestedSlide}
+                        onSlideChange={(n) => setCurrentSlide(n)}
+                      />
+                    ) : undefined}
+                  />
                 </div>
                 <Resizable
                   size={{ width: chatWidth, height: '100%' }}
@@ -692,6 +682,12 @@ export default function StudentWorkspacePage() {
                     onSeekToTimestamp={(seconds) => setSelectedSourceSeekRequest({ seconds, nonce: Date.now() })}
                     onCitationClick={handleCitationClick}
                     onSlideClick={isPpt ? (n) => setChatRequestedSlide(n) : undefined}
+                    onPageClick={isPdf ? (n) => {
+                      setSelectedSourceUrl((prev) => {
+                        const base = prev.split("#")[0];
+                        return `${base}#page=${n}`;
+                      });
+                    } : undefined}
                   />
                 </Resizable>
               </div>

@@ -74,6 +74,7 @@ class SuggestionsRequest(BaseModel):
     doc_ids: list[str]
     asked_questions: list[str] = []
     model: Optional[str] = "gpt-4o-mini"
+    last_answer: str = ""
 
 
 class SuggestionsResponse(BaseModel):
@@ -93,5 +94,6 @@ async def get_suggestions(
         doc_ids=req.doc_ids,
         asked_questions=req.asked_questions,
         model=req.model or "gpt-4o-mini",
+        last_answer=req.last_answer,
     )
     return SuggestionsResponse(questions=questions)
