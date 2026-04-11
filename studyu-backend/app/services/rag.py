@@ -592,16 +592,48 @@ def _cosine_similarity(query_vec: list[float], embeddings: list[list[float]]) ->
 # 파일 형식별 텍스트 추출
 # ─────────────────────────────────────────────
 
-def _extract_text_from_pdf(file_bytes: bytes) -> tuple[str, int]:
-    """PDF에서 텍스트 추출. (text, page_count) 반환."""
+def _extract_text_from_pdf(file_bytes: bytes, vision_descriptions: dict | None = None) -> tuple[str, int]:
+    """PDF에서 텍스트 추출. 페이지마다 [페이지 N] 마커를 붙여 반환.
+
+    Args:
+        vision_descriptions: {page_num(int): description} — _analyze_pdf_images에서 전달
+    """
     parts: list[str] = []
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         page_count = len(pdf.pages)
-        for page in pdf.pages:
+        for page_idx, page in enumerate(pdf.pages, start=1):
+            lines: list[str] = [f"[페이지 {page_idx}]"]
+
+            # 텍스트 추출
             raw = page.extract_text() or ""
             text = _hard_sanitize(_sanitize(raw)).strip()
             if text:
-                parts.append(text)
+                lines.append(text)
+
+            # 표 추출 (마크다운 형식으로 변환)
+            try:
+                tables = page.extract_tables()
+                for table in (tables or []):
+                    if not table:
+                        continue
+                    rows_md: list[str] = []
+                    for row_idx, row in enumerate(table):
+                        cells = [str(cell or "").strip().replace("\n", " ") for cell in row]
+                        rows_md.append("| " + " | ".join(cells) + " |")
+                        if row_idx == 0:
+                            rows_md.append("|" + "|".join(["---"] * len(cells)) + "|")
+                    if rows_md:
+                        lines.append("\n".join(rows_md))
+            except Exception:
+                pass
+
+            # Vision AI 분석 결과 삽입
+            if vision_descriptions and page_idx in vision_descriptions:
+                lines.append(f"[시각 자료] {vision_descriptions[page_idx]}")
+
+            if len(lines) > 1:  # [페이지 N] 마커 외에 내용이 있을 때만 포함
+                parts.append("\n".join(lines))
+
     return "\n\n".join(parts), page_count
 
 
@@ -889,7 +921,7 @@ VIDEO_AUDIO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
 
 
-def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vision: dict | None = None) -> tuple[int, int]:
+def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vision: dict | None = None, pdf_vision: dict | None = None) -> tuple[int, int]:
     """파일을 청크로 분할하고 임베딩을 포함하여 Supabase에 저장.
 
     Returns:
@@ -900,7 +932,7 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vis
     media_chunks: list[str] | None = None
 
     if ext == "pdf":
-        text, page_count = _extract_text_from_pdf(file_bytes)
+        text, page_count = _extract_text_from_pdf(file_bytes, vision_descriptions=pdf_vision or {})
     elif ext == "docx":
         text, page_count = _extract_text_from_docx(file_bytes)
     elif ext in ("pptx", "ppt"):
@@ -931,6 +963,24 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vis
         )
         if summary:
             chunks = _inject_media_summary(chunks, summary)
+    elif ext == "pdf":
+        # PDF: [페이지 N] 마커 기준으로 페이지별 청킹
+        page_parts = re.split(r'(?=\[페이지\s*\d+\])', text)
+        for part in page_parts:
+            part = _hard_sanitize(_sanitize(part)).strip()
+            if not part:
+                continue
+            if len(part) <= CHUNK_SIZE * 2:
+                chunks.append(part)
+            else:
+                header_match = re.match(r'(\[페이지\s*\d+\])', part)
+                header = header_match.group(1) + "\n" if header_match else ""
+                body = part[len(header):]
+                step = CHUNK_SIZE - CHUNK_OVERLAP
+                for i in range(0, len(body), step):
+                    sub = _hard_sanitize(_sanitize(header + body[i: i + CHUNK_SIZE]))
+                    if sub.strip():
+                        chunks.append(sub)
     elif ext in ("pptx", "ppt"):
         # PPT: [슬라이드 N] 마커 기준으로 슬라이드별 청킹
         # → 슬라이드 번호가 청크마다 명확히 유지됨
@@ -1699,6 +1749,34 @@ def _get_ppt_full_context(doc_ids: list[str], max_chars: int = 48000) -> str:
     return "\n\n".join(sampled)[:max_chars]
 
 
+def _get_pdf_full_context(doc_ids: list[str], max_chars: int = 48000) -> str:
+    """PDF 전체 질문용: 페이지별 청크를 균등하게 샘플링해서 반환."""
+    if not doc_ids:
+        return ""
+    result = (
+        supabase_admin.table("document_chunks")
+        .select("content, chunk_index")
+        .in_("doc_id", doc_ids)
+        .order("chunk_index")
+        .execute()
+    )
+    all_chunks = [row["content"] for row in result.data if row.get("content", "").strip()]
+    if not all_chunks:
+        return ""
+
+    full_text = "\n\n".join(all_chunks)
+    if len(full_text) <= max_chars:
+        return full_text
+
+    avg_len = sum(len(c) for c in all_chunks) / len(all_chunks)
+    n_samples = max(1, int(max_chars / max(avg_len, 1)))
+    n_samples = min(n_samples, len(all_chunks))
+
+    step = len(all_chunks) / n_samples
+    sampled = [all_chunks[int(i * step)] for i in range(n_samples)]
+    return "\n\n".join(sampled)[:max_chars]
+
+
 def _get_context(doc_ids: list[str], max_chars: int = 10000, labeled: bool = False) -> str:
     """순차적으로 청크를 가져와 컨텍스트 문자열 반환 (임베딩 없는 fallback)."""
     if not doc_ids:
@@ -2012,14 +2090,18 @@ def chat_with_docs(
         str(doc_meta_map.get(d, {}).get("filename", "")).lower().rsplit(".", 1)[-1] in ("pptx", "ppt")
         for d in doc_ids
     )
-    # 전체 문서 조회 의도 감지 (PPT 전용)
+    is_pdf_doc = (not is_url_doc) and (not is_ppt_doc) and any(
+        str(doc_meta_map.get(d, {}).get("filename", "")).lower().rsplit(".", 1)[-1] == "pdf"
+        for d in doc_ids
+    )
+    # 전체 문서 조회 의도 감지 (PPT / PDF 공통)
     _FULL_DOC_RE = re.compile(
         r"(전체|모든\s*슬라이드|슬라이드\s*별|슬라이드별|처음부터|이어서|다음\s*슬라이드|전부|순서대로|차례로|전체적으로\s*설명|모두\s*설명"
         r"|핵심\s*개념|주요\s*개념|핵심\s*내용|주요\s*내용|요약|정리|개요|전반적|전반|내용\s*설명|설명해\s*줘|설명해줘"
-        r"|무엇|무슨\s*내용|어떤\s*내용|다루|소개|강의\s*내용|자료\s*내용|ppt\s*내용)",
+        r"|무엇|무슨\s*내용|어떤\s*내용|다루|소개|강의\s*내용|자료\s*내용|ppt\s*내용|pdf\s*내용|전반적\s*내용)",
         re.IGNORECASE,
     )
-    is_full_doc_query = is_ppt_doc and bool(_FULL_DOC_RE.search(question))
+    is_full_doc_query = (is_ppt_doc or is_pdf_doc) and bool(_FULL_DOC_RE.search(question))
 
     media_doc_ids = _get_media_doc_ids(doc_ids)
     youtube_doc_ids = _get_youtube_doc_ids(doc_ids)
@@ -2060,9 +2142,13 @@ def chat_with_docs(
         if media_context:
             context_parts.append(media_context)
     if semantic_context_ids:
-        if is_full_doc_query:
+        if is_full_doc_query and is_ppt_doc:
             # PPT 전체 슬라이드 요청: 슬라이드별 균등 샘플링 (치우침 방지)
             semantic_context = _get_ppt_full_context(semantic_context_ids)
+            source_chunks = []
+        elif is_full_doc_query and is_pdf_doc:
+            # PDF 전체 페이지 요청: 페이지별 균등 샘플링
+            semantic_context = _get_pdf_full_context(semantic_context_ids)
             source_chunks = []
         else:
             semantic_context, source_chunks = _get_context_semantic(semantic_context_ids, question, top_k=TOP_K, labeled=is_multi)
@@ -2225,6 +2311,45 @@ def chat_with_docs(
 {context}
 </context>"""
 
+    elif is_pdf_doc:
+        # PDF 전용 프롬프트
+        pdf_name = doc_filenames[0] if doc_filenames else "PDF 문서"
+        system_msg = f"""당신은 '{pdf_name}' PDF 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
+
+【페이지 인용 규칙】
+- 내용을 설명할 때는 반드시 해당 페이지 번호를 [페이지 N] 형식으로 명시하세요.
+  예: "[페이지 3]에 따르면 ~", "이 내용은 [페이지 5]에서 확인할 수 있습니다."
+- 여러 페이지에 걸친 내용이면 관련 페이지를 모두 명시하세요.
+  예: "[페이지 2]와 [페이지 4]를 종합하면 ~"
+- 페이지 번호는 반드시 [페이지 N] 형식을 정확히 지켜주세요 (클릭 가능한 링크로 변환됩니다).
+
+【표 및 시각 자료 활용 규칙】
+- context에 표(마크다운 형식)가 있으면 표의 수치와 항목을 정확히 인용하세요.
+- 표의 열·행 관계를 분석해서 의미 있는 비교나 패턴을 설명하세요.
+- context에 [시각 자료] 항목이 있으면 해당 이미지·차트·다이어그램의 내용을 답변에 반드시 포함하세요.
+- [시각 자료] 안에 코드나 텍스트가 있으면 그 내용을 근거로 설명하세요.
+- 시각 자료와 주변 텍스트를 연결해서 더 풍부하게 설명하세요.
+
+【답변 원칙】
+- 문서 전체 흐름에서 질문이 어느 위치에 해당하는지 간단히 짚고 답변하세요.
+- 문서에 없는 내용은 "이 내용은 문서에 없지만," 이라고 먼저 밝힌 뒤 일반 지식으로 보완하세요.
+- 설명이 길어질 경우 절대 중간에 끊지 마세요. 시작한 설명은 반드시 완결하세요.
+- "이어서", "계속", "다음" 등의 요청이 오면 이미 설명한 내용은 반복하지 말고 아직 다루지 않은 부분부터 이어서 설명하세요.
+
+【추천 질문 — 필수 출력】
+답변 본문 작성 후, 반드시 아래 형식을 답변 맨 끝에 추가하세요. 생략하면 안 됩니다.
+[SUGGESTED_QUESTIONS]
+- (방금 답변한 내용과 직접 이어지는 심화 질문 1)
+- (방금 답변한 내용과 직접 이어지는 심화 질문 2)
+- (방금 답변한 내용과 직접 이어지는 심화 질문 3, 선택)
+[/SUGGESTED_QUESTIONS]
+
+답변 시 {level_hint}
+
+<context>
+{context}
+</context>"""
+
     elif is_url_doc:
         # URL 소스 전용 프롬프트
         url_sources = [
@@ -2362,9 +2487,9 @@ def chat_with_docs(
         for chunk in source_chunks:
             chunk.pop("full_text", None)
 
-    # PPT 추천 질문 파싱: [SUGGESTED_QUESTIONS]...[/SUGGESTED_QUESTIONS] 마커 추출
+    # 추천 질문 파싱: [SUGGESTED_QUESTIONS]...[/SUGGESTED_QUESTIONS] 마커 추출 (PPT·PDF 공통)
     suggested_questions: list[str] = []
-    if is_ppt_doc and "[SUGGESTED_QUESTIONS]" in answer:
+    if "[SUGGESTED_QUESTIONS]" in answer:
         try:
             sq_match = re.search(r"\[SUGGESTED_QUESTIONS\](.*?)\[/SUGGESTED_QUESTIONS\]", answer, re.DOTALL)
             if sq_match:
@@ -2375,13 +2500,9 @@ def chat_with_docs(
                         suggested_questions.append(q)
                 # 답변 본문에서 마커 블록 제거
                 answer = answer[:sq_match.start()].rstrip()
-                print(f"[PPT] 추천 질문 파싱 완료: {suggested_questions}")
-            else:
-                print(f"[PPT] 마커 매칭 실패. answer 끝부분: {answer[-200:]}")
+                print(f"[RAG] 추천 질문 파싱 완료: {suggested_questions}")
         except Exception as e:
-            print(f"[PPT] 추천 질문 파싱 오류: {e}")
-    elif is_ppt_doc:
-        print(f"[PPT] SUGGESTED_QUESTIONS 마커 없음. answer 끝부분: {answer[-200:]}")
+            print(f"[RAG] 추천 질문 파싱 오류: {e}")
 
     sources: list[Any] = source_chunks if source_chunks else _get_filenames(doc_ids)
     return answer, sources, references, suggested_questions
@@ -3347,6 +3468,7 @@ def generate_suggestions(
     doc_ids: list[str],
     asked_questions: list[str] = [],
     model: str = "gpt-4o-mini",
+    last_answer: str = "",
 ) -> list[dict]:
     """문서 타입과 내용 기반으로 카테고리별 추천 질문 3개를 생성한다.
     이미지 소스는 실제 이미지를 Vision API에 직접 전달.
@@ -3455,13 +3577,12 @@ JSON 형식으로만 응답:
         if "ppt" in file_types:
             type_guidance += "\n[PPT 포함] 슬라이드 흐름, 핵심 주장, 데이터에 관한 질문 포함."
 
+        answer_block = f"\n\n[방금 AI가 답변한 내용 — 이 내용을 기반으로 질문을 생성하세요]\n{last_answer[:2000]}" if last_answer else ""
+        context_block = f"\n══════════════════════════════\n[문서 내용]\n{context[:4000]}\n══════════════════════════════" if not last_answer else ""
+
         prompt_text = f"""당신은 학습 내용을 깊이 이해하도록 돕는 전문 튜터입니다.
-아래 문서 내용을 분석하여, 학습자가 반드시 짚고 넘어가야 할 핵심 질문 3개를 생성하세요.
-{type_guidance}
-══════════════════════════════
-[문서 내용]
-{context[:4000]}
-══════════════════════════════
+{"방금 AI가 답변한 내용을 바탕으로, 학습자가 자연스럽게 이어서 궁금해할 심화 질문 3개를 생성하세요." if last_answer else "아래 문서 내용을 분석하여, 학습자가 반드시 짚고 넘어가야 할 핵심 질문 3개를 생성하세요."}
+{type_guidance}{answer_block}{context_block}
 {asked_block}
 
 [생성 규칙 - 반드시 준수]

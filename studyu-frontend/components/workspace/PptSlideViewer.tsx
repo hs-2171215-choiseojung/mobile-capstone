@@ -27,6 +27,20 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
   const [imgError, setImgError] = useState<Record<number, boolean>>({});
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
+  // 줌/패닝 상태
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const isPanning = useRef(false);
+  const panStart = useRef({ x: 0, y: 0 });
+  const panOrigin = useRef({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // 슬라이드 바뀌면 줌/패닝 리셋
+  useEffect(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [activeSlide]);
+
   // 슬라이드 에셋 로드
   useEffect(() => {
     if (!docId) return;
@@ -109,7 +123,32 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
   return (
     <div className="h-full flex flex-col bg-[#f0f2f5] select-none">
       {/* 슬라이드 영역 */}
-      <div className="flex-1 min-h-0 flex items-center justify-center p-4 relative">
+      <div
+        ref={containerRef}
+        className="flex-1 min-h-0 flex items-center justify-center p-4 relative overflow-hidden"
+        onWheel={(e) => {
+          e.preventDefault();
+          const delta = e.deltaY > 0 ? -0.1 : 0.1;
+          setZoom(prev => Math.min(5, Math.max(1, prev + delta)));
+          if (zoom + delta <= 1) setPan({ x: 0, y: 0 });
+        }}
+        onMouseDown={(e) => {
+          if (zoom <= 1) return;
+          isPanning.current = true;
+          panStart.current = { x: e.clientX, y: e.clientY };
+          panOrigin.current = { ...pan };
+        }}
+        onMouseMove={(e) => {
+          if (!isPanning.current) return;
+          setPan({
+            x: panOrigin.current.x + (e.clientX - panStart.current.x),
+            y: panOrigin.current.y + (e.clientY - panStart.current.y),
+          });
+        }}
+        onMouseUp={() => { isPanning.current = false; }}
+        onMouseLeave={() => { isPanning.current = false; }}
+        style={{ cursor: zoom > 1 ? "grab" : "default" }}
+      >
         {/* 이전 버튼 */}
         <button
           onClick={() => goTo(activeSlide - 1)}
@@ -120,7 +159,14 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
         </button>
 
         {/* 슬라이드 콘텐츠 */}
-        <div className="max-w-full max-h-full flex items-center justify-center">
+        <div
+          className="w-full h-full flex items-center justify-center"
+          style={{
+            transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
+            transformOrigin: "center center",
+            transition: isPanning.current ? "none" : "transform 0.1s ease",
+          }}
+        >
           {current.video_url ? (
             <video
               ref={videoRef}
@@ -143,6 +189,7 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
               className="max-w-full max-h-full object-contain rounded-lg shadow-lg bg-white"
               style={{ maxHeight: "calc(100% - 8px)" }}
               onError={() => setImgError(prev => ({ ...prev, [activeSlide]: true }))}
+              draggable={false}
             />
           )}
         </div>
@@ -155,6 +202,13 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
         >
           <ChevronRight className="w-5 h-5 text-gray-600" />
         </button>
+
+        {/* 줌 레벨 표시 (1배 초과일 때만) */}
+        {zoom > 1 && (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-black/50 text-white text-[11px] px-2 py-0.5 rounded-full pointer-events-none">
+            {Math.round(zoom * 100)}%
+          </div>
+        )}
       </div>
 
       {/* 하단 컨트롤 */}

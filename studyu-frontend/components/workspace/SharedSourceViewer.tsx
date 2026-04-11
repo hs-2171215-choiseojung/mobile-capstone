@@ -3,7 +3,7 @@
 import { Download, ExternalLink, Loader2, X, Volume2, Play, Pause, Square, ChevronDown, ChevronUp, Copy, Check, ArrowUpToLine, ArrowDownToLine } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 async function downloadUrl(url: string, filename: string) {
   try {
@@ -126,6 +126,7 @@ export interface SharedSourceViewerProps {
   seekRequest?: { seconds: number; nonce: number } | null;
   onMediaInfoChange?: (info: { kind: "audio" | "video" | null; duration: number }) => void;
   highlightRange?: { start: number; length: number };
+  customViewer?: ReactNode;
 }
 
 export function SharedSourceViewer({
@@ -144,6 +145,7 @@ export function SharedSourceViewer({
   seekRequest,
   onMediaInfoChange,
   highlightRange,
+  customViewer,
 }: SharedSourceViewerProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -216,7 +218,7 @@ export function SharedSourceViewer({
   const isVideo = ["video", "mp4", "mov", "avi", "mkv", "webm"].includes(effectiveExt);
   const isAudio = ["audio", "mp3", "m4a", "wav"].includes(effectiveExt);
   
-  const canAudioSummary = !isUrlSource && AUDIO_SUMMARY_EXTS.has(effectiveExt);
+  const canAudioSummary = AUDIO_SUMMARY_EXTS.has(effectiveExt) || isUrlSource;
 
   // 현재 재생 위치에 해당하는 자막 문장
   const currentSentence = sentences.find(
@@ -963,6 +965,8 @@ export function SharedSourceViewer({
               {renderMediaContentSection()}
             </div>
           </div>
+        ) : customViewer ? (
+          <div className="w-full h-full">{customViewer}</div>
         ) : (
           <iframe
             ref={iframeRef}

@@ -225,6 +225,101 @@ def _generate_and_upload_slides(file_bytes: bytes, doc_id: str) -> tuple[int, di
             import traceback; traceback.print_exc()
             return 0, {}
 
+def _analyze_pdf_images(file_bytes: bytes) -> dict:
+    """PDF 각 페이지를 렌더링 → 이미지가 있는 페이지를 GPT-4o Vision으로 분석.
+
+    - 이미지 내 텍스트(코드, 레이블 등)도 읽어서 포함
+    - 페이지의 텍스트 컨텍스트와 함께 전달해 문서 흐름과 연결
+
+    Returns:
+        {page_num(int): description_str}
+    """
+    import base64
+    import io as _io
+    import fitz  # PyMuPDF
+    import pdfplumber
+    from PIL import Image
+    from openai import OpenAI
+
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    vision_descriptions: dict = {}
+
+    try:
+        # pdfplumber로 페이지별 텍스트 미리 추출 (Vision 맥락 제공용)
+        page_texts: dict[int, str] = {}
+        with pdfplumber.open(_io.BytesIO(file_bytes)) as plumb_pdf:
+            for page_idx, page in enumerate(plumb_pdf.pages, start=1):
+                raw = (page.extract_text() or "").strip()
+                if raw:
+                    page_texts[page_idx] = raw[:2000]  # 너무 길면 앞부분만
+
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        total_pages = len(doc)
+
+        for page_idx, page in enumerate(doc, start=1):
+            image_list = page.get_images(full=False)
+            if not image_list:
+                continue  # 이미지 없는 페이지 스킵
+
+            # 페이지 PNG 렌더링 → WebP 변환
+            mat = fitz.Matrix(1.5, 1.5)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            img = Image.open(_io.BytesIO(pix.tobytes("png")))
+            buf = _io.BytesIO()
+            img.save(buf, format="WEBP", quality=85)
+            webp_bytes = buf.getvalue()
+
+            # 앞뒤 페이지 텍스트로 문서 흐름 컨텍스트 구성
+            context_parts: list[str] = []
+            for ctx_idx in [page_idx - 1, page_idx, page_idx + 1]:
+                if ctx_idx in page_texts:
+                    label = f"[페이지 {ctx_idx} 텍스트]"
+                    context_parts.append(f"{label}\n{page_texts[ctx_idx]}")
+            context_text = "\n\n".join(context_parts)
+
+            try:
+                b64 = base64.b64encode(webp_bytes).decode()
+                prompt = (
+                    f"이 PDF는 총 {total_pages}페이지 문서의 {page_idx}페이지입니다.\n\n"
+                    f"【주변 페이지 텍스트 (문서 흐름 파악용)】\n{context_text}\n\n"
+                    "위 문서 흐름을 참고하여 이 페이지에 포함된 이미지(사진, 차트, 다이어그램, 표, 코드 스크린샷 등)를 분석하세요.\n\n"
+                    "분석 항목:\n"
+                    "- 이미지/사진: 무엇을 나타내는지, 문서 맥락에서 어떤 의미인지\n"
+                    "- 이미지 내 텍스트·코드: 이미지 안에 적힌 글자, 코드, 레이블을 정확히 읽어서 그대로 인용하고 의미 설명\n"
+                    "- 차트/그래프: 종류, 데이터 값, 추세, 축 레이블, 문서 맥락에서의 해석\n"
+                    "- 다이어그램/흐름도: 구조, 관계, 흐름, 문서에서 이 다이어그램이 설명하는 개념\n"
+                    "- 표: 항목과 값\n"
+                    "설명은 문서 전체 흐름과 연결지어 학생이 이해할 수 있게 한국어로 작성하세요."
+                )
+                resp = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {
+                                "url": f"data:image/webp;base64,{b64}",
+                                "detail": "high"
+                            }},
+                            {"type": "text", "text": prompt},
+                        ]
+                    }],
+                    max_tokens=1000,
+                )
+                desc = resp.choices[0].message.content.strip()
+                if desc:
+                    vision_descriptions[page_idx] = desc
+                    print(f"[pdf_vision] 페이지 {page_idx} Vision 분석 완료")
+            except Exception as ve:
+                print(f"[pdf_vision] Vision AI 실패 (페이지 {page_idx}): {ve}")
+
+        doc.close()
+        print(f"[pdf_vision] 총 {len(vision_descriptions)}개 페이지 Vision 분석 완료")
+    except Exception as e:
+        print(f"[pdf_vision] PDF Vision 분석 오류: {e}")
+
+    return vision_descriptions
+
+
 STORAGE_CONTENT_TYPES = {
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -344,14 +439,22 @@ async def upload_document(
             supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
         raise HTTPException(status_code=500, detail=f"문서 등록 실패: {str(e)}")
 
-    # 3. PPT/PPTX: 슬라이드 이미지 생성 + 영상 추출 + Vision AI 분석 (RAG보다 먼저)
+    # 3-A. PPT/PPTX: 슬라이드 이미지 생성 + 영상 추출 + Vision AI 분석 (RAG보다 먼저)
     pptx_vision: dict = {}
     if ext in ("pptx", "ppt"):
         _, pptx_vision = _generate_and_upload_slides(file_bytes, doc_id)
 
+    # 3-B. PDF: 이미지 페이지 Vision AI 분석 (RAG보다 먼저)
+    pdf_vision: dict = {}
+    if ext == "pdf":
+        pdf_vision = _analyze_pdf_images(file_bytes)
+
     # 4. RAG 청킹 → document_chunks 저장
     try:
-        chunk_count, page_count = ingest_document(file_bytes, doc_id, filename=file.filename, pptx_vision=pptx_vision)
+        chunk_count, page_count = ingest_document(
+            file_bytes, doc_id, filename=file.filename,
+            pptx_vision=pptx_vision, pdf_vision=pdf_vision,
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -673,14 +776,20 @@ async def get_document_audio_summary(
 
     # 3. 파일 형식 판별
     filename = doc.get("filename", "")
+    storage_path = doc.get("storage_path", "") or ""
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    file_type = doc.get("file_type", "") or ""
     is_image = ext in _IMAGE_EXTS
-    is_text_doc = ext in _TEXT_DOC_EXTS
+    is_url_doc = (
+        file_type in ("url", "link")
+        or storage_path.startswith(("http://", "https://"))
+    )
+    is_text_doc = ext in _TEXT_DOC_EXTS or is_url_doc
 
     if not is_image and not is_text_doc:
         raise HTTPException(
             status_code=400,
-            detail=f"지원하지 않는 파일 형식입니다. (지원: 이미지, PDF, DOCX, PPTX, TXT 등)",
+            detail=f"지원하지 않는 파일 형식입니다. (지원: 이미지, PDF, DOCX, PPTX, TXT, 웹 URL 등)",
         )
 
     openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -826,69 +935,6 @@ async def get_document_chunks(
     timeline = _build_media_timeline_from_chunks_v2(rows)
     return {"text": text, "timeline": timeline}
 
-
-# ── TODO: REMOVE_BEFORE_LAUNCH — PPT 슬라이드 분석 확인용 임시 엔드포인트 ──────
-@router.get("/documents/{document_id}/debug-chunks")
-async def debug_document_chunks(
-    document_id: str,
-    user: dict = Depends(get_current_user),
-):
-    """PPT 슬라이드 분석 결과 전체 확인용 (원본 청크 그대로 반환).
-    TODO: REMOVE_BEFORE_LAUNCH"""
-    doc_res = (
-        supabase_admin.table("documents")
-        .select("user_id, notebook_id, filename, storage_path")
-        .eq("id", document_id)
-        .single()
-        .execute()
-    )
-    if not doc_res.data:
-        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
-    if doc_res.data["user_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="권한이 없습니다.")
-
-    chunks_res = (
-        supabase_admin.table("document_chunks")
-        .select("chunk_index, content")
-        .eq("doc_id", document_id)
-        .order("chunk_index")
-        .execute()
-    )
-    rows = chunks_res.data or []
-
-    # storage에서 meta.json / summaries.json 로드 시도
-    from app.api.routes.documents import STORAGE_BUCKET, SLIDE_ASSETS_PREFIX
-    import json as _json
-
-    meta = None
-    summaries = None
-    try:
-        meta_bytes = supabase_admin.storage.from_(STORAGE_BUCKET).download(
-            f"{SLIDE_ASSETS_PREFIX}/{document_id}/meta.json"
-        )
-        meta = _json.loads(meta_bytes)
-    except Exception:
-        pass
-    try:
-        sum_bytes = supabase_admin.storage.from_(STORAGE_BUCKET).download(
-            f"{SLIDE_ASSETS_PREFIX}/{document_id}/summaries.json"
-        )
-        summaries = _json.loads(sum_bytes)
-    except Exception:
-        pass
-
-    return {
-        "doc_id": document_id,
-        "filename": doc_res.data.get("filename"),
-        "total_chunks": len(rows),
-        "slide_meta": meta,
-        "slide_summaries": summaries,
-        "chunks": [
-            {"index": r["chunk_index"], "content": r["content"]}
-            for r in rows
-        ],
-    }
-# ── TODO: REMOVE_BEFORE_LAUNCH 끝 ────────────────────────────────────────────
 
 
 @router.get("/documents/{document_id}/media-summary")
