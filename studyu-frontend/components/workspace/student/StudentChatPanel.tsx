@@ -274,11 +274,21 @@ export function StudentChatPanel({
     분석: { bg: "bg-purple-50", text: "text-purple-600", border: "border-purple-200" },
     적용: { bg: "bg-green-50",  text: "text-green-600",  border: "border-green-200" },
   };
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([
-    { text: "이 자료의 핵심 개념을 설명해줘", category: "이해" },
-    { text: "주요 내용들 간의 관계를 분석해줘", category: "분석" },
-    { text: "실제로 어떻게 활용할 수 있을까?", category: "적용" },
-  ]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>(() => {
+    // 마운트 시 localStorage에서 즉시 복원 (effect 순서 문제 회피)
+    try {
+      const saved = localStorage.getItem(`${chatKey}_suggestions`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed as Suggestion[];
+      }
+    } catch {}
+    return [
+      { text: "이 자료의 핵심 개념을 설명해줘", category: "이해" },
+      { text: "주요 내용들 간의 관계를 분석해줘", category: "분석" },
+      { text: "실제로 어떻게 활용할 수 있을까?", category: "적용" },
+    ];
+  });
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [suggestionsPage, setSuggestionsPage] = useState(0);
   const askedQuestionsRef = useRef<string[]>([]);
@@ -297,11 +307,29 @@ export function StudentChatPanel({
 
   const chatKeyRef = useRef(chatKey);
 
-  // activeDocIds 변경 시 추천 질문 fetch
+  // activeDocIds 변경 시 추천 질문 fetch (localStorage에 없을 때만)
   useEffect(() => {
     const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
     if (targetDocIds.length === 0) return;
     suggestionFromChatRef.current = false;
+    setSuggestionsPage(0);
+
+    // localStorage에 저장된 추천 질문 복원 시도
+    const savedKey = `${chatKey}_suggestions`;
+    const saved = localStorage.getItem(savedKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setSuggestions(parsed as Suggestion[]);
+          setSuggestionsPage(Math.floor((parsed.length - 1) / 3));
+          askedQuestionsRef.current = [];
+          return;
+        }
+      } catch {}
+    }
+
+    // 없으면 fetch
     const abort = new AbortController();
     suggestionFetchAbortRef.current = abort;
     setSuggestionsLoading(true);
@@ -314,8 +342,11 @@ export function StudentChatPanel({
       })
         .then((r) => r.json())
         .then((data) => {
-          if (!abort.signal.aborted && !suggestionFromChatRef.current && data.questions?.length)
-            setSuggestions(data.questions.slice(0, 3) as Suggestion[]);
+          if (!abort.signal.aborted && !suggestionFromChatRef.current && data.questions?.length) {
+            const newSugs = data.questions.slice(0, 3) as Suggestion[];
+            setSuggestions(newSugs);
+            try { localStorage.setItem(`${chatKey}_suggestions`, JSON.stringify(newSugs)); } catch {}
+          }
         })
         .catch(() => {})
         .finally(() => { if (!abort.signal.aborted) setSuggestionsLoading(false); })
@@ -323,6 +354,7 @@ export function StudentChatPanel({
     askedQuestionsRef.current = [];
     return () => { abort.abort(); };
   }, [activeDocIds.join(","), docs.map(d => d.id).join(",")]);
+
 
   // activeDocIds 변경 시 해당 자료의 채팅 히스토리 로드
   useEffect(() => {
@@ -364,6 +396,7 @@ export function StudentChatPanel({
     if (confirm("대화 내역을 모두 지우시겠습니까?")) {
       setMessages([]);
       localStorage.removeItem(chatKeyRef.current);
+      localStorage.removeItem(`${chatKeyRef.current}_suggestions`);
     }
   };
 
@@ -442,6 +475,7 @@ export function StudentChatPanel({
         const nextSuggestions = [...marked, ...newChips];
         setSuggestions(nextSuggestions);
         setSuggestionsPage(Math.floor((nextSuggestions.length - 1) / 3));
+        try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(nextSuggestions)); } catch {}
       };
 
       if (pptSuggestions.length > 0) {
@@ -483,18 +517,18 @@ export function StudentChatPanel({
   };
 
   const renderMessageContent = (content: string, enableTimestampLinks: boolean) => {
-    const hasSlideRefs = onSlideClick && /\[슬라이드\s*\d+\]/g.test(content);
+    const hasSlideRefs = onSlideClick && /\[슬라이드[\s\d,~\-~]+\]/g.test(content);
     const hasPageRefs = onPageClick && /페이지\s*\d+/g.test(content);
     if (!enableTimestampLinks && !hasSlideRefs && !hasPageRefs) {
       return <>{content}</>;
     }
 
     // Combined pattern:
-    //   그룹1-2: [슬라이드 N]
-    //   그룹3-4: [출처 N, 페이지 N] 또는 [페이지 N] 등 "페이지 N" 포함 대괄호
-    //   그룹5:   괄호 없이 "페이지 N" 단독
-    //   그룹6+:  timestamp ranges
-    const combinedPattern = /(\[슬라이드\s*(\d+)\])|(\[[^\]]*페이지\s*(\d+)[^\]]*\])|((?<!\[)(?<!\w)페이지\s*(\d+)(?!\])(?!\w))|(\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?)/g;
+    //   그룹1: [슬라이드 N] 또는 [슬라이드 N, M, ...] (복수 슬라이드 포함)
+    //   그룹2: [출처 N, 페이지 N] 또는 [페이지 N] 등 "페이지 N" 포함 대괄호
+    //   그룹3: 괄호 없이 "페이지 N" 단독
+    //   그룹4+: timestamp ranges
+    const combinedPattern = /(\[슬라이드[\s\d,~\-~]+\])|(\[[^\]]*페이지\s*(\d+)[^\]]*\])|((?<!\[)(?<!\w)페이지\s*(\d+)(?!\])(?!\w))|(\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?)/g;
     const matches = Array.from(content.matchAll(combinedPattern));
 
     if (matches.length === 0) {
@@ -508,26 +542,44 @@ export function StudentChatPanel({
       const matchedText = match[0];
       const matchIndex = match.index ?? 0;
       const isSlideRef = Boolean(match[1]);
-      const slideNum = match[2] ? parseInt(match[2], 10) : null;
-      // 대괄호 포함 "페이지 N" (그룹3-4) 또는 단독 "페이지 N" (그룹5-6)
-      const isPageRef = Boolean(match[3] || match[5]);
-      const pageNum = match[4] ? parseInt(match[4], 10) : match[6] ? parseInt(match[6], 10) : null;
+      const isPageRef = Boolean(match[2] || match[4]);
+      const pageNum = match[3] ? parseInt(match[3], 10) : match[5] ? parseInt(match[5], 10) : null;
 
       if (matchIndex > lastIndex) {
         nodes.push(<span key={`text-${index}-${lastIndex}`}>{content.slice(lastIndex, matchIndex)}</span>);
       }
 
-      if (isSlideRef && slideNum !== null && onSlideClick) {
-        nodes.push(
-          <button
-            key={`slide-${index}-${slideNum}`}
-            type="button"
-            onClick={() => onSlideClick(slideNum)}
-            className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
-          >
-            {matchedText}
-          </button>
-        );
+      if (isSlideRef && onSlideClick) {
+        // [슬라이드 9, 10] 같은 복수 슬라이드 파싱
+        const nums = Array.from(matchedText.matchAll(/\d+/g)).map(m => parseInt(m[0], 10));
+        if (nums.length === 1) {
+          nodes.push(
+            <button
+              key={`slide-${index}-${nums[0]}`}
+              type="button"
+              onClick={() => onSlideClick(nums[0])}
+              className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
+            >
+              {matchedText}
+            </button>
+          );
+        } else {
+          // 복수: [슬라이드 9], [슬라이드 10] 버튼으로 분리
+          nodes.push(
+            <span key={`slide-multi-${index}`}>
+              {nums.map((n, ni) => (
+                <button
+                  key={`slide-${index}-${n}`}
+                  type="button"
+                  onClick={() => onSlideClick(n)}
+                  className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff] mr-0.5"
+                >
+                  {`[슬라이드 ${n}]`}
+                </button>
+              ))}
+            </span>
+          );
+        }
       } else if (isPageRef && pageNum !== null && onPageClick) {
         nodes.push(
           <button
