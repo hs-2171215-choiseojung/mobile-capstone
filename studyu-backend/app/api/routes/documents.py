@@ -43,6 +43,7 @@ from app.services.rag import (
     build_media_summary_from_chunks,
     _parse_media_summary,
     _inject_media_summary,
+    align_media_summary_to_timeline,
 )
 
 router = APIRouter()
@@ -992,19 +993,31 @@ async def get_document_media_summary(
     if not rows and is_youtube_doc:
         raise HTTPException(
             status_code=500,
-            detail="??? ??? ???? ?????. ??? youtube-transcript-api? ???? ??? ??????.",
+            detail="유튜브 자막을 불러오지 못했습니다. 서버에 youtube-transcript-api가 설치되어 있는지 확인해주세요.",
         )
     summary = _parse_media_summary(rows[0]["content"]) if rows else {"title": "전체 내용 요약", "overview": "", "sections": []}
+    timeline = _build_media_timeline_from_chunks_v2(rows)
+    summary_was_updated = False
+
+    if summary.get("sections"):
+        aligned_summary = align_media_summary_to_timeline(summary, timeline)
+        summary_was_updated = aligned_summary != summary
+        summary = aligned_summary
+
     if not summary.get("sections"):
-        summary = build_media_summary_from_chunks(rows, filename)
-        if summary.get("sections") and rows:
-            updated_chunks = _inject_media_summary([row["content"] for row in rows], summary)
-            try:
-                supabase_admin.table("document_chunks").update({
-                    "content": updated_chunks[0],
-                }).eq("doc_id", document_id).eq("chunk_index", 0).execute()
-            except Exception:
-                pass
+        generated_summary = build_media_summary_from_chunks(rows, filename)
+        aligned_summary = align_media_summary_to_timeline(generated_summary, timeline)
+        summary_was_updated = aligned_summary != summary
+        summary = aligned_summary
+
+    if summary.get("sections") and rows and summary_was_updated:
+        updated_chunks = _inject_media_summary([row["content"] for row in rows], summary)
+        try:
+            supabase_admin.table("document_chunks").update({
+                "content": updated_chunks[0],
+            }).eq("doc_id", document_id).eq("chunk_index", 0).execute()
+        except Exception:
+            pass
     return summary
 
     # 청크는 CHUNK_OVERLAP(100자) 슬라이딩 윈도우로 생성되므로
