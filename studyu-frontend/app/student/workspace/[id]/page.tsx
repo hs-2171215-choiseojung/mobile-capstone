@@ -637,7 +637,6 @@ export default function StudentWorkspacePage() {
                     loading={isSourceLoading}
                     error={selectedSourceError}
                     transcriptText={selectedSourceTranscript}
-                    mediaTimeline={selectedSourceTimeline}
                     mediaSummaryData={selectedSourceSummary}
                     mediaSummaryLoading={selectedSourceSummaryLoading}
                     showMediaSummaryToggle

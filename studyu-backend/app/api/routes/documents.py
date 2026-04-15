@@ -348,7 +348,7 @@ VIDEO_AUDIO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a"}
 
 
 def _ensure_youtube_document_chunks(document_id: str, storage_path: str) -> None:
-    if not storage_path or _extract_youtube_video_id(storage_path) is None:
+    if not storage_path or not storage_path.startswith(("http://", "https://")):
         return
 
     existing = (
@@ -784,12 +784,14 @@ async def get_document_audio_summary(
         file_type in ("url", "link")
         or storage_path.startswith(("http://", "https://"))
     )
-    is_text_doc = ext in _TEXT_DOC_EXTS or is_url_doc
+    is_youtube_doc = bool(storage_path) and _extract_youtube_video_id(storage_path) is not None
+    is_media_doc = ext in VIDEO_AUDIO_EXTENSIONS or is_youtube_doc
+    is_text_doc = ext in _TEXT_DOC_EXTS or is_url_doc or is_media_doc
 
     if not is_image and not is_text_doc:
         raise HTTPException(
             status_code=400,
-            detail=f"지원하지 않는 파일 형식입니다. (지원: 이미지, PDF, DOCX, PPTX, TXT, 웹 URL 등)",
+            detail=f"지원하지 않는 파일 형식입니다. (지원: 이미지, PDF, DOCX, PPTX, TXT, 웹 URL, 비디오, 오디오 등)",
         )
 
     openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -836,6 +838,7 @@ async def get_document_audio_summary(
 
     # 4-B. 텍스트 문서: chunks → GPT-4o 요약
     else:
+        _ensure_youtube_document_chunks(document_id, storage_path)
         chunks_res = (
             supabase_admin.table("document_chunks")
             .select("content, chunk_index")
@@ -844,6 +847,11 @@ async def get_document_audio_summary(
             .execute()
         )
         if not chunks_res.data:
+            if is_youtube_doc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="유튜브 자막을 불러오지 못했습니다. 서버에 youtube-transcript-api가 설치되어 있는지 확인해주세요.",
+                )
             raise HTTPException(status_code=400, detail="문서 내용이 없습니다. 문서가 아직 처리 중일 수 있습니다.")
         raw_text = "\n\n".join(c["content"] for c in chunks_res.data)[:8000]
         try:

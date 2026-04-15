@@ -458,9 +458,12 @@ def build_media_summary_from_chunks(rows: list[dict[str, Any]], filename: str) -
 - sections는 시간 순서대로 정리하고, 각 section은 하나의 주제나 흐름 전환을 대표해야 합니다.
 - 각 section의 title은 소제목처럼 자연스럽고 구체적으로 작성하세요. '주제 1', '핵심 내용 2' 같은 generic 이름은 쓰지 마세요.
 - 각 section의 summary는 한 줄 메모가 아니라, 해당 구간에서 무엇을 설명하고 왜 중요한지 드러나는 2~5문장짜리 본문처럼 작성하세요.
+- overview와 각 section의 summary는 Markdown 형식으로 작성하세요.
+- 핵심 개념, 중요한 결론, 주의할 부분은 **굵게** 표시하세요.
+- 설명이 여러 포인트로 나뉘면 불릿 목록(-)이나 번호 목록을 사용해 읽기 쉽게 정리하세요.
 - 화면에서는 소제목 오른쪽에 시간만 따로 붙여 보여줄 예정이므로, summary 안에 시간을 다시 반복해서 쓰지 마세요.
 - 각 section에는 그 주제가 본격적으로 시작되는 대표 시작 시간만 start_sec에 넣으세요.
-- 불필요한 구분선, 번호 목록, 마크다운 기호를 넣지 말고, 문서 본문처럼 매끄럽게 읽히는 내용을 작성하세요.
+- Markdown 형식은 허용하지만, 불필요한 구분선은 넣지 말고 문서 본문처럼 매끄럽게 읽히는 내용을 작성하세요.
 - 반드시 JSON 객체만 출력하세요.
 
 출력 형식:
@@ -1272,6 +1275,7 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
         ValueError: URL 접근 실패 또는 텍스트 부족
     """
     import httpx
+    from urllib.parse import unquote, urlparse
 
     # ── YouTube 처리 ──
     video_id = _extract_youtube_video_id(url)
@@ -1310,6 +1314,55 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
         ]
         _db_safe_insert("document_chunks", records)
         print(f"[INFO] ingest_url: {len(records)} YouTube transcript chunks 저장 완료")
+        return len(records), 0
+    parsed_url = urlparse(url)
+    media_filename = unquote(parsed_url.path.split("/")[-1]) if parsed_url.path else ""
+    media_ext = media_filename.rsplit(".", 1)[-1].lower() if "." in media_filename else ""
+    if media_ext in VIDEO_AUDIO_EXTENSIONS:
+        try:
+            response = httpx.get(url, timeout=60, follow_redirects=True)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise ValueError(f"미디어 URL 접근 실패: HTTP {e.response.status_code}")
+        except Exception as e:
+            raise ValueError(f"미디어 URL 접근 실패: {str(e)}")
+
+        file_bytes = response.content or b""
+        if not file_bytes:
+            raise ValueError("미디어 URL에서 파일을 불러오지 못했습니다.")
+        if len(file_bytes) > 25 * 1024 * 1024:
+            raise ValueError("비디오/오디오 URL 파일은 25MB 이하일 때만 전사할 수 있습니다.")
+
+        filename = media_filename or f"url-media.{media_ext}"
+        segments, _ = _extract_media_transcript(file_bytes, filename)
+        if not segments:
+            raise ValueError("비디오/오디오 URL에서 전사할 수 있는 음성 내용을 찾지 못했습니다.")
+
+        chunks = _build_media_chunks(segments, filename)
+        summary = build_media_summary_from_chunks(
+            [{"content": chunk} for chunk in chunks],
+            filename,
+        )
+        if summary:
+            chunks = _inject_media_summary(chunks, summary)
+
+        try:
+            embeddings = _embed_batch(chunks)
+        except Exception as e:
+            print(f"[WARNING] 임베딩 생성 실패, 임베딩 없이 저장: {e}")
+            embeddings = [None] * len(chunks)  # type: ignore
+
+        records = [
+            {
+                "doc_id": doc_id,
+                "chunk_index": idx,
+                "content": content,
+                "embedding": emb,
+            }
+            for idx, (content, emb) in enumerate(zip(chunks, embeddings))
+        ]
+        _db_safe_insert("document_chunks", records)
+        print(f"[INFO] ingest_url: {len(records)} media transcript chunks 저장 완료")
         return len(records), 0
     else:
         # ── 일반 웹페이지 처리 ──
@@ -2167,7 +2220,12 @@ def chat_with_docs(
                 "\n\n중요: 이 문서는 유튜브 자막 기반 문서입니다. "
                 "1차 답변에서는 먼저 자막 텍스트만 읽고 질문에 정확히 답하세요. "
                 "이 단계에서는 타임스탬프를 억지로 넣지 말고, 질문에 대한 설명만 자연스럽게 정리하세요. "
-                "추측하지 말고 자막에 근거가 있는 내용만 답하세요."
+                "추측하지 말고 자막에 근거가 있는 내용만 답하세요. "
+                "답변은 Markdown 형식으로 작성하고, 핵심 개념·중요 결론·주의할 부분은 **굵게** 표시하세요. "
+                "문단 사이에는 빈 줄을 넣으세요. "
+                "설명이 여러 포인트로 나뉘면 불릿 목록(*)이나 번호 목록을 사용하되, 각 항목은 반드시 새로운 줄에서 시작하세요. "
+                "불릿 목록을 시작하기 전에도 빈 줄을 넣으세요. "
+                "핵심 주제가 바뀌면 빈 줄을 넣어 문단을 나누고, 한 문단을 너무 길게 이어 쓰지 마세요."
             )
         else:
             video_note = (
@@ -2182,9 +2240,14 @@ def chat_with_docs(
                 "질문과 직접 대응되는 설명 구간을 먼저 찾고 그 구간의 시간을 붙이세요. "
                 "근거가 여러 개면 시간들을 나열만 하지 말고, 정말 이어지는 설명이면 범위(예: 0:35-0:59)로 묶어서 쓰세요. "
                 "답변이 여러 포인트로 나뉘는 주제라면 짧은 도입 설명 뒤에 '-' 불릿 목록으로 나눠 설명해도 됩니다. "
-                "예: 한 문장 요약 후, '- 항목명(시간): 설명' 형식으로 2~4개 핵심 포인트를 정리하세요. "
+                "예: 한 문장 요약 후, '* 항목명(시간): 설명' 형식으로 2~4개 핵심 포인트를 정리하세요. "
                 "비교, 원인, 특징, 단계, 사례처럼 여러 요소를 구분해서 설명하는 질문에서는 불릿 형식을 우선적으로 사용하세요. "
-                "추측하지 말고 전사에 근거가 있는 내용만 답하세요."
+                "추측하지 말고 전사에 근거가 있는 내용만 답하세요. "
+                "답변은 Markdown 형식으로 작성하고, 핵심 개념·중요 결론·주의할 부분은 **굵게** 표시하세요. "
+                "문단 사이에는 빈 줄을 넣으세요. "
+                "설명이 여러 포인트로 나뉘면 불릿 목록(*)이나 번호 목록을 사용하되, 각 항목은 반드시 새로운 줄에서 시작하세요. "
+                "불릿 목록을 시작하기 전에도 빈 줄을 넣으세요. "
+                "핵심 주제가 바뀌면 빈 줄을 넣어 문단을 나누고, 한 문단을 너무 길게 이어 쓰지 마세요."
             )
         if joined_ref_lines:
             video_note += f"\n\n관련 전사 구간:\n{joined_ref_lines}"
@@ -2367,6 +2430,11 @@ def chat_with_docs(
 1. <context>에 관련 내용이 있으면 웹사이트 내용을 우선적으로 활용하여 답변하세요.
 2. <context>에 내용이 없거나 불충분한 경우, 알고 있는 지식으로 답변하되 반드시 "이 웹사이트에는 해당 내용이 없어 일반 지식을 바탕으로 답변합니다." 라고 먼저 밝히세요.
 3. 웹사이트 내용과 일반 지식이 섞일 경우 각각 출처를 명확히 구분하세요.
+4. 답변은 Markdown 형식으로 작성하고, 핵심 개념·중요 결론·주의할 부분은 **굵게** 표시하세요.
+5. 문단 사이에는 빈 줄을 넣으세요.
+6. 설명이 여러 포인트로 나뉘면 불릿 목록(*)이나 번호 목록을 사용하되, 각 항목은 반드시 새로운 줄에서 시작하세요.
+7. 불릿 목록을 시작하기 전에도 빈 줄을 넣으세요.
+8. 핵심 주제가 바뀌면 빈 줄을 넣어 문단을 나누고, 한 문단을 너무 길게 이어 쓰지 마세요.
 답변 시 {level_hint}{video_note}
 
 <context>
