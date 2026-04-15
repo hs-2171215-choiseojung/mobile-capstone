@@ -2,6 +2,7 @@
 
 import { Download, ExternalLink, Loader2, X, Volume2, Play, Pause, Square, ChevronDown, ChevronUp, Copy, Check, ArrowUpToLine, ArrowDownToLine } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import MarkdownPreview from "@/components/workspace/MarkdownPreview";
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -49,6 +50,7 @@ const KNOWN_EXTS = new Set([
 const AUDIO_SUMMARY_EXTS = new Set([
   "jpg","jpeg","png","gif","webp",
   "pdf","docx","doc","pptx","ppt","hwp","hwpx","txt",
+  "mp4","mov","avi","mkv","webm","mp3","m4a","wav",
 ]);
 
 function formatTime(sec: number): string {
@@ -661,7 +663,9 @@ export function SharedSourceViewer({
             <header>
               <h3 className="text-2xl font-bold tracking-tight text-gray-950">{summaryTitle}</h3>
             </header>
-            <p className="mt-4 whitespace-pre-wrap text-[15px] leading-8 text-gray-700">{summaryOverview}</p>
+            <div className="mt-4">
+              <MarkdownPreview content={summaryOverview} className="text-[15px] leading-8 text-gray-700" />
+            </div>
           </article>
         );
       }
@@ -677,7 +681,9 @@ export function SharedSourceViewer({
         <header>
           <h3 className="text-2xl font-bold tracking-tight text-gray-950">{summaryTitle}</h3>
           {summaryOverview ? (
-            <p className="mt-4 whitespace-pre-wrap text-[15px] leading-8 text-gray-700">{summaryOverview}</p>
+            <div className="mt-4">
+              <MarkdownPreview content={summaryOverview} className="text-[15px] leading-8 text-gray-700" />
+            </div>
           ) : null}
         </header>
         {summarySections.map((section, index) => (
@@ -695,7 +701,9 @@ export function SharedSourceViewer({
                 ({formatTimestamp(section.start_sec)})
               </button>
             </div>
-            <p className="mt-3 whitespace-pre-wrap text-[15px] leading-8 text-gray-700">{section.summary}</p>
+            <div className="mt-3">
+              <MarkdownPreview content={section.summary} className="text-[15px] leading-8 text-gray-700" />
+            </div>
           </section>
         ))}
       </article>
@@ -969,6 +977,7 @@ export function SharedSourceViewer({
           <div className="w-full h-full">{customViewer}</div>
         ) : (
           <iframe
+            key={mediaUrl}
             ref={iframeRef}
             src={mediaUrl}
             title={source.filename}

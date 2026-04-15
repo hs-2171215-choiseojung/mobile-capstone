@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2, X } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import MarkdownPreview from '@/components/workspace/MarkdownPreview';
 
 interface Doc {
   id: string;
@@ -131,6 +132,21 @@ function collapseNearbyTimestampLists(content: string) {
       )
       .join(", ");
   });
+}
+
+function normalizeDetachedPageRefs(content: string) {
+  return content
+    .replace(/\s*\n+\s*(\[(?:출처\s*\d+\s*,\s*)?페이지\s*\d+[^\]]*\])\s*\n+\s*([.,!?])/g, " $1$2")
+    .replace(/([^\n])\s*\n+\s*(\[(?:출처\s*\d+\s*,\s*)?페이지\s*\d+[^\]]*\])\s*\n+\s*/g, "$1 $2 ")
+    .replace(/\s{2,}/g, " ");
+}
+
+function normalizeInlineListMarkers(content: string) {
+  return content
+    .replace(/:\s+([*-]\s+(?=\S))/g, ":\n$1")
+    .replace(/:\s+(\d+\.\s+(?=\S))/g, ":\n$1")
+    .replace(/([.!?])\s+([*-]\s+(?=\S))/g, "$1\n$2")
+    .replace(/([.!?])\s+(\d+\.\s+(?=\S))/g, "$1\n$2");
 }
 
 function injectReferenceTimesIntoAnswer(
@@ -447,7 +463,11 @@ export function StudentChatPanel({
         ...prev,
         {
           type: 'ai',
-          content: collapseNearbyTimestampLists(data.answer ?? ""),
+          content: normalizeInlineListMarkers(
+            normalizeDetachedPageRefs(
+              collapseNearbyTimestampLists(data.answer ?? "")
+            )
+          ),
           references: Array.isArray(data.references) ? data.references : [],
           sources: Array.isArray(data.sources) ? data.sources : [],
         },
@@ -516,11 +536,22 @@ export function StudentChatPanel({
     }
   };
 
-  const renderMessageContent = (content: string, enableTimestampLinks: boolean) => {
+  const renderMessageContent = (
+    content: string,
+    enableTimestampLinks: boolean,
+    sources: SourceChunk[] = []
+  ) => {
+    const renderPlainText = (text: string, key?: string) => (
+      <span key={key} className="whitespace-pre-wrap">
+        {text.replace(/\n[ \t]+/g, "\n")}
+      </span>
+    );
+
+    const hasCitationRefs = onCitationClick && /\[\d+\]/.test(content);
     const hasSlideRefs = onSlideClick && /\[슬라이드[\s\d,~\-~]+\]/g.test(content);
     const hasPageRefs = onPageClick && /페이지\s*\d+/g.test(content);
-    if (!enableTimestampLinks && !hasSlideRefs && !hasPageRefs) {
-      return <>{content}</>;
+    if (!enableTimestampLinks && !hasCitationRefs && !hasSlideRefs && !hasPageRefs) {
+      return renderPlainText(content);
     }
 
     // Combined pattern:
@@ -528,11 +559,11 @@ export function StudentChatPanel({
     //   그룹2: [출처 N, 페이지 N] 또는 [페이지 N] 등 "페이지 N" 포함 대괄호
     //   그룹3: 괄호 없이 "페이지 N" 단독
     //   그룹4+: timestamp ranges
-    const combinedPattern = /(\[슬라이드[\s\d,~\-~]+\])|(\[[^\]]*페이지\s*(\d+)[^\]]*\])|((?<!\[)(?<!\w)페이지\s*(\d+)(?!\])(?!\w))|(\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?)/g;
+    const combinedPattern = /(\[(\d+)\])|(\[슬라이드[\s\d,~\-~]+\])|(\[[^\]]*페이지\s*(\d+)[^\]]*\])|((?<!\[)(?<!\w)페이지\s*(\d+)(?!\])(?!\w))|(\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?)/g;
     const matches = Array.from(content.matchAll(combinedPattern));
 
     if (matches.length === 0) {
-      return <>{content}</>;
+      return renderPlainText(content);
     }
 
     const nodes: JSX.Element[] = [];
@@ -541,15 +572,34 @@ export function StudentChatPanel({
     matches.forEach((match, index) => {
       const matchedText = match[0];
       const matchIndex = match.index ?? 0;
-      const isSlideRef = Boolean(match[1]);
-      const isPageRef = Boolean(match[2] || match[4]);
-      const pageNum = match[3] ? parseInt(match[3], 10) : match[5] ? parseInt(match[5], 10) : null;
+      const citationNum = match[2] ? parseInt(match[2], 10) : null;
+      const isCitationRef = citationNum !== null;
+      const isSlideRef = Boolean(match[3]);
+      const isPageRef = Boolean(match[4] || match[6]);
+      const pageNum = match[5] ? parseInt(match[5], 10) : match[7] ? parseInt(match[7], 10) : null;
 
       if (matchIndex > lastIndex) {
-        nodes.push(<span key={`text-${index}-${lastIndex}`}>{content.slice(lastIndex, matchIndex)}</span>);
+        nodes.push(renderPlainText(content.slice(lastIndex, matchIndex), `text-${index}-${lastIndex}`));
       }
 
-      if (isSlideRef && onSlideClick) {
+      if (isCitationRef && onCitationClick) {
+        const source = sources[citationNum - 1];
+        if (source) {
+          nodes.push(
+            <button
+              key={`cite-${index}-${citationNum}`}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onCitationClick(source)}
+              className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
+            >
+              {matchedText}
+            </button>
+          );
+        } else {
+          nodes.push(renderPlainText(matchedText, `cite-raw-${index}`));
+        }
+      } else if (isSlideRef && onSlideClick) {
         // [슬라이드 9, 10] 같은 복수 슬라이드 파싱
         const nums = Array.from(matchedText.matchAll(/\d+/g)).map(m => parseInt(m[0], 10));
         if (nums.length === 1) {
@@ -557,6 +607,7 @@ export function StudentChatPanel({
             <button
               key={`slide-${index}-${nums[0]}`}
               type="button"
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => onSlideClick(nums[0])}
               className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
             >
@@ -571,6 +622,7 @@ export function StudentChatPanel({
                 <button
                   key={`slide-${index}-${n}`}
                   type="button"
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => onSlideClick(n)}
                   className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff] mr-0.5"
                 >
@@ -585,6 +637,7 @@ export function StudentChatPanel({
           <button
             key={`page-${index}-${pageNum}`}
             type="button"
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => onPageClick(pageNum)}
             className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
           >
@@ -595,12 +648,13 @@ export function StudentChatPanel({
         const rangeStart = matchedText.split(/\s*-\s*/)[0] ?? matchedText;
         const seconds = parseTimestampToSeconds(rangeStart);
         if (seconds === null) {
-          nodes.push(<span key={`raw-${index}`}>{matchedText}</span>);
+          nodes.push(renderPlainText(matchedText, `raw-${index}`));
         } else {
           nodes.push(
             <button
               key={`ts-${index}-${matchedText}`}
               type="button"
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => onSeekToTimestamp?.(seconds)}
               className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
             >
@@ -609,14 +663,14 @@ export function StudentChatPanel({
           );
         }
       } else {
-        nodes.push(<span key={`raw-${index}`}>{matchedText}</span>);
+        nodes.push(renderPlainText(matchedText, `raw-${index}`));
       }
 
       lastIndex = matchIndex + matchedText.length;
     });
 
     if (lastIndex < content.length) {
-      nodes.push(<span key={`tail-${lastIndex}`}>{content.slice(lastIndex)}</span>);
+      nodes.push(renderPlainText(content.slice(lastIndex), `tail-${lastIndex}`));
     }
 
     return <>{nodes}</>;
@@ -698,7 +752,7 @@ export function StudentChatPanel({
             <div key={index} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
               <div className="max-w-[85%] space-y-2">
                 <div
-                  className={`px-4 py-3 rounded-2xl text-[14px] leading-relaxed whitespace-pre-wrap ${
+                  className={`px-4 py-3 rounded-2xl text-[14px] leading-relaxed ${
                     msg.type === 'user'
                       ? 'bg-[#155dfc] text-white rounded-tr-sm'
                       : msg.type === 'system'
@@ -706,22 +760,24 @@ export function StudentChatPanel({
                       : 'bg-[#f8f9fb] text-[#1a1d26] border border-[#e7e9ed] rounded-tl-sm'
                   }`}
                 >
-                  {msg.type === 'ai' && msg.sources && msg.sources.length > 0 ? (
-                    <span className="whitespace-pre-wrap">
-                      {renderWithCitations(
-                        enrichedContent,
-                        msg.sources,
-                        onCitationClick,
-                        (part) =>
-                          renderMessageContent(
-                            part,
-                            msg.type === "ai" && Boolean(activeSourceId && activeSourceMediaType && onSeekToTimestamp)
-                          )
-                      )}
-                    </span>
+                  {msg.type === 'ai' ? (
+                    <MarkdownPreview
+                      content={enrichedContent}
+                      className="text-[#1a1d26]"
+                      transformText={(text) =>
+                        renderMessageContent(
+                          text,
+                          Boolean(activeSourceId && activeSourceMediaType && onSeekToTimestamp),
+                          msg.sources ?? []
+                        )
+                      }
+                    />
+                  ) : msg.type === 'system' ? (
+                    <span className="whitespace-pre-wrap">{enrichedContent}</span>
                   ) : renderMessageContent(
                     enrichedContent,
-                    msg.type === "ai" && Boolean(activeSourceId && activeSourceMediaType && onSeekToTimestamp)
+                    false,
+                    msg.sources ?? []
                   )}
                 </div>
               </div>

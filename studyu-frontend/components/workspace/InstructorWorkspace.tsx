@@ -9,6 +9,7 @@ import { inferDocType, type Doc } from "@/components/workspace/SourcePanel";
 import StudyULogo from "@/components/StudyULogo";
 import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer";
 import { SharedSourceViewer } from "@/components/workspace/SharedSourceViewer";
+import MarkdownPreview from "@/components/workspace/MarkdownPreview";
 
 const PREVIEWABLE_OFFICE_EXTS = new Set(["docx", "pptx", "ppt"]);
 function getOfficeEmbedUrl(url: string): string {
@@ -2352,7 +2353,10 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                           <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24"><path d="M12 3l1.2 3.6L17 8.4l-3.8 2.4L12 14.4l-1.2-3.6L7 8.4l3.8-2.4z" fill="currentColor"/></svg>
                         </div>
                         <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-2.5 max-w-[72%] border border-gray-100 shadow-sm">
-                          <p className="text-gray-700" style={{ fontSize: "0.84rem", lineHeight: 1.6 }}>{msg.content}</p>
+                          <MarkdownPreview
+                            content={msg.content}
+                            className="text-gray-700"
+                          />
                           {msg.sources && msg.sources.length > 0 && (
                             <div className="mt-2 pt-2 border-t border-gray-100 flex flex-wrap gap-1">
                               {msg.sources.map((src, idx) => (
