@@ -2,17 +2,17 @@
 ElevenLabs TTS 서비스.
 
 다른 라우터에서 import해서 사용:
-    from app.services.tts import tts_with_timestamps, tts_with_word_timestamps,
-                                   ELEVENLABS_VOICES, build_subtitle_segments, serialize_summary
+    from app.services.tts import tts_with_timestamps, ELEVENLABS_VOICES, build_subtitle_segments
 """
 
 import base64
+import json
 import httpx
 from fastapi import HTTPException
 
 from app.core.config import settings
 
-# ── 음성 목록 ────────────────────────────────────────────────
+# ── 음성 목록 ────────────────────────────────────────────
 ELEVENLABS_VOICES: dict[str, str] = {
     "sarah":  "EXAVITQu4vr4xnSDxMaL",  # Sarah  — 차분한 여성
     "rachel": "21m00Tcm4TlvDq8ikWAM",  # Rachel — 명확한 여성
@@ -21,8 +21,6 @@ ELEVENLABS_VOICES: dict[str, str] = {
 }
 DEFAULT_VOICE = "sarah"
 
-
-# ── 세그먼트 빌더 ────────────────────────────────────────────
 
 def build_subtitle_segments(alignment: dict) -> list[dict]:
     """ElevenLabs character-level alignment → 문장 단위 자막 세그먼트 리스트."""
@@ -66,55 +64,17 @@ def build_subtitle_segments(alignment: dict) -> list[dict]:
     return segments
 
 
-def build_word_segments(alignment: dict) -> list[dict]:
-    """ElevenLabs character-level alignment → 단어 단위 세그먼트 리스트.
-
-    공백 기준으로 분리. 한국어/영어 혼용 텍스트 모두 지원.
+async def tts_with_timestamps(text: str, voice_key: str = DEFAULT_VOICE) -> tuple[bytes, list[dict]]:
     """
-    chars  = alignment.get("characters", [])
-    starts = alignment.get("character_start_times_seconds", [])
-    ends   = alignment.get("character_end_times_seconds", [])
-    n = min(len(chars), len(starts), len(ends))
-    if n == 0:
-        return []
+    ElevenLabs TTS + 문자 타임스탬프.
 
-    segments: list[dict] = []
-    word_chars: list[str] = []
-    word_starts: list[float] = []
-    word_ends: list[float] = []
+    Args:
+        text: 변환할 텍스트
+        voice_key: ELEVENLABS_VOICES의 키 ("sarah" | "rachel" | "josh" | "adam")
 
-    def _flush():
-        if not word_chars:
-            return
-        text = "".join(word_chars)
-        # 구두점만으로 이루어진 토큰은 제외
-        if text.strip(".,!?;:\"'()-—…"):
-            segments.append({
-                "text": text,
-                "start": word_starts[0],
-                "end": word_ends[-1],
-            })
-        word_chars.clear()
-        word_starts.clear()
-        word_ends.clear()
-
-    for i in range(n):
-        ch = chars[i]
-        if ch in " \n\t":
-            _flush()
-        else:
-            word_chars.append(ch)
-            word_starts.append(starts[i])
-            word_ends.append(ends[i])
-
-    _flush()
-    return segments
-
-
-# ── ElevenLabs API 호출 (내부용) ─────────────────────────────
-
-async def _call_elevenlabs_tts(text: str, voice_key: str) -> tuple[bytes, dict]:
-    """ElevenLabs TTS API 단일 호출. (mp3_bytes, alignment_dict) 반환."""
+    Returns:
+        (mp3_bytes, subtitle_segments)
+    """
     voice_id = ELEVENLABS_VOICES.get(voice_key, ELEVENLABS_VOICES[DEFAULT_VOICE])
 
     async with httpx.AsyncClient(timeout=60) as http:
@@ -143,25 +103,8 @@ async def _call_elevenlabs_tts(text: str, voice_key: str) -> tuple[bytes, dict]:
 
     data = res.json()
     audio_bytes = base64.b64decode(data.get("audio_base64", ""))
-    return audio_bytes, data.get("alignment", {})
-
-
-# ── 공개 API ────────────────────────────────────────────────
-
-async def tts_with_timestamps(text: str, voice_key: str = DEFAULT_VOICE) -> tuple[bytes, list[dict]]:
-    """(mp3_bytes, sentence_segments) 반환. 기존 코드와 호환."""
-    audio_bytes, alignment = await _call_elevenlabs_tts(text, voice_key)
-    return audio_bytes, build_subtitle_segments(alignment)
-
-
-async def tts_with_word_timestamps(
-    text: str, voice_key: str = DEFAULT_VOICE
-) -> tuple[bytes, list[dict], list[dict]]:
-    """(mp3_bytes, sentence_segments, word_segments) 반환. 채팅 TTS용."""
-    audio_bytes, alignment = await _call_elevenlabs_tts(text, voice_key)
-    sentences = build_subtitle_segments(alignment)
-    words = build_word_segments(alignment)
-    return audio_bytes, sentences, words
+    segments = build_subtitle_segments(data.get("alignment", {}))
+    return audio_bytes, segments
 
 
 def serialize_summary(
