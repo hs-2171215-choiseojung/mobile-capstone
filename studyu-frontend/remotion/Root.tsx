@@ -10,6 +10,7 @@ const DEFAULT_SLIDES: SlideData[] = [
     speakerNotes: "",
     audioBase64: "",
     durationInFrames: 90,
+    layout: "list",
   },
 ];
 

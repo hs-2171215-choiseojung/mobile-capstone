@@ -44,19 +44,6 @@ interface MediaTimelineEntry {
   text: string;
 }
 
-interface MediaSummarySection {
-  title: string;
-  start_sec: number;
-  end_sec?: number;
-  summary: string;
-}
-
-interface MediaSummaryData {
-  title: string;
-  overview: string;
-  sections: MediaSummarySection[];
-}
-
 const PREVIEWABLE_OFFICE_EXTS = new Set(["docx", "pptx", "ppt"]);
 
 function getOfficeEmbedUrl(url: string): string {
@@ -96,8 +83,6 @@ export default function StudentWorkspacePage() {
   const [isSourceLoading, setIsSourceLoading] = useState(false);
   const [selectedSourceTranscript, setSelectedSourceTranscript] = useState<string | undefined>(undefined);
   const [selectedSourceTimeline, setSelectedSourceTimeline] = useState<MediaTimelineEntry[]>([]);
-  const [selectedSourceSummary, setSelectedSourceSummary] = useState<MediaSummaryData | null>(null);
-  const [selectedSourceSummaryLoading, setSelectedSourceSummaryLoading] = useState(false);
   const [selectedSourceMediaDuration, setSelectedSourceMediaDuration] = useState(0);
   const [selectedSourceMediaType, setSelectedSourceMediaType] = useState<"audio" | "video" | null>(null);
   const [selectedSourceSeekRequest, setSelectedSourceSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
@@ -383,8 +368,6 @@ export default function StudentWorkspacePage() {
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
     setSelectedSourceTimeline([]);
-    setSelectedSourceSummary(null);
-    setSelectedSourceSummaryLoading(false);
     setSelectedSourceMediaDuration(0);
     setSelectedSourceMediaType(null);
     setSelectedSourceSeekRequest(null);
@@ -563,61 +546,11 @@ export default function StudentWorkspacePage() {
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
     setSelectedSourceTimeline([]);
-    setSelectedSourceSummary(null);
-    setSelectedSourceSummaryLoading(false);
     setSelectedSourceMediaDuration(0);
     setSelectedSourceMediaType(null);
     setSelectedSourceSeekRequest(null);
     setActiveDocIds([]);
     shouldRestoreCenterScrollRef.current = true;
-  };
-
-  const requestSelectedSourceSummary = async () => {
-    if (!selectedSource || selectedSourceSummaryLoading || (selectedSourceSummary?.sections?.length ?? 0) > 0) return;
-
-    const ext = selectedSource.filename.toLowerCase().split(".").pop() ?? selectedSource.file_type;
-    const isYoutubeSource =
-      isYoutubeUrl(selectedSource.storage_path) ||
-      isYoutubeUrl(selectedSourceUrl) ||
-      isYoutubeUrl(selectedSourceDownloadUrl);
-    const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
-    const isExternalLinkLike =
-      (isHttpUrl(selectedSourceUrl) || isHttpUrl(selectedSourceDownloadUrl)) &&
-      !AUDIO_EXTS.has(ext) &&
-      !VIDEO_EXTS.has(ext) &&
-      !TEXT_ONLY_EXTS.has(ext) &&
-      !PREVIEWABLE_OFFICE_EXTS.has(ext) &&
-      !IMAGE_EXTS.has(ext) &&
-      !PDF_EXTS.has(ext);
-    if (!isYoutubeSource && !isExternalLinkLike && !AUDIO_EXTS.has(ext) && !VIDEO_EXTS.has(ext)) return;
-
-    setSelectedSourceSummaryLoading(true);
-    try {
-      const supabase = createClient();
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      if (!token) return;
-
-      const response = await fetch(`${API}/api/documents/${selectedSource.id}/media-summary`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await response.json().catch(() => ({}));
-      if (response.ok && Array.isArray(data?.sections)) {
-        setSelectedSourceSummary({
-          title: typeof data?.title === "string" ? data.title : "전체 내용 요약",
-          overview: typeof data?.overview === "string" ? data.overview : "",
-          sections: data.sections,
-        });
-      } else if (typeof data?.detail === "string") {
-        setSelectedSourceSummary({
-          title: "요약을 불러오지 못했습니다",
-          overview: data.detail,
-          sections: [],
-        });
-      }
-    } finally {
-      setSelectedSourceSummaryLoading(false);
-    }
   };
 
   return (
@@ -646,12 +579,6 @@ export default function StudentWorkspacePage() {
                     loading={isSourceLoading}
                     error={selectedSourceError}
                     transcriptText={selectedSourceTranscript}
-                    mediaSummaryData={selectedSourceSummary}
-                    mediaSummaryLoading={selectedSourceSummaryLoading}
-                    showMediaSummaryToggle
-                    onRequestMediaSummary={() => {
-                      void requestSelectedSourceSummary();
-                    }}
                     seekRequest={selectedSourceSeekRequest}
                     onMediaInfoChange={({ kind, duration }) => {
                       setSelectedSourceMediaType(kind);
