@@ -363,10 +363,8 @@ export function StudentChatPanel({
     ];
   });
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
-  const [suggestionsPage, setSuggestionsPage] = useState(0);
   const [initialQuestions, setInitialQuestions] = useState<string[]>(DEFAULT_INITIAL_QUESTIONS);
   const askedQuestionsRef = useRef<string[]>([]);
-  const clickedIndexRef = useRef<number>(-1);
   const suggestionFromChatRef = useRef(false);
   const suggestionFetchAbortRef = useRef<AbortController | null>(null);
   const suggestionsRef = useRef<Suggestion[]>(suggestions);
@@ -427,7 +425,6 @@ export function StudentChatPanel({
     const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
     if (targetDocIds.length === 0) return;
     suggestionFromChatRef.current = false;
-    setSuggestionsPage(0);
 
     // localStorage에 저장된 추천 질문 복원 시도
     const savedKey = `${chatKey}_suggestions`;
@@ -437,7 +434,6 @@ export function StudentChatPanel({
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
           setSuggestions(parsed as Suggestion[]);
-          setSuggestionsPage(Math.floor((parsed.length - 1) / 3));
           askedQuestionsRef.current = [];
           return;
         }
@@ -667,7 +663,13 @@ export function StudentChatPanel({
   };
 
   const toggleVoiceMode = () => {
-    if (voiceMode) stopSpeaking();
+    if (voiceMode) {
+      stopSpeaking();
+      podcastNextRef.current = null;
+      autoSpeakRef.current = null;
+      setPodcastMode(false);
+      podcastModeRef.current = false;
+    }
     setVoiceMode(v => !v);
   };
 
@@ -750,13 +752,13 @@ export function StudentChatPanel({
       }
 
       const data = await res.json();
-      if (voiceMode) autoSpeakRef.current = data.answer;
-
       const normalizedAnswer = normalizeInlineListMarkers(
         normalizeDetachedPageRefs(
           collapseNearbyTimestampLists(data.answer ?? "")
         )
       );
+
+      if (voiceMode || podcastMode) autoSpeakRef.current = normalizedAnswer;
 
       setMessages(prev => [
         ...prev,
@@ -771,25 +773,19 @@ export function StudentChatPanel({
       // 추천 질문 처리
       lastAnswerRef.current = data.answer ?? "";
       askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
-      const replacingIndex = clickedIndexRef.current;
-      clickedIndexRef.current = -1;
 
       const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
       const pptSuggestions: string[] = Array.isArray(data.suggested_questions) ? data.suggested_questions : [];
 
       const applyNewSuggestions = (newQuestions: string[]) => {
         const currentSuggestions = suggestionsRef.current;
-        const marked = replacingIndex >= 0
-          ? currentSuggestions.map((s: Suggestion, idx: number) => idx === replacingIndex ? { ...s, isOld: true } : s)
-          : currentSuggestions;
         const newChips = newQuestions.slice(0, 3).map((text, i) => ({
           text,
           category: CATS[i % 3],
           isOld: false,
         })) as Suggestion[];
-        const nextSuggestions = [...marked, ...newChips];
+        const nextSuggestions = [...currentSuggestions, ...newChips];
         setSuggestions(nextSuggestions);
-        setSuggestionsPage(Math.floor((nextSuggestions.length - 1) / 3));
         try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(nextSuggestions)); } catch {}
       };
 
@@ -1256,78 +1252,6 @@ export function StudentChatPanel({
         )}
         <div ref={messagesEndRef} />
       </div>
-
-      {/* 추천 질문 — 채팅 시작 후에만 표시 */}
-      {messages.length > 0 && (() => {
-        const PAGE_SIZE = 3;
-        const totalPages = Math.max(1, Math.ceil(suggestions.length / PAGE_SIZE));
-        const clampedPage = Math.min(suggestionsPage, totalPages - 1);
-        const pageSlice = suggestions.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE);
-        const BORDER_COLORS = ["border-l-blue-400", "border-l-purple-400", "border-l-emerald-400"];
-        return (
-          <div className="shrink-0 px-3 py-3 border-t border-[#e7e9ed] bg-[#f8f9fb]">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[11px] font-medium text-[#99a1af] flex items-center gap-1.5">
-                <span className="text-amber-400 text-xs">✦</span>
-                이런 건 어떠세요?
-              </span>
-              <div className="flex items-center gap-0.5">
-                {totalPages > 1 && (
-                  <>
-                    <button
-                      onClick={() => setSuggestionsPage((p) => Math.max(0, p - 1))}
-                      disabled={clampedPage === 0}
-                      className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
-                    >
-                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                        <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                    </button>
-                    <span className="text-[10px] text-[#c8cdd5] px-0.5">{clampedPage + 1}/{totalPages}</span>
-                    <button
-                      onClick={() => setSuggestionsPage((p) => Math.min(totalPages - 1, p + 1))}
-                      disabled={clampedPage === totalPages - 1}
-                      className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
-                    >
-                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                        <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              {suggestionsLoading
-                ? Array.from({ length: PAGE_SIZE }).map((_, i) => (
-                    <div key={i} className="h-8 rounded-lg bg-[#e7e9ed]/60 animate-pulse" />
-                  ))
-                : pageSlice.map((s, i) => {
-                    const globalIdx = clampedPage * PAGE_SIZE + i;
-                    const borderColor = BORDER_COLORS[i % BORDER_COLORS.length];
-                    return (
-                      <button
-                        key={s.text}
-                        onClick={() => { clickedIndexRef.current = globalIdx; setInputValue(s.text); }}
-                        disabled={isLoading}
-                        className={`w-full flex items-center gap-2.5 pl-3 pr-2.5 py-2.5 rounded-lg border border-l-2 ${borderColor} text-left transition-all disabled:opacity-40 group ${
-                          s.isOld
-                            ? "bg-[#f8f9fb] opacity-50 hover:opacity-70"
-                            : "bg-white hover:border-[#c8cdd5] hover:shadow-sm"
-                        }`}
-                      >
-                        <span className={`text-[12px] flex-1 leading-snug ${s.isOld ? "text-[#99a1af]" : "text-[#414751]"}`}>{s.text}</span>
-                        <svg className="w-3.5 h-3.5 text-[#c8cdd5] group-hover:text-[#155dfc] shrink-0 transition-colors" viewBox="0 0 24 24" fill="none">
-                          <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      </button>
-                    );
-                  })
-              }
-            </div>
-          </div>
-        );
-      })()}
 
       {/* 입력 영역 */}
       <div className="p-3 bg-white flex flex-col gap-2 shrink-0">
