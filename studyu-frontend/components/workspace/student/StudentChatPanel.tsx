@@ -70,6 +70,12 @@ type CachedAudio = { audioBase64: string; words: WordSegment[] };
 
 const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5] as const;
 
+const DEFAULT_INITIAL_QUESTIONS = [
+  "이 자료의 핵심 개념을 설명해줘",
+  "주요 내용들 간의 관계를 분석해줘",
+  "실제로 어떻게 활용할 수 있을까?",
+];
+
 // ── IndexedDB 헬퍼 ───────────────────────────────────────────
 const IDB_NAME  = 'studyu_audio_cache';
 const IDB_STORE = 'audio';
@@ -292,6 +298,7 @@ function injectReferenceTimesIntoAnswer(
 
   return inlineSentences.join("\n");
 }
+
 function renderWithCitations(
   content: string,
   sources: SourceChunk[],
@@ -308,12 +315,6 @@ function renderWithCitations(
     return <span key={i}>{renderText ? renderText(part) : part}</span>;
   });
 }
-
-const DEFAULT_INITIAL_QUESTIONS = [
-  "이 자료의 핵심 개념을 설명해줘",
-  "주요 내용들 간의 관계를 분석해줘",
-  "실제로 어떻게 활용할 수 있을까?",
-];
 
 export function StudentChatPanel({
   activeDocIds,
@@ -340,6 +341,12 @@ export function StudentChatPanel({
     분석: { bg: "bg-purple-50", text: "text-purple-600", border: "border-purple-200" },
     적용: { bg: "bg-green-50",  text: "text-green-600",  border: "border-green-200" },
   };
+
+  // 자료별 채팅 키: 선택된 doc ID 기반 (없으면 노트북 전체)
+  const chatKey = activeDocIds.length > 0
+    ? `studyu_chat_${notebookId}_doc_${[...activeDocIds].sort().join('_')}`
+    : `studyu_chat_${notebookId}`;
+
   const [suggestions, setSuggestions] = useState<Suggestion[]>(() => {
     // 마운트 시 localStorage에서 즉시 복원 (effect 순서 문제 회피)
     try {
@@ -362,17 +369,11 @@ export function StudentChatPanel({
   const suggestionFetchAbortRef = useRef<AbortController | null>(null);
   const suggestionsRef = useRef<Suggestion[]>(suggestions);
   const lastAnswerRef = useRef<string>("");
-  
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  // 자료별 채팅 키: 선택된 doc ID 기반 (없으면 노트북 전체)
-  const chatKey = activeDocIds.length > 0
-    ? `studyu_chat_${notebookId}_doc_${[...activeDocIds].sort().join('_')}`
-    : `studyu_chat_${notebookId}`;
-
   const chatKeyRef = useRef(chatKey);
 
-  // ── 음성 모드 state/ref ────────────────────────────────────
+  // ── 음성 재생 상태 ────────────────────────────────────────
   const [voiceMode,        setVoiceMode]        = useState(false);
   const [podcastMode,      setPodcastMode]      = useState(false);
   const [selectedVoice,    setSelectedVoice]    = useState<VoiceKey>("sarah");
@@ -405,6 +406,19 @@ export function StudentChatPanel({
   const [isRecording, setIsRecording] = useState(false);
   const [sttError,    setSttError]    = useState<string | null>(null);
   const recognitionRef = useRef<any>(null);
+
+  // 항상 최신 값을 ref에 동기화 (stale closure 방지)
+  podcastModeRef.current = podcastMode;
+  messagesRef.current    = messages;
+
+  // 언마운트 시 오디오·마이크 정리
+  useEffect(() => {
+    return () => {
+      stopSpeaking();
+      audioCacheRef.current.clear();
+      recognitionRef.current?.stop();
+    };
+  }, []);
 
   // activeDocIds 변경 시 추천 질문 fetch (localStorage에 없을 때만)
   useEffect(() => {
@@ -452,11 +466,11 @@ export function StudentChatPanel({
     return () => { abort.abort(); };
   }, [activeDocIds.join(","), docs.map(d => d.id).join(",")]);
 
-
   // activeDocIds 변경 시 해당 자료의 채팅 히스토리 로드
   useEffect(() => {
     chatKeyRef.current = chatKey;
     setIsLoaded(false);
+    stopSpeaking();
     const savedMessages = localStorage.getItem(chatKey);
     if (savedMessages) {
       try {
@@ -468,30 +482,66 @@ export function StudentChatPanel({
     } else {
       setMessages([]);
     }
+    setInitialQuestions([...DEFAULT_INITIAL_QUESTIONS]);
     setIsLoaded(true);
   }, [chatKey]);
 
   useEffect(() => {
     suggestionsRef.current = suggestions;
+    if (isLoaded) {
+      try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(suggestions)); } catch {}
+    }
   }, [suggestions]);
 
   useEffect(() => {
     if (isLoaded) {
       localStorage.setItem(chatKeyRef.current, JSON.stringify(messages));
     }
-    
+
     if (messagesEndRef.current) {
       const scrollContainer = messagesEndRef.current.parentElement;
       if (scrollContainer) {
         scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
       }
     }
+    // 음성 모드 자동 재생 처리
+    if (autoSpeakRef.current) {
+      const text = autoSpeakRef.current;
+      autoSpeakRef.current = null;
+      const idx = messages.length - 1;
+      if (messages[idx]?.type === 'ai' && messages[idx]?.content === text) {
+        speakMessage(text, idx);
+      }
+    }
   }, [messages, isLoaded]);
 
-  // 대화 내역 초기화 기능
+  // 목소리 드롭다운 외부 클릭 시 닫기
+  useEffect(() => {
+    if (!voiceDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (voiceDropdownRef.current && !voiceDropdownRef.current.contains(e.target as Node)) {
+        setVoiceDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [voiceDropdownOpen]);
+
+  // 팟캐스트 모드: 재생 종료 후 다음 AI 메시지 자동 재생
+  useEffect(() => {
+    if (speakingMsgIdx !== null || podcastNextRef.current === null) return;
+    const idx = podcastNextRef.current;
+    podcastNextRef.current = null;
+    const msg = messagesRef.current[idx];
+    if (msg?.type === 'ai') speakMessage(msg.content, idx);
+  }, [speakingMsgIdx]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleClearChat = () => {
     if (confirm("대화 내역을 모두 지우시겠습니까?")) {
+      stopSpeaking();
+      audioCacheRef.current.clear();
       setMessages([]);
+      setInitialQuestions([...DEFAULT_INITIAL_QUESTIONS]);
       localStorage.removeItem(chatKeyRef.current);
       localStorage.removeItem(`${chatKeyRef.current}_suggestions`);
     }
@@ -531,9 +581,7 @@ export function StudentChatPanel({
 
     audio.ontimeupdate = () => {
       const t = audio.currentTime;
-      // 진행 바
       if (audio.duration > 0) setAudioProgress(t / audio.duration);
-      // 단어 하이라이팅
       const ws = wordsRef.current;
       if (!ws.length) return;
       let active = 0;
@@ -549,7 +597,6 @@ export function StudentChatPanel({
       setAudioProgress(0);
       wordsRef.current = [];
       URL.revokeObjectURL(url);
-      // 팟캐스트 모드: 다음 AI 메시지 예약
       if (podcastModeRef.current) {
         const msgs = messagesRef.current;
         for (let i = msgIdx + 1; i < msgs.length; i++) {
@@ -568,13 +615,11 @@ export function StudentChatPanel({
 
     const cacheKey = `${selectedVoice}:${text}`;
 
-    // 1. 인메모리 캐시
     const memHit = audioCacheRef.current.get(cacheKey);
     if (memHit) { createAndPlayAudio(memHit.audioBase64, memHit.words, msgIdx); return; }
 
     setLoadingAudioIdx(msgIdx);
 
-    // 2. IndexedDB 캐시
     try {
       const idbHit = await idbGet(cacheKey);
       if (idbHit) {
@@ -584,7 +629,6 @@ export function StudentChatPanel({
       }
     } catch { /* IndexedDB 실패 시 무시하고 API 호출 */ }
 
-    // 3. API 호출
     try {
       const token = await getToken();
       const res = await fetch(`${API}/api/tts/synthesize`, {
@@ -597,7 +641,7 @@ export function StudentChatPanel({
 
       const cached: CachedAudio = { audioBase64: data.audio_base64, words: data.words ?? [] };
       audioCacheRef.current.set(cacheKey, cached);
-      idbSet(cacheKey, cached).catch(() => {}); // fire-and-forget
+      idbSet(cacheKey, cached).catch(() => {});
 
       createAndPlayAudio(data.audio_base64, data.words ?? [], msgIdx);
     } catch {
@@ -673,32 +717,27 @@ export function StudentChatPanel({
     const userMessage = (textOverride ?? inputValue).trim();
     if (!userMessage || isLoading) return;
 
-
     setMessages(prev => [...prev, { type: 'user', content: userMessage }]);
-    setInputValue(''); 
+    if (!textOverride) setInputValue('');
     setIsLoading(true);
 
     try {
-      const token = await getToken();
+      const token        = await getToken();
       const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
 
-      if (targetDocIds.length === 0) {
+      if (targetDocIds.length === 0)
         throw new Error("학습할 소스(문서)가 없습니다. 강사님께 자료 업로드를 요청해 주세요.");
-      }
 
       const res = await fetch(`${API}/api/chat`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
-        },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           doc_ids: targetDocIds,
           question: userMessage,
           model: selectedLLM || "gpt-4o-mini",
           level: selectedDifficulty || "intermediate",
-          session_id: notebookId 
-        })
+          session_id: notebookId,
+        }),
       });
 
       if (!res.ok) {
@@ -719,17 +758,12 @@ export function StudentChatPanel({
         ...prev,
         {
           type: 'ai',
-          content: normalizeInlineListMarkers(
-            normalizeDetachedPageRefs(
-              collapseNearbyTimestampLists(data.answer ?? "")
-            )
-          ),
+          content: normalizedAnswer,
           references: Array.isArray(data.references) ? data.references : [],
           sources: Array.isArray(data.sources) ? data.sources : [],
         },
       ]);
 
-      // 추천 질문 처리
       lastAnswerRef.current = data.answer ?? "";
       askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
 
@@ -749,13 +783,11 @@ export function StudentChatPanel({
       };
 
       if (pptSuggestions.length > 0) {
-        // AI 답변에서 추천 질문이 왔을 때
         suggestionFetchAbortRef.current?.abort();
         suggestionFromChatRef.current = true;
         setSuggestionsLoading(false);
         applyNewSuggestions(pptSuggestions);
       } else {
-        // 추천 질문이 없을 때: /api/chat/suggestions fallback 호출
         const currentTexts = suggestionsRef.current.map((s) => s.text);
         getToken().then((t) =>
           fetch(`${API}/api/chat/suggestions`, {
@@ -786,6 +818,18 @@ export function StudentChatPanel({
     }
   };
 
+  // 초기 질문 클릭 — 나머지를 스레드 맨 앞에 고정 후 전송
+  const handleInitialQuestionClick = (index: number, text: string) => {
+    const remaining = initialQuestions.filter((_, i) => i !== index);
+    setInitialQuestions(remaining);
+    if (remaining.length > 0) {
+      const items = remaining.map(t => ({ text: t, category: '이해' as const }));
+      setMessages(prev => prev.length === 0 ? [{ type: 'suggestions' as const, items } as any] : prev);
+    }
+    handleSendMessage(text);
+  };
+
+  // 스레드 내 추천 질문 클릭 — 해당 항목 제거 후 전송
   const handleSuggestionClick = (msgIndex: number, suggIndex: number, text: string) => {
     setMessages(prev => {
       const next = [...prev];
@@ -803,6 +847,7 @@ export function StudentChatPanel({
     handleSendMessage(text);
   };
 
+  // ── 렌더 ─────────────────────────────────────────────────
   const renderMessageContent = (
     content: string,
     enableTimestampLinks: boolean,
@@ -821,11 +866,6 @@ export function StudentChatPanel({
       return renderPlainText(content);
     }
 
-    // Combined pattern:
-    //   그룹1: [슬라이드 N] 또는 [슬라이드 N, M, ...] (복수 슬라이드 포함)
-    //   그룹2: [출처 N, 페이지 N] 또는 [페이지 N] 등 "페이지 N" 포함 대괄호
-    //   그룹3: 괄호 없이 "페이지 N" 단독
-    //   그룹4+: timestamp ranges
     const combinedPattern = /(\[(\d+)\])|(\[슬라이드[\s\d,~\-~]+\])|(\[[^\]]*페이지\s*(\d+)[^\]]*\])|((?<!\[)(?<!\w)페이지\s*(\d+)(?!\])(?!\w))|(\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?)/g;
     const matches = Array.from(content.matchAll(combinedPattern));
 
@@ -867,7 +907,6 @@ export function StudentChatPanel({
           nodes.push(renderPlainText(matchedText, `cite-raw-${index}`));
         }
       } else if (isSlideRef && onSlideClick) {
-        // [슬라이드 9, 10] 같은 복수 슬라이드 파싱
         const nums = Array.from(matchedText.matchAll(/\d+/g)).map(m => parseInt(m[0], 10));
         if (nums.length === 1) {
           nodes.push(
@@ -882,10 +921,9 @@ export function StudentChatPanel({
             </button>
           );
         } else {
-          // 복수: [슬라이드 9], [슬라이드 10] 버튼으로 분리
           nodes.push(
             <span key={`slide-multi-${index}`}>
-              {nums.map((n, ni) => (
+              {nums.map((n) => (
                 <button
                   key={`slide-${index}-${n}`}
                   type="button"
@@ -951,7 +989,6 @@ export function StudentChatPanel({
           <BotMessageSquare className="w-5 h-5 text-[#155dfc]" />
           <h2 className="text-[14px] font-semibold text-[#1a1d26]">Ask AI</h2>
         </div>
-
         <div className="flex items-center gap-1">
           {voiceMode && (
             <div className="relative" ref={voiceDropdownRef}>
@@ -961,7 +998,10 @@ export function StudentChatPanel({
                 title="목소리 선택"
               >
                 <span>{VOICES.find(v => v.key === selectedVoice)?.label}</span>
-                <svg className={`w-2.5 h-2.5 transition-transform duration-150 ${voiceDropdownOpen ? 'rotate-180' : ''}`} viewBox="0 0 24 24" fill="none">
+                <svg
+                  className={`w-2.5 h-2.5 transition-transform duration-150 ${voiceDropdownOpen ? 'rotate-180' : ''}`}
+                  viewBox="0 0 24 24" fill="none"
+                >
                   <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
               </button>
@@ -971,10 +1011,14 @@ export function StudentChatPanel({
                     <button
                       key={v.key}
                       onClick={() => { setSelectedVoice(v.key); setVoiceDropdownOpen(false); }}
-                      className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-[#f8f9fb] ${selectedVoice === v.key ? 'bg-blue-50' : ''}`}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-[#f8f9fb] ${
+                        selectedVoice === v.key ? 'bg-blue-50' : ''
+                      }`}
                     >
                       <div className="flex-1 min-w-0">
-                        <div className={`text-[12px] font-medium ${selectedVoice === v.key ? 'text-[#155dfc]' : 'text-[#1a1d26]'}`}>{v.label}</div>
+                        <div className={`text-[12px] font-medium ${selectedVoice === v.key ? 'text-[#155dfc]' : 'text-[#1a1d26]'}`}>
+                          {v.label}
+                        </div>
                         <div className="text-[10px] text-[#99a1af]">{v.desc}</div>
                       </div>
                       {selectedVoice === v.key && (
@@ -1044,17 +1088,11 @@ export function StudentChatPanel({
             </div>
             {/* 추천 질문 칩 */}
             <div className="flex flex-col items-end gap-2">
-              {[
-                "이 자료를 요약해줘",
-                "핵심 개념을 설명해줘",
-                "어려운 부분을 쉽게 설명해줘",
-                "중요한 용어를 정리해줘",
-                "퀴즈 문제를 내줘",
-              ].map((q) => (
+              {initialQuestions.map((q, i) => (
                 <button
                   key={q}
-                  onClick={() => { setInputValue(q); }}
-                  className="px-3 py-1.5 rounded-full border border-[#e7e9ed] bg-white text-[12px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-colors text-right"
+                  onClick={() => handleInitialQuestionClick(i, q)}
+                  className="px-4 py-2 rounded-full border border-[#e7e9ed] bg-white text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm text-right"
                 >
                   {q}
                 </button>
@@ -1062,9 +1100,8 @@ export function StudentChatPanel({
             </div>
           </div>
         )}
-        
+
         {messages.map((msg: any, index) => {
-          // ── 추천 질문 그룹 (스레드에 박힌 말풍선) ──────────
           if (msg.type === 'suggestions') {
             return (
               <div key={index} className="flex flex-col items-end gap-2 py-1">
@@ -1089,7 +1126,6 @@ export function StudentChatPanel({
           return (
             <div key={index} className="flex flex-col gap-1">
               <div className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'} items-end gap-1`}>
-                {/* 메시지 버블 */}
                 <div className={`max-w-[82%] px-4 py-3 rounded-2xl text-[14px] leading-relaxed ${
                   msg.type === 'user'
                     ? 'bg-[#155dfc] text-white rounded-tr-sm whitespace-pre-wrap'
@@ -1124,7 +1160,6 @@ export function StudentChatPanel({
                   }
                 </div>
 
-                {/* AI 메시지 재생 버튼 — 음성 모드일 때만 표시 */}
                 {msg.type === 'ai' && voiceMode && (
                   <button
                     onClick={() => speakMessage(msg.content, index)}
@@ -1148,7 +1183,6 @@ export function StudentChatPanel({
                 )}
               </div>
 
-              {/* 재생 진행 바 — 클릭으로 seek 가능 */}
               {msg.type === 'ai' && isPlaying && (
                 <div
                   className="h-[3px] bg-[#e7e9ed] rounded-full overflow-hidden mx-1 cursor-pointer"
@@ -1166,7 +1200,6 @@ export function StudentChatPanel({
                 </div>
               )}
 
-              {/* 재생 속도 컨트롤 — 재생 중인 메시지에만 */}
               {msg.type === 'ai' && isPlaying && (
                 <div className="flex items-center gap-1 pl-1">
                   {SPEED_OPTIONS.map(rate => (
@@ -1185,7 +1218,7 @@ export function StudentChatPanel({
             </div>
           );
         })}
-        
+
         {isLoading && (
           <div className="flex justify-start">
             <div className="max-w-[80%] px-4 py-3 bg-[#f8f9fb] text-[#1a1d26] border border-[#e7e9ed] rounded-2xl rounded-tl-sm flex items-center gap-2">
@@ -1199,30 +1232,47 @@ export function StudentChatPanel({
 
       {/* 입력 영역 */}
       <div className="p-3 bg-white flex flex-col gap-2 shrink-0">
-        <div className="relative flex items-end gap-2 bg-[#f8f9fb] rounded-xl p-1.5 focus-within:ring-2 focus-within:ring-[#155dfc]/20 transition-all border border-[#e7e9ed] focus-within:border-[#155dfc]/30 shadow-sm">
+        {sttError && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg">
+            <svg className="w-3.5 h-3.5 text-red-500 shrink-0" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2"/>
+              <path d="M12 8v4m0 4h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+            <span className="text-[11px] text-red-600 flex-1">{sttError}</span>
+            <button onClick={() => setSttError(null)} className="text-red-400 hover:text-red-600">
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+        <div className={`relative flex items-end gap-2 rounded-xl p-1.5 border shadow-sm transition-all ${
+          isRecording
+            ? 'bg-red-50 border-red-300 ring-2 ring-red-200/50'
+            : 'bg-[#f8f9fb] border-[#e7e9ed] focus-within:ring-2 focus-within:ring-[#155dfc]/20 focus-within:border-[#155dfc]/30'
+        }`}>
           <button className="p-2 text-[#99a1af] hover:text-[#155dfc] hover:bg-white rounded-lg transition-colors shrink-0">
             <Paperclip className="w-4 h-4" />
           </button>
-          
           <textarea
             value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleSendMessage();
-              }
-            }}
+            onChange={e => setInputValue(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
             rows={1}
             className="flex-1 max-h-[100px] min-h-[40px] py-2 bg-transparent text-[#1a1d26] text-[13px] placeholder-[#99a1af] focus:outline-none resize-none self-center"
-            placeholder="학습 내용에 대해 무엇이든 물어보세요..."
+            placeholder={isRecording ? "듣고 있어요... (다시 클릭하면 완료)" : "학습 내용에 대해 무엇이든 물어보세요..."}
           />
-          
           <div className="flex items-center gap-1 shrink-0">
-            <button className="p-2 text-[#99a1af] hover:text-[#155dfc] hover:bg-white rounded-lg transition-colors">
+            <button
+              onClick={handleMicClick}
+              className={`p-2 rounded-lg transition-colors ${
+                isRecording
+                  ? 'text-white bg-red-500 hover:bg-red-600 animate-pulse'
+                  : 'text-[#99a1af] hover:text-[#155dfc] hover:bg-white'
+              }`}
+              title={isRecording ? "클릭하면 완료" : "음성으로 질문하기"}
+            >
               <Mic className="w-4 h-4" />
             </button>
-            <button 
+            <button
               onClick={() => handleSendMessage()}
               disabled={!inputValue.trim()}
               className="p-2 text-white bg-[#155dfc] hover:bg-[#0d4ac4] rounded-lg disabled:opacity-50 disabled:bg-[#99a1af] transition-colors shadow-sm"
