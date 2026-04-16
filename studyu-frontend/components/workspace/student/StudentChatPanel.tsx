@@ -786,6 +786,23 @@ export function StudentChatPanel({
     }
   };
 
+  const handleSuggestionClick = (msgIndex: number, suggIndex: number, text: string) => {
+    setMessages(prev => {
+      const next = [...prev];
+      const msg = next[msgIndex] as any;
+      if (msg?.type !== 'suggestions') return prev;
+      const newItems = msg.items.filter((_: Suggestion, i: number) => i !== suggIndex);
+      if (newItems.length === 0) {
+        next.splice(msgIndex, 1);
+      } else {
+        next[msgIndex] = { type: 'suggestions', items: newItems } as any;
+      }
+      return next;
+    });
+    setSuggestions(prev => prev.filter(s => s.text !== text));
+    handleSendMessage(text);
+  };
+
   const renderMessageContent = (
     content: string,
     enableTimestampLinks: boolean,
@@ -936,21 +953,72 @@ export function StudentChatPanel({
         </div>
 
         <div className="flex items-center gap-1">
-          {messages.length > 0 && (
+          {voiceMode && (
+            <div className="relative" ref={voiceDropdownRef}>
+              <button
+                onClick={() => setVoiceDropdownOpen(o => !o)}
+                className="flex items-center gap-1 px-2 py-1 bg-blue-50 text-[#155dfc] text-[11px] font-medium rounded-full border border-blue-200 hover:bg-blue-100 transition-colors"
+                title="목소리 선택"
+              >
+                <span>{VOICES.find(v => v.key === selectedVoice)?.label}</span>
+                <svg className={`w-2.5 h-2.5 transition-transform duration-150 ${voiceDropdownOpen ? 'rotate-180' : ''}`} viewBox="0 0 24 24" fill="none">
+                  <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+              {voiceDropdownOpen && (
+                <div className="absolute right-0 top-full mt-1.5 w-44 bg-white rounded-xl border border-[#e7e9ed] shadow-lg z-50 overflow-hidden">
+                  {VOICES.map(v => (
+                    <button
+                      key={v.key}
+                      onClick={() => { setSelectedVoice(v.key); setVoiceDropdownOpen(false); }}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-[#f8f9fb] ${selectedVoice === v.key ? 'bg-blue-50' : ''}`}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className={`text-[12px] font-medium ${selectedVoice === v.key ? 'text-[#155dfc]' : 'text-[#1a1d26]'}`}>{v.label}</div>
+                        <div className="text-[10px] text-[#99a1af]">{v.desc}</div>
+                      </div>
+                      {selectedVoice === v.key && (
+                        <svg className="w-3 h-3 text-[#155dfc] shrink-0" viewBox="0 0 24 24" fill="none">
+                          <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <button
+            onClick={toggleVoiceMode}
+            className={`p-1.5 rounded-md transition-colors ${voiceMode ? 'text-[#155dfc] bg-blue-50 hover:bg-blue-100' : 'text-[#99a1af] hover:text-gray-600 hover:bg-gray-100'}`}
+            title={voiceMode ? "음성 모드 끄기" : "음성으로 답변 듣기"}
+          >
+            {voiceMode ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+          </button>
+          {voiceMode && (
             <button
-              onClick={handleClearChat}
-              className="p-1.5 text-[#99a1af] hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
-              title="대화 내역 지우기"
+              onClick={() => setPodcastMode(p => !p)}
+              className={`p-1.5 rounded-md transition-colors ${podcastMode ? 'text-[#155dfc] bg-blue-50 hover:bg-blue-100' : 'text-[#99a1af] hover:text-gray-600 hover:bg-gray-100'}`}
+              title={podcastMode ? "연속 재생 끄기" : "연속 재생 (팟캐스트 모드)"}
             >
-              <Trash2 className="w-4 h-4" />
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
+                <polygon points="5,3 12,8 5,13" fill="currentColor"/>
+                <polygon points="12,3 19,8 12,13" fill="currentColor"/>
+                <line x1="5" y1="17" x2="19" y2="17" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                <line x1="5" y1="20" x2="19" y2="20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
             </button>
           )}
+          {messages.length > 0 && (
+            <>
+              <div className="w-px h-4 bg-[#e7e9ed] mx-0.5" />
+              <button onClick={handleClearChat} className="p-1.5 text-[#99a1af] hover:text-red-500 hover:bg-red-50 rounded-md transition-colors" title="대화 내역 지우기">
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </>
+          )}
           {onClose && (
-            <button
-              onClick={onClose}
-              className="p-1.5 text-[#99a1af] hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
-              title="닫기"
-            >
+            <button onClick={onClose} className="p-1.5 text-[#99a1af] hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors" title="닫기">
               <X className="w-4 h-4" />
             </button>
           )}
@@ -995,42 +1063,125 @@ export function StudentChatPanel({
           </div>
         )}
         
-        {messages.map((msg, index) => {
-          const enrichedContent = msg.content;
+        {messages.map((msg: any, index) => {
+          // ── 추천 질문 그룹 (스레드에 박힌 말풍선) ──────────
+          if (msg.type === 'suggestions') {
+            return (
+              <div key={index} className="flex flex-col items-end gap-2 py-1">
+                {(msg.items as Suggestion[]).map((s, si) => (
+                  <button
+                    key={s.text}
+                    onClick={() => handleSuggestionClick(index, si, s.text)}
+                    disabled={isLoading}
+                    className="px-4 py-2 rounded-full border border-[#e7e9ed] bg-white text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm disabled:opacity-40 text-right max-w-[82%]"
+                  >
+                    {s.text}
+                  </button>
+                ))}
+              </div>
+            );
+          }
+
+          const isPlaying     = speakingMsgIdx === index;
+          const isLoadingThis = loadingAudioIdx === index;
+          const hasWords      = isPlaying && wordsRef.current.length > 0;
 
           return (
-            <div key={index} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className="max-w-[85%] space-y-2">
-                <div
-                  className={`px-4 py-3 rounded-2xl text-[14px] leading-relaxed ${
-                    msg.type === 'user'
-                      ? 'bg-[#155dfc] text-white rounded-tr-sm'
-                      : msg.type === 'system'
-                      ? 'bg-red-50 text-red-600 border border-red-100'
-                      : 'bg-[#f8f9fb] text-[#1a1d26] border border-[#e7e9ed] rounded-tl-sm'
-                  }`}
-                >
-                  {msg.type === 'ai' ? (
-                    <MarkdownPreview
-                      content={enrichedContent}
-                      className="text-[#1a1d26]"
-                      transformText={(text) =>
-                        renderMessageContent(
-                          text,
-                          Boolean(activeSourceId && activeSourceMediaType && onSeekToTimestamp),
-                          msg.sources ?? []
-                        )
-                      }
-                    />
-                  ) : msg.type === 'system' ? (
-                    <span className="whitespace-pre-wrap">{enrichedContent}</span>
-                  ) : renderMessageContent(
-                    enrichedContent,
-                    false,
-                    msg.sources ?? []
-                  )}
+            <div key={index} className="flex flex-col gap-1">
+              <div className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'} items-end gap-1`}>
+                {/* 메시지 버블 */}
+                <div className={`max-w-[82%] px-4 py-3 rounded-2xl text-[14px] leading-relaxed ${
+                  msg.type === 'user'
+                    ? 'bg-[#155dfc] text-white rounded-tr-sm whitespace-pre-wrap'
+                    : msg.type === 'system'
+                    ? 'bg-red-50 text-red-600 border border-red-100 whitespace-pre-wrap'
+                    : `bg-[#f8f9fb] text-[#1a1d26] border rounded-tl-sm transition-colors ${isPlaying ? 'border-[#155dfc]/30 ring-1 ring-[#155dfc]/15' : 'border-[#e7e9ed]'}`
+                }`}>
+                  {msg.type === 'ai' && hasWords
+                    ? wordsRef.current.map((w, wi) => (
+                        <span
+                          key={wi}
+                          className={`transition-colors duration-75 ${wi === currentWordIdx ? 'bg-blue-100 text-[#155dfc] rounded-sm px-0.5 -mx-0.5' : ''}`}
+                        >
+                          {w.text}{' '}
+                        </span>
+                      ))
+                    : msg.type === 'ai'
+                    ? <MarkdownPreview
+                        content={msg.content}
+                        className="text-[#1a1d26]"
+                        transformText={(text) =>
+                          renderMessageContent(
+                            text,
+                            Boolean(activeSourceId && activeSourceMediaType && onSeekToTimestamp),
+                            msg.sources ?? []
+                          )
+                        }
+                      />
+                    : msg.type === 'system'
+                    ? <span className="whitespace-pre-wrap">{msg.content}</span>
+                    : renderMessageContent(msg.content, false, msg.sources ?? [])
+                  }
                 </div>
+
+                {/* AI 메시지 재생 버튼 — 음성 모드일 때만 표시 */}
+                {msg.type === 'ai' && voiceMode && (
+                  <button
+                    onClick={() => speakMessage(msg.content, index)}
+                    className={`p-1.5 rounded-md transition-colors shrink-0 mb-0.5 ${
+                      isPlaying || isLoadingThis ? 'text-[#155dfc]' : 'text-[#c8cdd5] hover:text-[#155dfc] hover:bg-gray-50'
+                    }`}
+                    title={isPlaying ? "재생 중지" : "음성으로 듣기"}
+                  >
+                    {isLoadingThis ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : isPlaying ? (
+                      <span className="flex items-end gap-[2px] w-4 h-3.5">
+                        <span className="w-[2.5px] h-[6px]  bg-[#155dfc] rounded-full animate-bounce" style={{ animationDelay: '0ms',   animationDuration: '0.6s' }} />
+                        <span className="w-[2.5px] h-[12px] bg-[#155dfc] rounded-full animate-bounce" style={{ animationDelay: '150ms', animationDuration: '0.6s' }} />
+                        <span className="w-[2.5px] h-[8px]  bg-[#155dfc] rounded-full animate-bounce" style={{ animationDelay: '300ms', animationDuration: '0.6s' }} />
+                      </span>
+                    ) : (
+                      <Volume2 className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                )}
               </div>
+
+              {/* 재생 진행 바 — 클릭으로 seek 가능 */}
+              {msg.type === 'ai' && isPlaying && (
+                <div
+                  className="h-[3px] bg-[#e7e9ed] rounded-full overflow-hidden mx-1 cursor-pointer"
+                  onClick={e => {
+                    if (!audioRef.current || !audioRef.current.duration) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    audioRef.current.currentTime =
+                      ((e.clientX - rect.left) / rect.width) * audioRef.current.duration;
+                  }}
+                >
+                  <div
+                    className="h-full bg-[#155dfc] rounded-full"
+                    style={{ width: `${audioProgress * 100}%`, transition: 'width 0.1s linear' }}
+                  />
+                </div>
+              )}
+
+              {/* 재생 속도 컨트롤 — 재생 중인 메시지에만 */}
+              {msg.type === 'ai' && isPlaying && (
+                <div className="flex items-center gap-1 pl-1">
+                  {SPEED_OPTIONS.map(rate => (
+                    <button
+                      key={rate}
+                      onClick={() => changeSpeed(rate)}
+                      className={`px-2 py-0.5 text-[10px] font-medium rounded transition-colors ${
+                        playbackRate === rate ? 'bg-[#155dfc] text-white' : 'bg-[#f0f2f5] text-[#99a1af] hover:bg-[#e7e9ed] hover:text-[#414751]'
+                      }`}
+                    >
+                      {rate}x
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}
