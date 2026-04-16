@@ -56,56 +56,6 @@ interface ChatMessage {
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-// ── 음성 목록 ────────────────────────────────────────────────
-const VOICES = [
-  { key: "sarah",  label: "Sarah",  desc: "차분한 여성" },
-  { key: "rachel", label: "Rachel", desc: "명확한 여성" },
-  { key: "josh",   label: "Josh",   desc: "친근한 남성" },
-  { key: "adam",   label: "Adam",   desc: "전문적인 남성" },
-] as const;
-type VoiceKey = typeof VOICES[number]["key"];
-
-type WordSegment = { text: string; start: number; end: number };
-type CachedAudio = { audioBase64: string; words: WordSegment[] };
-
-const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5] as const;
-
-const DEFAULT_INITIAL_QUESTIONS = [
-  "이 자료의 핵심 개념을 설명해줘",
-  "주요 내용들 간의 관계를 분석해줘",
-  "실제로 어떻게 활용할 수 있을까?",
-];
-
-// ── IndexedDB 헬퍼 ───────────────────────────────────────────
-const IDB_NAME  = 'studyu_audio_cache';
-const IDB_STORE = 'audio';
-
-function idbOpen(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_NAME, 1);
-    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror   = () => reject(req.error);
-  });
-}
-async function idbGet(key: string): Promise<CachedAudio | undefined> {
-  const db = await idbOpen();
-  return new Promise(resolve => {
-    const req = db.transaction(IDB_STORE).objectStore(IDB_STORE).get(key);
-    req.onsuccess = () => resolve(req.result ?? undefined);
-    req.onerror   = () => resolve(undefined);
-  });
-}
-async function idbSet(key: string, value: CachedAudio): Promise<void> {
-  const db = await idbOpen();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE, 'readwrite');
-    tx.objectStore(IDB_STORE).put(value, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror    = () => reject(tx.error);
-  });
-}
-
 function formatTimestamp(totalSeconds: number) {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
   const hours = Math.floor(safeSeconds / 3600);
@@ -298,7 +248,6 @@ function injectReferenceTimesIntoAnswer(
 
   return inlineSentences.join("\n");
 }
-
 function renderWithCitations(
   content: string,
   sources: SourceChunk[],
@@ -341,12 +290,6 @@ export function StudentChatPanel({
     분석: { bg: "bg-purple-50", text: "text-purple-600", border: "border-purple-200" },
     적용: { bg: "bg-green-50",  text: "text-green-600",  border: "border-green-200" },
   };
-
-  // 자료별 채팅 키: 선택된 doc ID 기반 (없으면 노트북 전체)
-  const chatKey = activeDocIds.length > 0
-    ? `studyu_chat_${notebookId}_doc_${[...activeDocIds].sort().join('_')}`
-    : `studyu_chat_${notebookId}`;
-
   const [suggestions, setSuggestions] = useState<Suggestion[]>(() => {
     // 마운트 시 localStorage에서 즉시 복원 (effect 순서 문제 회피)
     try {
@@ -363,68 +306,29 @@ export function StudentChatPanel({
     ];
   });
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
-  const [initialQuestions, setInitialQuestions] = useState<string[]>(DEFAULT_INITIAL_QUESTIONS);
+  const [suggestionsPage, setSuggestionsPage] = useState(0);
   const askedQuestionsRef = useRef<string[]>([]);
+  const clickedIndexRef = useRef<number>(-1);
   const suggestionFromChatRef = useRef(false);
   const suggestionFetchAbortRef = useRef<AbortController | null>(null);
   const suggestionsRef = useRef<Suggestion[]>(suggestions);
   const lastAnswerRef = useRef<string>("");
-
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // 자료별 채팅 키: 선택된 doc ID 기반 (없으면 노트북 전체)
+  const chatKey = activeDocIds.length > 0
+    ? `studyu_chat_${notebookId}_doc_${[...activeDocIds].sort().join('_')}`
+    : `studyu_chat_${notebookId}`;
+
   const chatKeyRef = useRef(chatKey);
-
-  // ── 음성 재생 상태 ────────────────────────────────────────
-  const [voiceMode,        setVoiceMode]        = useState(false);
-  const [podcastMode,      setPodcastMode]      = useState(false);
-  const [selectedVoice,    setSelectedVoice]    = useState<VoiceKey>("sarah");
-  const [voiceDropdownOpen, setVoiceDropdownOpen] = useState(false);
-  const voiceDropdownRef = useRef<HTMLDivElement>(null);
-  const [playbackRate,     setPlaybackRate]     = useState<number>(() =>
-    typeof window !== 'undefined'
-      ? parseFloat(localStorage.getItem('studyu_playback_rate') || '1')
-      : 1
-  );
-  const [speakingMsgIdx,   setSpeakingMsgIdx]   = useState<number | null>(null);
-  const [loadingAudioIdx,  setLoadingAudioIdx]  = useState<number | null>(null);
-  const [currentWordIdx,   setCurrentWordIdx]   = useState<number | null>(null);
-  const [audioProgress,    setAudioProgress]    = useState<number>(0);
-
-  const audioRef         = useRef<HTMLAudioElement | null>(null);
-  const wordsRef         = useRef<WordSegment[]>([]);       // 현재 재생 메시지 단어 세그먼트
-  const playbackRateRef  = useRef<number>(
-    typeof window !== 'undefined'
-      ? parseFloat(localStorage.getItem('studyu_playback_rate') || '1')
-      : 1
-  );                                                        // stale closure 방지
-  const audioCacheRef    = useRef<Map<string, CachedAudio>>(new Map()); // 인메모리 캐시
-  const autoSpeakRef     = useRef<string | null>(null);     // 자동 재생 예약 텍스트
-  const podcastModeRef   = useRef(false);
-  const messagesRef      = useRef<any[]>([]);
-  const podcastNextRef   = useRef<number | null>(null);
-
-  // ── STT 상태 ─────────────────────────────────────────────
-  const [isRecording, setIsRecording] = useState(false);
-  const [sttError,    setSttError]    = useState<string | null>(null);
-  const recognitionRef = useRef<any>(null);
-
-  // 항상 최신 값을 ref에 동기화 (stale closure 방지)
-  podcastModeRef.current = podcastMode;
-  messagesRef.current    = messages;
-
-  // 언마운트 시 오디오·마이크 정리
-  useEffect(() => {
-    return () => {
-      stopSpeaking();
-      audioCacheRef.current.clear();
-      recognitionRef.current?.stop();
-    };
-  }, []);
 
   // activeDocIds 변경 시 추천 질문 fetch (localStorage에 없을 때만)
   useEffect(() => {
     const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
     if (targetDocIds.length === 0) return;
     suggestionFromChatRef.current = false;
+    setSuggestionsPage(0);
 
     // localStorage에 저장된 추천 질문 복원 시도
     const savedKey = `${chatKey}_suggestions`;
@@ -434,6 +338,7 @@ export function StudentChatPanel({
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
           setSuggestions(parsed as Suggestion[]);
+          setSuggestionsPage(Math.floor((parsed.length - 1) / 3));
           askedQuestionsRef.current = [];
           return;
         }
@@ -466,11 +371,11 @@ export function StudentChatPanel({
     return () => { abort.abort(); };
   }, [activeDocIds.join(","), docs.map(d => d.id).join(",")]);
 
+
   // activeDocIds 변경 시 해당 자료의 채팅 히스토리 로드
   useEffect(() => {
     chatKeyRef.current = chatKey;
     setIsLoaded(false);
-    stopSpeaking();
     const savedMessages = localStorage.getItem(chatKey);
     if (savedMessages) {
       try {
@@ -482,35 +387,22 @@ export function StudentChatPanel({
     } else {
       setMessages([]);
     }
-    setInitialQuestions([...DEFAULT_INITIAL_QUESTIONS]);
     setIsLoaded(true);
   }, [chatKey]);
 
   useEffect(() => {
     suggestionsRef.current = suggestions;
-    if (isLoaded) {
-      try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(suggestions)); } catch {}
-    }
   }, [suggestions]);
 
   useEffect(() => {
     if (isLoaded) {
       localStorage.setItem(chatKeyRef.current, JSON.stringify(messages));
     }
-
+    
     if (messagesEndRef.current) {
       const scrollContainer = messagesEndRef.current.parentElement;
       if (scrollContainer) {
         scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
-      }
-    }
-    // 음성 모드 자동 재생 처리
-    if (autoSpeakRef.current) {
-      const text = autoSpeakRef.current;
-      autoSpeakRef.current = null;
-      const idx = messages.length - 1;
-      if (messages[idx]?.type === 'ai' && messages[idx]?.content === text) {
-        speakMessage(text, idx);
       }
     }
   }, [messages, isLoaded]);
@@ -530,175 +422,8 @@ export function StudentChatPanel({
     return sessionData.session?.access_token || "";
   };
 
-  // ── 음성 재생 ─────────────────────────────────────────────
-  const stopSpeaking = () => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = '';
-      audioRef.current = null;
-    }
-    wordsRef.current = [];
-    setSpeakingMsgIdx(null);
-    setCurrentWordIdx(null);
-    setLoadingAudioIdx(null);
-  };
-
-  const createAndPlayAudio = (audioBase64: string, words: WordSegment[], msgIdx: number) => {
-    const bytes = Uint8Array.from(atob(audioBase64), c => c.charCodeAt(0));
-    const url   = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
-    const audio = new Audio(url);
-    audio.playbackRate = playbackRateRef.current;
-
-    audioRef.current   = audio;
-    wordsRef.current   = words;
-    setSpeakingMsgIdx(msgIdx);
-    setCurrentWordIdx(words.length > 0 ? 0 : null);
-    setLoadingAudioIdx(null);
-    setAudioProgress(0);
-
-    audio.ontimeupdate = () => {
-      const t = audio.currentTime;
-      // 진행 바
-      if (audio.duration > 0) setAudioProgress(t / audio.duration);
-      // 단어 하이라이팅
-      const ws = wordsRef.current;
-      if (!ws.length) return;
-      let active = 0;
-      for (let i = 0; i < ws.length; i++) {
-        if (ws[i].start <= t) active = i;
-        else break;
-      }
-      setCurrentWordIdx(prev => (prev === active ? prev : active));
-    };
-    const cleanup = () => {
-      setSpeakingMsgIdx(null);
-      setCurrentWordIdx(null);
-      setAudioProgress(0);
-      wordsRef.current = [];
-      URL.revokeObjectURL(url);
-      // 팟캐스트 모드: 다음 AI 메시지 예약
-      if (podcastModeRef.current) {
-        const msgs = messagesRef.current;
-        for (let i = msgIdx + 1; i < msgs.length; i++) {
-          if (msgs[i].type === 'ai') { podcastNextRef.current = i; break; }
-        }
-      }
-    };
-    audio.onended = cleanup;
-    audio.onerror = cleanup;
-    audio.play();
-  };
-
-  const speakMessage = async (text: string, msgIdx: number) => {
-    if (speakingMsgIdx === msgIdx) { stopSpeaking(); return; }
-    stopSpeaking();
-
-    const cacheKey = `${selectedVoice}:${text}`;
-
-    // 1. 인메모리 캐시
-    const memHit = audioCacheRef.current.get(cacheKey);
-    if (memHit) { createAndPlayAudio(memHit.audioBase64, memHit.words, msgIdx); return; }
-
-    setLoadingAudioIdx(msgIdx);
-
-    // 2. IndexedDB 캐시
-    try {
-      const idbHit = await idbGet(cacheKey);
-      if (idbHit) {
-        audioCacheRef.current.set(cacheKey, idbHit);
-        createAndPlayAudio(idbHit.audioBase64, idbHit.words, msgIdx);
-        return;
-      }
-    } catch { /* IndexedDB 실패 시 무시하고 API 호출 */ }
-
-    // 3. API 호출
-    try {
-      const token = await getToken();
-      const res = await fetch(`${API}/api/tts/synthesize`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ text, voice: selectedVoice }),
-      });
-      if (!res.ok) throw new Error("TTS 생성 실패");
-      const data = await res.json();
-
-      const cached: CachedAudio = { audioBase64: data.audio_base64, words: data.words ?? [] };
-      audioCacheRef.current.set(cacheKey, cached);
-      idbSet(cacheKey, cached).catch(() => {}); // fire-and-forget
-
-      createAndPlayAudio(data.audio_base64, data.words ?? [], msgIdx);
-    } catch {
-      setLoadingAudioIdx(null);
-    }
-  };
-
-  const changeSpeed = (rate: number) => {
-    setPlaybackRate(rate);
-    playbackRateRef.current = rate;
-    if (audioRef.current) audioRef.current.playbackRate = rate;
-    localStorage.setItem('studyu_playback_rate', String(rate));
-  };
-
-  const toggleVoiceMode = () => {
-    if (voiceMode) {
-      stopSpeaking();
-      podcastNextRef.current = null;
-      autoSpeakRef.current = null;
-      setPodcastMode(false);
-      podcastModeRef.current = false;
-    }
-    setVoiceMode(v => !v);
-  };
-
-  // ── STT (음성 입력, Web Speech API) ──────────────────────
-  const handleMicClick = () => {
-    setSttError(null);
-
-    if (isRecording) {
-      recognitionRef.current?.stop();
-      return;
-    }
-
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setSttError("이 브라우저는 음성 인식을 지원하지 않습니다. Chrome 또는 Edge를 사용해주세요.");
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'ko-KR';
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
-    recognition.onstart  = () => setIsRecording(true);
-    recognition.onend    = () => setIsRecording(false);
-
-    recognition.onresult = (e: any) => {
-      const text = e.results[0]?.[0]?.transcript?.trim();
-      if (text) {
-        setInputValue(text);
-      } else {
-        setSttError("인식된 내용이 없어요. 다시 시도해 보세요.");
-      }
-    };
-
-    recognition.onerror = (e: any) => {
-      if (e.error === 'not-allowed') {
-        setSttError("마이크 접근 권한이 필요합니다.");
-      } else if (e.error !== 'no-speech') {
-        setSttError("음성 인식 중 오류가 발생했습니다.");
-      }
-    };
-
-    recognitionRef.current = recognition;
-    recognition.start();
-  };
-
-  // ── 채팅 전송 ─────────────────────────────────────────────
-  const handleSendMessage = async (textOverride?: string) => {
-    const userMessage = (textOverride ?? inputValue).trim();
-    if (!userMessage || isLoading) return;
+  const handleSendMessage = async () => {
+    if (!inputValue.trim() || isLoading) return;
 
     const userMessage = inputValue.trim();
     setMessages(prev => [...prev, { type: 'user', content: userMessage }]);
@@ -734,19 +459,15 @@ export function StudentChatPanel({
       }
 
       const data = await res.json();
-      const normalizedAnswer = normalizeInlineListMarkers(
-        normalizeDetachedPageRefs(
-          collapseNearbyTimestampLists(data.answer ?? "")
-        )
-      );
-
-      if (voiceMode || podcastMode) autoSpeakRef.current = normalizedAnswer;
-
       setMessages(prev => [
         ...prev,
         {
           type: 'ai',
-          content: normalizedAnswer,
+          content: normalizeInlineListMarkers(
+            normalizeDetachedPageRefs(
+              collapseNearbyTimestampLists(data.answer ?? "")
+            )
+          ),
           references: Array.isArray(data.references) ? data.references : [],
           sources: Array.isArray(data.sources) ? data.sources : [],
         },
@@ -755,19 +476,25 @@ export function StudentChatPanel({
       // 추천 질문 처리
       lastAnswerRef.current = data.answer ?? "";
       askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
+      const replacingIndex = clickedIndexRef.current;
+      clickedIndexRef.current = -1;
 
       const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
       const pptSuggestions: string[] = Array.isArray(data.suggested_questions) ? data.suggested_questions : [];
 
       const applyNewSuggestions = (newQuestions: string[]) => {
         const currentSuggestions = suggestionsRef.current;
+        const marked = replacingIndex >= 0
+          ? currentSuggestions.map((s: Suggestion, idx: number) => idx === replacingIndex ? { ...s, isOld: true } : s)
+          : currentSuggestions;
         const newChips = newQuestions.slice(0, 3).map((text, i) => ({
           text,
           category: CATS[i % 3],
           isOld: false,
         })) as Suggestion[];
-        const nextSuggestions = [...currentSuggestions, ...newChips];
+        const nextSuggestions = [...marked, ...newChips];
         setSuggestions(nextSuggestions);
+        setSuggestionsPage(Math.floor((nextSuggestions.length - 1) / 3));
         try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(nextSuggestions)); } catch {}
       };
 
@@ -809,37 +536,6 @@ export function StudentChatPanel({
     }
   };
 
-  // 초기 질문 클릭 — 나머지를 스레드 맨 앞에 고정 후 전송
-  const handleInitialQuestionClick = (index: number, text: string) => {
-    const remaining = initialQuestions.filter((_, i) => i !== index);
-    setInitialQuestions(remaining);
-    if (remaining.length > 0) {
-      const items = remaining.map(t => ({ text: t, category: '이해' as const }));
-      setMessages(prev => prev.length === 0 ? [{ type: 'suggestions' as const, items } as any] : prev);
-    }
-    handleSendMessage(text);
-  };
-
-  // 스레드 내 추천 질문 클릭 — 해당 항목 제거 후 전송
-  const handleSuggestionClick = (msgIndex: number, suggIndex: number, text: string) => {
-    setMessages(prev => {
-      const next = [...prev];
-      const msg = next[msgIndex] as any;
-      if (msg?.type !== 'suggestions') return prev;
-      const newItems = msg.items.filter((_: Suggestion, i: number) => i !== suggIndex);
-      if (newItems.length === 0) {
-        next.splice(msgIndex, 1);
-      } else {
-        next[msgIndex] = { type: 'suggestions', items: newItems } as any;
-      }
-      return next;
-    });
-    // 캐시에서도 제거해서 다음 스냅샷에 중복 방지
-    setSuggestions(prev => prev.filter(s => s.text !== text));
-    handleSendMessage(text);
-  };
-
-  // ── 렌더 ─────────────────────────────────────────────────
   const renderMessageContent = (
     content: string,
     enableTimestampLinks: boolean,
@@ -1048,95 +744,13 @@ export function StudentChatPanel({
             </div>
           </div>
         )}
-
-        {messages.map((msg: any, index) => {
-          // ── 추천 질문 그룹 (스레드에 박힌 말풍선) ──────────
-          if (msg.type === 'suggestions') {
-            return (
-              <div key={index} className="flex flex-col items-end gap-2 py-1">
-                {(msg.items as Suggestion[]).map((s, si) => (
-                  <button
-                    key={s.text}
-                    onClick={() => handleSuggestionClick(index, si, s.text)}
-                    disabled={isLoading}
-                    className="px-4 py-2 rounded-full border border-[#e7e9ed] bg-white text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm disabled:opacity-40 text-right max-w-[82%]"
-                  >
-                    {s.text}
-                  </button>
-                ))}
-              </div>
-            );
-          }
-
-          const isPlaying     = speakingMsgIdx === index;
-          const isLoadingThis = loadingAudioIdx === index;
-          const hasWords      = isPlaying && wordsRef.current.length > 0;
+        
+        {messages.map((msg, index) => {
+          const enrichedContent = msg.content;
 
           return (
-            <div key={index} className="flex flex-col gap-1">
-              <div className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'} items-end gap-1`}>
-                {/* 메시지 버블 */}
-                <div className={`max-w-[82%] px-4 py-3 rounded-2xl text-[14px] leading-relaxed ${
-                  msg.type === 'user'
-                    ? 'bg-[#155dfc] text-white rounded-tr-sm whitespace-pre-wrap'
-                    : msg.type === 'system'
-                    ? 'bg-red-50 text-red-600 border border-red-100 whitespace-pre-wrap'
-                    : `bg-[#f8f9fb] text-[#1a1d26] border rounded-tl-sm transition-colors ${isPlaying ? 'border-[#155dfc]/30 ring-1 ring-[#155dfc]/15' : 'border-[#e7e9ed]'}`
-                }`}>
-                  {/* AI 메시지: 재생 중이면 단어 단위 하이라이팅 */}
-                  {msg.type === 'ai' && hasWords
-                    ? wordsRef.current.map((w, wi) => (
-                        <span
-                          key={wi}
-                          className={`transition-colors duration-75 ${wi === currentWordIdx ? 'bg-blue-100 text-[#155dfc] rounded-sm px-0.5 -mx-0.5' : ''}`}
-                        >
-                          {w.text}{' '}
-                        </span>
-                      ))
-                    : msg.type === 'ai'
-                    ? <MarkdownPreview
-                        content={msg.content}
-                        className="text-[#1a1d26]"
-                        transformText={(text) =>
-                          renderMessageContent(
-                            text,
-                            Boolean(activeSourceId && activeSourceMediaType && onSeekToTimestamp),
-                            msg.sources ?? []
-                          )
-                        }
-                      />
-                    : msg.type === 'system'
-                    ? <span className="whitespace-pre-wrap">{msg.content}</span>
-                    : renderMessageContent(msg.content, false, msg.sources ?? [])
-                  }
-                </div>
-
-                {/* AI 메시지 재생 버튼 — 음성 모드일 때만 표시 */}
-                {msg.type === 'ai' && voiceMode && (
-                  <button
-                    onClick={() => speakMessage(msg.content, index)}
-                    className={`p-1.5 rounded-md transition-colors shrink-0 mb-0.5 ${
-                      isPlaying || isLoadingThis ? 'text-[#155dfc]' : 'text-[#c8cdd5] hover:text-[#155dfc] hover:bg-gray-50'
-                    }`}
-                    title={isPlaying ? "재생 중지" : "음성으로 듣기"}
-                  >
-                    {isLoadingThis ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : isPlaying ? (
-                      <span className="flex items-end gap-[2px] w-4 h-3.5">
-                        <span className="w-[2.5px] h-[6px]  bg-[#155dfc] rounded-full animate-bounce" style={{ animationDelay: '0ms',   animationDuration: '0.6s' }} />
-                        <span className="w-[2.5px] h-[12px] bg-[#155dfc] rounded-full animate-bounce" style={{ animationDelay: '150ms', animationDuration: '0.6s' }} />
-                        <span className="w-[2.5px] h-[8px]  bg-[#155dfc] rounded-full animate-bounce" style={{ animationDelay: '300ms', animationDuration: '0.6s' }} />
-                      </span>
-                    ) : (
-                      <Volume2 className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                )}
-              </div>
-
-              {/* 재생 진행 바 — 클릭으로 seek 가능 */}
-              {msg.type === 'ai' && isPlaying && (
+            <div key={index} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className="max-w-[85%] space-y-2">
                 <div
                   className={`px-4 py-3 rounded-2xl text-[14px] leading-relaxed ${
                     msg.type === 'user'
@@ -1181,6 +795,78 @@ export function StudentChatPanel({
         )}
         <div ref={messagesEndRef} />
       </div>
+
+      {/* 추천 질문 — 채팅 시작 후에만 표시 */}
+      {messages.length > 0 && (() => {
+        const PAGE_SIZE = 3;
+        const totalPages = Math.max(1, Math.ceil(suggestions.length / PAGE_SIZE));
+        const clampedPage = Math.min(suggestionsPage, totalPages - 1);
+        const pageSlice = suggestions.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE);
+        const BORDER_COLORS = ["border-l-blue-400", "border-l-purple-400", "border-l-emerald-400"];
+        return (
+          <div className="shrink-0 px-3 py-3 border-t border-[#e7e9ed] bg-[#f8f9fb]">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[11px] font-medium text-[#99a1af] flex items-center gap-1.5">
+                <span className="text-amber-400 text-xs">✦</span>
+                이런 건 어떠세요?
+              </span>
+              <div className="flex items-center gap-0.5">
+                {totalPages > 1 && (
+                  <>
+                    <button
+                      onClick={() => setSuggestionsPage((p) => Math.max(0, p - 1))}
+                      disabled={clampedPage === 0}
+                      className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
+                    >
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+                        <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </button>
+                    <span className="text-[10px] text-[#c8cdd5] px-0.5">{clampedPage + 1}/{totalPages}</span>
+                    <button
+                      onClick={() => setSuggestionsPage((p) => Math.min(totalPages - 1, p + 1))}
+                      disabled={clampedPage === totalPages - 1}
+                      className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
+                    >
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+                        <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              {suggestionsLoading
+                ? Array.from({ length: PAGE_SIZE }).map((_, i) => (
+                    <div key={i} className="h-8 rounded-lg bg-[#e7e9ed]/60 animate-pulse" />
+                  ))
+                : pageSlice.map((s, i) => {
+                    const globalIdx = clampedPage * PAGE_SIZE + i;
+                    const borderColor = BORDER_COLORS[i % BORDER_COLORS.length];
+                    return (
+                      <button
+                        key={s.text}
+                        onClick={() => { clickedIndexRef.current = globalIdx; setInputValue(s.text); }}
+                        disabled={isLoading}
+                        className={`w-full flex items-center gap-2.5 pl-3 pr-2.5 py-2.5 rounded-lg border border-l-2 ${borderColor} text-left transition-all disabled:opacity-40 group ${
+                          s.isOld
+                            ? "bg-[#f8f9fb] opacity-50 hover:opacity-70"
+                            : "bg-white hover:border-[#c8cdd5] hover:shadow-sm"
+                        }`}
+                      >
+                        <span className={`text-[12px] flex-1 leading-snug ${s.isOld ? "text-[#99a1af]" : "text-[#414751]"}`}>{s.text}</span>
+                        <svg className="w-3.5 h-3.5 text-[#c8cdd5] group-hover:text-[#155dfc] shrink-0 transition-colors" viewBox="0 0 24 24" fill="none">
+                          <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </button>
+                    );
+                  })
+              }
+            </div>
+          </div>
+        );
+      })()}
 
       {/* 입력 영역 */}
       <div className="p-3 bg-white flex flex-col gap-2 shrink-0">
