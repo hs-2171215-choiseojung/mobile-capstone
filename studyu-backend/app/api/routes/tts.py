@@ -113,11 +113,12 @@ async def synthesize(
             },
             json={
                 "text": body.text,
-                "model_id": "eleven_multilingual_v2",
+                # eleven_turbo_v2_5: 저지연 모델, 한국어 지원, v2 대비 ~2~3배 빠름
+                "model_id": "eleven_turbo_v2_5",
                 "voice_settings": {
                     "stability": 0.45,
                     "similarity_boost": 0.80,
-                    "style": 0.2,
+                    "style": 0.0,   # turbo 모델은 style=0 권장 (지연 감소)
                 },
             },
         )

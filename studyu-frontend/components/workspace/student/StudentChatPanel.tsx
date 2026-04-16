@@ -70,10 +70,31 @@ type CachedAudio = { audioBase64: string; words: WordSegment[] };
 
 const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5] as const;
 
+const MAX_TTS_CHARS = 1500;
+
+/** TTS 전송 전 마크다운 기호 제거 + 길이 제한 */
+function prepareTtsText(raw: string): string {
+  return raw
+    .replace(/#{1,6}\s*/g, '')                        // ## 헤더
+    .replace(/\*\*([^*]+)\*\*/g, '$1')                // **굵게**
+    .replace(/\*([^*]+)\*/g, '$1')                    // *기울임*
+    .replace(/`{1,3}[\s\S]*?`{1,3}/g, '')             // `코드`
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')          // [링크](url)
+    .replace(/^\s*[-*+]\s+/gm, '')                    // - 목록
+    .replace(/^\s*\d+\.\s+/gm, '')                    // 1. 번호 목록
+    .replace(/\[슬라이드[^\]]*\]/g, '')               // [슬라이드 N] 참조
+    .replace(/\[출처[^\]]*\]/g, '')                   // [출처 N] 참조
+    .replace(/페이지\s*\d+/g, '')                     // 페이지 N
+    .replace(/\[\d+\]/g, '')                          // [1] 인용
+    .replace(/\n{3,}/g, '\n\n')                       // 연속 빈 줄
+    .trim()
+    .slice(0, MAX_TTS_CHARS);
+}
+
 const DEFAULT_INITIAL_QUESTIONS = [
-  "이 자료의 핵심 개념을 설명해줘",
-  "주요 내용들 간의 관계를 분석해줘",
-  "실제로 어떻게 활용할 수 있을까?",
+  "이 자료 요약해줘.",
+  "핵심 개념이 뭐야?",
+  "어떤 부분이 제일 중요해?",
 ];
 
 // ── IndexedDB 헬퍼 ───────────────────────────────────────────
@@ -336,11 +357,6 @@ export function StudentChatPanel({
   const [isLoading, setIsLoading] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
   interface Suggestion { text: string; category: "이해" | "분석" | "적용"; isOld?: boolean; }
-  const CATEGORY_STYLE: Record<string, { bg: string; text: string; border: string }> = {
-    이해: { bg: "bg-blue-50",   text: "text-blue-600",  border: "border-blue-200" },
-    분석: { bg: "bg-purple-50", text: "text-purple-600", border: "border-purple-200" },
-    적용: { bg: "bg-green-50",  text: "text-green-600",  border: "border-green-200" },
-  };
 
   // 자료별 채팅 키: 선택된 doc ID 기반 (없으면 노트북 전체)
   const chatKey = activeDocIds.length > 0
@@ -357,9 +373,9 @@ export function StudentChatPanel({
       }
     } catch {}
     return [
-      { text: "이 자료의 핵심 개념을 설명해줘", category: "이해" },
-      { text: "주요 내용들 간의 관계를 분석해줘", category: "분석" },
-      { text: "실제로 어떻게 활용할 수 있을까?", category: "적용" },
+      { text: "이 자료 요약해줘.", category: "이해" },
+      { text: "핵심 개념이 뭐야?", category: "분석" },
+      { text: "어떤 부분이 제일 중요해?", category: "적용" },
     ];
   });
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
@@ -386,7 +402,6 @@ export function StudentChatPanel({
   );
   const [speakingMsgIdx,   setSpeakingMsgIdx]   = useState<number | null>(null);
   const [loadingAudioIdx,  setLoadingAudioIdx]  = useState<number | null>(null);
-  const [currentWordIdx,   setCurrentWordIdx]   = useState<number | null>(null);
   const [audioProgress,    setAudioProgress]    = useState<number>(0);
 
   const audioRef         = useRef<HTMLAudioElement | null>(null);
@@ -401,6 +416,8 @@ export function StudentChatPanel({
   const podcastModeRef   = useRef(false);
   const messagesRef      = useRef<any[]>([]);
   const podcastNextRef   = useRef<number | null>(null);
+  // in-flight TTS fetch가 도착했을 때 대상이 바뀌었으면 버리기 위한 토큰
+  const speakTargetRef   = useRef<number | null>(null);
 
   // ── STT 상태 ─────────────────────────────────────────────
   const [isRecording, setIsRecording] = useState(false);
@@ -504,12 +521,12 @@ export function StudentChatPanel({
         scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
       }
     }
-    // 음성 모드 자동 재생 처리
+    // 음성 모드 자동 재생 처리 — suggestions 메시지가 뒤에 붙어도 마지막 AI 메시지를 정확히 찾음
     if (autoSpeakRef.current) {
       const text = autoSpeakRef.current;
       autoSpeakRef.current = null;
-      const idx = messages.length - 1;
-      if (messages[idx]?.type === 'ai' && messages[idx]?.content === text) {
+      const idx = [...messages].map((m, i) => ({ m, i })).reverse().find(({ m }) => m.type === 'ai')?.i ?? -1;
+      if (idx >= 0 && messages[idx]?.content === text) {
         speakMessage(text, idx);
       }
     }
@@ -542,6 +559,12 @@ export function StudentChatPanel({
       audioCacheRef.current.clear();
       setMessages([]);
       setInitialQuestions([...DEFAULT_INITIAL_QUESTIONS]);
+      setSuggestions([
+        { text: "이 자료 요약해줘.", category: "이해" },
+        { text: "핵심 개념이 뭐야?", category: "분석" },
+        { text: "어떤 부분이 제일 중요해?", category: "적용" },
+      ]);
+      askedQuestionsRef.current = [];
       localStorage.removeItem(chatKeyRef.current);
       localStorage.removeItem(`${chatKeyRef.current}_suggestions`);
     }
@@ -555,6 +578,7 @@ export function StudentChatPanel({
 
   // ── 음성 재생 ─────────────────────────────────────────────
   const stopSpeaking = () => {
+    speakTargetRef.current = null;  // in-flight fetch 무효화
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.src = '';
@@ -562,7 +586,6 @@ export function StudentChatPanel({
     }
     wordsRef.current = [];
     setSpeakingMsgIdx(null);
-    setCurrentWordIdx(null);
     setLoadingAudioIdx(null);
   };
 
@@ -575,25 +598,14 @@ export function StudentChatPanel({
     audioRef.current   = audio;
     wordsRef.current   = words;
     setSpeakingMsgIdx(msgIdx);
-    setCurrentWordIdx(words.length > 0 ? 0 : null);
     setLoadingAudioIdx(null);
     setAudioProgress(0);
 
     audio.ontimeupdate = () => {
-      const t = audio.currentTime;
-      if (audio.duration > 0) setAudioProgress(t / audio.duration);
-      const ws = wordsRef.current;
-      if (!ws.length) return;
-      let active = 0;
-      for (let i = 0; i < ws.length; i++) {
-        if (ws[i].start <= t) active = i;
-        else break;
-      }
-      setCurrentWordIdx(prev => (prev === active ? prev : active));
+      if (audio.duration > 0) setAudioProgress(audio.currentTime / audio.duration);
     };
     const cleanup = () => {
       setSpeakingMsgIdx(null);
-      setCurrentWordIdx(null);
       setAudioProgress(0);
       wordsRef.current = [];
       URL.revokeObjectURL(url);
@@ -611,33 +623,50 @@ export function StudentChatPanel({
 
   const speakMessage = async (text: string, msgIdx: number) => {
     if (speakingMsgIdx === msgIdx) { stopSpeaking(); return; }
-    stopSpeaking();
 
-    const cacheKey = `${selectedVoice}:${text}`;
+    // 팟캐스트 대기 중인 다음 재생을 먼저 취소한 후 현재 오디오 정지
+    // (stopSpeaking이 setSpeakingMsgIdx(null)을 호출해 팟캐스트 effect를 유발하기 전에
+    //  podcastNextRef를 null로 만들어야 effect가 중복 재생을 하지 않음)
+    podcastNextRef.current = null;
+    stopSpeaking();                    // 내부에서 speakTargetRef = null 처리
+    speakTargetRef.current = msgIdx;   // stopSpeaking 이후에 새 target 설정
 
+    const ttsText = prepareTtsText(text);
+    const cacheKey = `${selectedVoice}:${ttsText}`;
+
+    // 메모리 캐시 히트
     const memHit = audioCacheRef.current.get(cacheKey);
-    if (memHit) { createAndPlayAudio(memHit.audioBase64, memHit.words, msgIdx); return; }
+    if (memHit) {
+      if (speakTargetRef.current !== msgIdx) return;
+      createAndPlayAudio(memHit.audioBase64, memHit.words, msgIdx);
+      return;
+    }
 
     setLoadingAudioIdx(msgIdx);
 
+    // IndexedDB 캐시 히트
     try {
       const idbHit = await idbGet(cacheKey);
       if (idbHit) {
+        if (speakTargetRef.current !== msgIdx) return;  // 그 사이 다른 재생 요청이 왔음
         audioCacheRef.current.set(cacheKey, idbHit);
         createAndPlayAudio(idbHit.audioBase64, idbHit.words, msgIdx);
         return;
       }
     } catch { /* IndexedDB 실패 시 무시하고 API 호출 */ }
 
+    // API 호출
     try {
       const token = await getToken();
       const res = await fetch(`${API}/api/tts/synthesize`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ text, voice: selectedVoice }),
+        body: JSON.stringify({ text: ttsText, voice: selectedVoice }),
       });
       if (!res.ok) throw new Error("TTS 생성 실패");
       const data = await res.json();
+
+      if (speakTargetRef.current !== msgIdx) return;  // fetch 완료 전에 다른 요청이 왔음
 
       const cached: CachedAudio = { audioBase64: data.audio_base64, words: data.words ?? [] };
       audioCacheRef.current.set(cacheKey, cached);
@@ -645,7 +674,10 @@ export function StudentChatPanel({
 
       createAndPlayAudio(data.audio_base64, data.words ?? [], msgIdx);
     } catch {
-      setLoadingAudioIdx(null);
+      if (speakTargetRef.current === msgIdx) {
+        setLoadingAudioIdx(null);
+        setSttError("음성 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+      }
     }
   };
 
@@ -771,15 +803,18 @@ export function StudentChatPanel({
       const pptSuggestions: string[] = Array.isArray(data.suggested_questions) ? data.suggested_questions : [];
 
       const applyNewSuggestions = (newQuestions: string[]) => {
-        const currentSuggestions = suggestionsRef.current;
         const newChips = newQuestions.slice(0, 3).map((text, i) => ({
           text,
           category: CATS[i % 3],
           isOld: false,
         })) as Suggestion[];
-        const nextSuggestions = [...currentSuggestions, ...newChips];
+        const nextSuggestions = [...suggestionsRef.current, ...newChips];
         setSuggestions(nextSuggestions);
         try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(nextSuggestions)); } catch {}
+        // 스레드에 추천 질문 칩 추가
+        if (newChips.length > 0) {
+          setMessages(prev => [...prev, { type: 'suggestions', items: newChips } as any]);
+        }
       };
 
       if (pptSuggestions.length > 0) {
@@ -1041,7 +1076,16 @@ export function StudentChatPanel({
           </button>
           {voiceMode && (
             <button
-              onClick={() => setPodcastMode(p => !p)}
+              onClick={() => {
+                  if (podcastMode) {
+                    // 즉시 ref 업데이트: 렌더 전에 오디오 cleanup이 실행돼도 다음 재생 안 함
+                    podcastModeRef.current = false;
+                    podcastNextRef.current = null;
+                  } else {
+                    podcastModeRef.current = true;
+                  }
+                  setPodcastMode(p => !p);
+                }}
               className={`p-1.5 rounded-md transition-colors ${podcastMode ? 'text-[#155dfc] bg-blue-50 hover:bg-blue-100' : 'text-[#99a1af] hover:text-gray-600 hover:bg-gray-100'}`}
               title={podcastMode ? "연속 재생 끄기" : "연속 재생 (팟캐스트 모드)"}
             >
@@ -1092,7 +1136,8 @@ export function StudentChatPanel({
                 <button
                   key={q}
                   onClick={() => handleInitialQuestionClick(i, q)}
-                  className="px-4 py-2 rounded-full border border-[#e7e9ed] bg-white text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm text-right"
+                  disabled={isLoading}
+                  className="px-4 py-2 rounded-full border border-[#e7e9ed] bg-white text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm text-right disabled:opacity-40"
                 >
                   {q}
                 </button>
@@ -1121,7 +1166,6 @@ export function StudentChatPanel({
 
           const isPlaying     = speakingMsgIdx === index;
           const isLoadingThis = loadingAudioIdx === index;
-          const hasWords      = isPlaying && wordsRef.current.length > 0;
 
           return (
             <div key={index} className="flex flex-col gap-1">
@@ -1133,16 +1177,7 @@ export function StudentChatPanel({
                     ? 'bg-red-50 text-red-600 border border-red-100 whitespace-pre-wrap'
                     : `bg-[#f8f9fb] text-[#1a1d26] border rounded-tl-sm transition-colors ${isPlaying ? 'border-[#155dfc]/30 ring-1 ring-[#155dfc]/15' : 'border-[#e7e9ed]'}`
                 }`}>
-                  {msg.type === 'ai' && hasWords
-                    ? wordsRef.current.map((w, wi) => (
-                        <span
-                          key={wi}
-                          className={`transition-colors duration-75 ${wi === currentWordIdx ? 'bg-blue-100 text-[#155dfc] rounded-sm px-0.5 -mx-0.5' : ''}`}
-                        >
-                          {w.text}{' '}
-                        </span>
-                      ))
-                    : msg.type === 'ai'
+                  {msg.type === 'ai'
                     ? <MarkdownPreview
                         content={msg.content}
                         className="text-[#1a1d26]"
@@ -1182,6 +1217,7 @@ export function StudentChatPanel({
                   </button>
                 )}
               </div>
+
 
               {msg.type === 'ai' && isPlaying && (
                 <div
