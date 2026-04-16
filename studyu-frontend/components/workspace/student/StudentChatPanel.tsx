@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
-import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2, X, Volume2, VolumeX } from 'lucide-react';
+import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2, X } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import MarkdownPreview from '@/components/workspace/MarkdownPreview';
 
@@ -515,33 +515,10 @@ export function StudentChatPanel({
     }
   }, [messages, isLoaded]);
 
-  // 목소리 드롭다운 외부 클릭 시 닫기
-  useEffect(() => {
-    if (!voiceDropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (voiceDropdownRef.current && !voiceDropdownRef.current.contains(e.target as Node)) {
-        setVoiceDropdownOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [voiceDropdownOpen]);
-
-  // 팟캐스트 모드: 재생 종료 후 다음 AI 메시지 자동 재생
-  useEffect(() => {
-    if (speakingMsgIdx !== null || podcastNextRef.current === null) return;
-    const idx = podcastNextRef.current;
-    podcastNextRef.current = null;
-    const msg = messagesRef.current[idx];
-    if (msg?.type === 'ai') speakMessage(msg.content, idx);
-  }, [speakingMsgIdx]); // eslint-disable-line react-hooks/exhaustive-deps
-
+  // 대화 내역 초기화 기능
   const handleClearChat = () => {
     if (confirm("대화 내역을 모두 지우시겠습니까?")) {
-      stopSpeaking();
-      audioCacheRef.current.clear();
       setMessages([]);
-      setInitialQuestions([...DEFAULT_INITIAL_QUESTIONS]);
       localStorage.removeItem(chatKeyRef.current);
       localStorage.removeItem(`${chatKeyRef.current}_suggestions`);
     }
@@ -723,27 +700,32 @@ export function StudentChatPanel({
     const userMessage = (textOverride ?? inputValue).trim();
     if (!userMessage || isLoading) return;
 
+    const userMessage = inputValue.trim();
     setMessages(prev => [...prev, { type: 'user', content: userMessage }]);
-    if (!textOverride) setInputValue('');
+    setInputValue(''); 
     setIsLoading(true);
 
     try {
-      const token        = await getToken();
+      const token = await getToken();
       const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
 
-      if (targetDocIds.length === 0)
+      if (targetDocIds.length === 0) {
         throw new Error("학습할 소스(문서)가 없습니다. 강사님께 자료 업로드를 요청해 주세요.");
+      }
 
       const res = await fetch(`${API}/api/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
         body: JSON.stringify({
           doc_ids: targetDocIds,
           question: userMessage,
           model: selectedLLM || "gpt-4o-mini",
           level: selectedDifficulty || "intermediate",
-          session_id: notebookId,
-        }),
+          session_id: notebookId 
+        })
       });
 
       if (!res.ok) {
@@ -1006,80 +988,23 @@ export function StudentChatPanel({
           <BotMessageSquare className="w-5 h-5 text-[#155dfc]" />
           <h2 className="text-[14px] font-semibold text-[#1a1d26]">Ask AI</h2>
         </div>
+
         <div className="flex items-center gap-1">
-          {voiceMode && (
-            <div className="relative" ref={voiceDropdownRef}>
-              <button
-                onClick={() => setVoiceDropdownOpen(o => !o)}
-                className="flex items-center gap-1 px-2 py-1 bg-blue-50 text-[#155dfc] text-[11px] font-medium rounded-full border border-blue-200 hover:bg-blue-100 transition-colors"
-                title="목소리 선택"
-              >
-                <span>{VOICES.find(v => v.key === selectedVoice)?.label}</span>
-                <svg
-                  className={`w-2.5 h-2.5 transition-transform duration-150 ${voiceDropdownOpen ? 'rotate-180' : ''}`}
-                  viewBox="0 0 24 24" fill="none"
-                >
-                  <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </button>
-              {voiceDropdownOpen && (
-                <div className="absolute right-0 top-full mt-1.5 w-44 bg-white rounded-xl border border-[#e7e9ed] shadow-lg z-50 overflow-hidden">
-                  {VOICES.map(v => (
-                    <button
-                      key={v.key}
-                      onClick={() => { setSelectedVoice(v.key); setVoiceDropdownOpen(false); }}
-                      className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-[#f8f9fb] ${
-                        selectedVoice === v.key ? 'bg-blue-50' : ''
-                      }`}
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div className={`text-[12px] font-medium ${selectedVoice === v.key ? 'text-[#155dfc]' : 'text-[#1a1d26]'}`}>
-                          {v.label}
-                        </div>
-                        <div className="text-[10px] text-[#99a1af]">{v.desc}</div>
-                      </div>
-                      {selectedVoice === v.key && (
-                        <svg className="w-3 h-3 text-[#155dfc] shrink-0" viewBox="0 0 24 24" fill="none">
-                          <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          <button
-            onClick={toggleVoiceMode}
-            className={`p-1.5 rounded-md transition-colors ${voiceMode ? 'text-[#155dfc] bg-blue-50 hover:bg-blue-100' : 'text-[#99a1af] hover:text-gray-600 hover:bg-gray-100'}`}
-            title={voiceMode ? "음성 모드 끄기" : "음성으로 답변 듣기"}
-          >
-            {voiceMode ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-          </button>
-          {voiceMode && (
+          {messages.length > 0 && (
             <button
-              onClick={() => setPodcastMode(p => !p)}
-              className={`p-1.5 rounded-md transition-colors ${podcastMode ? 'text-[#155dfc] bg-blue-50 hover:bg-blue-100' : 'text-[#99a1af] hover:text-gray-600 hover:bg-gray-100'}`}
-              title={podcastMode ? "연속 재생 끄기" : "연속 재생 (팟캐스트 모드)"}
+              onClick={handleClearChat}
+              className="p-1.5 text-[#99a1af] hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+              title="대화 내역 지우기"
             >
-              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
-                <polygon points="5,3 12,8 5,13" fill="currentColor"/>
-                <polygon points="12,3 19,8 12,13" fill="currentColor"/>
-                <line x1="5" y1="17" x2="19" y2="17" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                <line x1="5" y1="20" x2="19" y2="20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
+              <Trash2 className="w-4 h-4" />
             </button>
           )}
-          {messages.length > 0 && (
-            <>
-              <div className="w-px h-4 bg-[#e7e9ed] mx-0.5" />
-              <button onClick={handleClearChat} className="p-1.5 text-[#99a1af] hover:text-red-500 hover:bg-red-50 rounded-md transition-colors" title="대화 내역 지우기">
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </>
-          )}
           {onClose && (
-            <button onClick={onClose} className="p-1.5 text-[#99a1af] hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors" title="닫기">
+            <button
+              onClick={onClose}
+              className="p-1.5 text-[#99a1af] hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
+              title="닫기"
+            >
               <X className="w-4 h-4" />
             </button>
           )}
@@ -1105,11 +1030,17 @@ export function StudentChatPanel({
             </div>
             {/* 추천 질문 칩 */}
             <div className="flex flex-col items-end gap-2">
-              {initialQuestions.map((q, i) => (
+              {[
+                "이 자료를 요약해줘",
+                "핵심 개념을 설명해줘",
+                "어려운 부분을 쉽게 설명해줘",
+                "중요한 용어를 정리해줘",
+                "퀴즈 문제를 내줘",
+              ].map((q) => (
                 <button
                   key={q}
-                  onClick={() => handleInitialQuestionClick(i, q)}
-                  className="px-4 py-2 rounded-full border border-[#e7e9ed] bg-white text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm text-right"
+                  onClick={() => { setInputValue(q); }}
+                  className="px-3 py-1.5 rounded-full border border-[#e7e9ed] bg-white text-[12px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-colors text-right"
                 >
                   {q}
                 </button>
@@ -1207,41 +1138,39 @@ export function StudentChatPanel({
               {/* 재생 진행 바 — 클릭으로 seek 가능 */}
               {msg.type === 'ai' && isPlaying && (
                 <div
-                  className="h-[3px] bg-[#e7e9ed] rounded-full overflow-hidden mx-1 cursor-pointer"
-                  onClick={e => {
-                    if (!audioRef.current || !audioRef.current.duration) return;
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    audioRef.current.currentTime =
-                      ((e.clientX - rect.left) / rect.width) * audioRef.current.duration;
-                  }}
+                  className={`px-4 py-3 rounded-2xl text-[14px] leading-relaxed ${
+                    msg.type === 'user'
+                      ? 'bg-[#155dfc] text-white rounded-tr-sm'
+                      : msg.type === 'system'
+                      ? 'bg-red-50 text-red-600 border border-red-100'
+                      : 'bg-[#f8f9fb] text-[#1a1d26] border border-[#e7e9ed] rounded-tl-sm'
+                  }`}
                 >
-                  <div
-                    className="h-full bg-[#155dfc] rounded-full"
-                    style={{ width: `${audioProgress * 100}%`, transition: 'width 0.1s linear' }}
-                  />
+                  {msg.type === 'ai' ? (
+                    <MarkdownPreview
+                      content={enrichedContent}
+                      className="text-[#1a1d26]"
+                      transformText={(text) =>
+                        renderMessageContent(
+                          text,
+                          Boolean(activeSourceId && activeSourceMediaType && onSeekToTimestamp),
+                          msg.sources ?? []
+                        )
+                      }
+                    />
+                  ) : msg.type === 'system' ? (
+                    <span className="whitespace-pre-wrap">{enrichedContent}</span>
+                  ) : renderMessageContent(
+                    enrichedContent,
+                    false,
+                    msg.sources ?? []
+                  )}
                 </div>
-              )}
-
-              {/* 재생 속도 컨트롤 — 재생 중인 메시지에만 */}
-              {msg.type === 'ai' && isPlaying && (
-                <div className="flex items-center gap-1 pl-1">
-                  {SPEED_OPTIONS.map(rate => (
-                    <button
-                      key={rate}
-                      onClick={() => changeSpeed(rate)}
-                      className={`px-2 py-0.5 text-[10px] font-medium rounded transition-colors ${
-                        playbackRate === rate ? 'bg-[#155dfc] text-white' : 'bg-[#f0f2f5] text-[#99a1af] hover:bg-[#e7e9ed] hover:text-[#414751]'
-                      }`}
-                    >
-                      {rate}x
-                    </button>
-                  ))}
-                </div>
-              )}
+              </div>
             </div>
           );
         })}
-
+        
         {isLoading && (
           <div className="flex justify-start">
             <div className="max-w-[80%] px-4 py-3 bg-[#f8f9fb] text-[#1a1d26] border border-[#e7e9ed] rounded-2xl rounded-tl-sm flex items-center gap-2">
@@ -1255,50 +1184,31 @@ export function StudentChatPanel({
 
       {/* 입력 영역 */}
       <div className="p-3 bg-white flex flex-col gap-2 shrink-0">
-        {/* STT 에러 메시지 */}
-        {sttError && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg">
-            <svg className="w-3.5 h-3.5 text-red-500 shrink-0" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2"/>
-              <path d="M12 8v4m0 4h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-            <span className="text-[11px] text-red-600 flex-1">{sttError}</span>
-            <button onClick={() => setSttError(null)} className="text-red-400 hover:text-red-600">
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-        <div className={`relative flex items-end gap-2 rounded-xl p-1.5 border shadow-sm transition-all ${
-          isRecording
-            ? 'bg-red-50 border-red-300 ring-2 ring-red-200/50'
-            : 'bg-[#f8f9fb] border-[#e7e9ed] focus-within:ring-2 focus-within:ring-[#155dfc]/20 focus-within:border-[#155dfc]/30'
-        }`}>
+        <div className="relative flex items-end gap-2 bg-[#f8f9fb] rounded-xl p-1.5 focus-within:ring-2 focus-within:ring-[#155dfc]/20 transition-all border border-[#e7e9ed] focus-within:border-[#155dfc]/30 shadow-sm">
           <button className="p-2 text-[#99a1af] hover:text-[#155dfc] hover:bg-white rounded-lg transition-colors shrink-0">
             <Paperclip className="w-4 h-4" />
           </button>
+          
           <textarea
             value={inputValue}
-            onChange={e => setInputValue(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSendMessage();
+              }
+            }}
             rows={1}
             className="flex-1 max-h-[100px] min-h-[40px] py-2 bg-transparent text-[#1a1d26] text-[13px] placeholder-[#99a1af] focus:outline-none resize-none self-center"
-            placeholder={isRecording ? "듣고 있어요... (다시 클릭하면 완료)" : "학습 내용에 대해 무엇이든 물어보세요..."}
+            placeholder="학습 내용에 대해 무엇이든 물어보세요..."
           />
+          
           <div className="flex items-center gap-1 shrink-0">
-            {/* 마이크 버튼 (STT) */}
-            <button
-              onClick={handleMicClick}
-              className={`p-2 rounded-lg transition-colors ${
-                isRecording
-                  ? 'text-white bg-red-500 hover:bg-red-600 animate-pulse'
-                  : 'text-[#99a1af] hover:text-[#155dfc] hover:bg-white'
-              }`}
-              title={isRecording ? "클릭하면 완료" : "음성으로 질문하기"}
-            >
+            <button className="p-2 text-[#99a1af] hover:text-[#155dfc] hover:bg-white rounded-lg transition-colors">
               <Mic className="w-4 h-4" />
             </button>
-            <button
-              onClick={() => handleSendMessage()}
+            <button 
+              onClick={handleSendMessage}
               disabled={!inputValue.trim()}
               className="p-2 text-white bg-[#155dfc] hover:bg-[#0d4ac4] rounded-lg disabled:opacity-50 disabled:bg-[#99a1af] transition-colors shadow-sm"
             >

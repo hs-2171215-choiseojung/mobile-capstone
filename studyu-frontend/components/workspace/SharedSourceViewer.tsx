@@ -48,6 +48,78 @@ const KNOWN_EXTS = new Set([
   "pdf", "docx", "doc", "pptx", "ppt", "hwp", "hwpx", "txt", "xlsx", "xls",
   "jpg", "jpeg", "png", "gif", "webp", "mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a", "wav",
 ]);
+const AUDIO_SUMMARY_EXTS = new Set([
+  "jpg","jpeg","png","gif","webp",
+  "pdf","docx","doc","pptx","ppt","hwp","hwpx","txt",
+  "mp4","mov","avi","mkv","webm","mp3","m4a","wav",
+]);
+
+function formatTime(sec: number): string {
+  if (!isFinite(sec)) return "0:00";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function Waveform() {
+  const bars = [3, 5, 8, 5, 7, 4, 6, 3, 7, 5];
+  return (
+    <span className="flex items-end gap-[2px] h-4">
+      {bars.map((h, i) => (
+        <span
+          key={i}
+          className="w-[3px] rounded-full bg-blue-500"
+          style={{
+            height: `${h * 2}px`,
+            animation: `waveBar 0.8s ease-in-out ${(i * 0.08).toFixed(2)}s infinite alternate`,
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
+interface SubtitleSegment { text: string; start: number; end: number; }
+
+/** DOCX/HWPX 마크다운 렌더러 */
+function MarkdownViewer({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      urlTransform={(url) => url}
+      components={{
+        h1: ({ children }) => <h1 className="text-2xl font-bold mt-6 mb-3 text-gray-900 border-b border-gray-200 pb-2">{children}</h1>,
+        h2: ({ children }) => <h2 className="text-xl font-bold mt-5 mb-2 text-gray-800">{children}</h2>,
+        h3: ({ children }) => <h3 className="text-lg font-semibold mt-4 mb-2 text-gray-800">{children}</h3>,
+        h4: ({ children }) => <h4 className="text-base font-semibold mt-3 mb-1 text-gray-700">{children}</h4>,
+        p: ({ children }) => <p className="mb-3 text-gray-700 leading-relaxed">{children}</p>,
+        strong: ({ children }) => <strong className="font-semibold text-gray-900">{children}</strong>,
+        em: ({ children }) => <em className="italic text-gray-700">{children}</em>,
+        ul: ({ children }) => <ul className="list-disc ml-5 mb-3 space-y-1 text-gray-700">{children}</ul>,
+        ol: ({ children }) => <ol className="list-decimal ml-5 mb-3 space-y-1 text-gray-700">{children}</ol>,
+        li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+        table: ({ children }) => <div className="overflow-x-auto mb-4"><table className="min-w-full border-collapse text-sm">{children}</table></div>,
+        thead: ({ children }) => <thead className="bg-gray-50">{children}</thead>,
+        tbody: ({ children }) => <tbody className="divide-y divide-gray-200">{children}</tbody>,
+        tr: ({ children }) => <tr className="hover:bg-gray-50">{children}</tr>,
+        th: ({ children }) => <th className="px-3 py-2 text-left text-xs font-semibold text-gray-600 uppercase border border-gray-200">{children}</th>,
+        td: ({ children }) => <td className="px-3 py-2 text-gray-700 border border-gray-200">{children}</td>,
+        blockquote: ({ children }) => <blockquote className="border-l-4 border-gray-300 pl-4 italic text-gray-600 mb-3">{children}</blockquote>,
+        hr: () => <hr className="border-gray-200 my-4" />,
+        // eslint-disable-next-line @next/next/no-img-element
+        img: ({ src, alt }) => <img src={src} alt={alt ?? "이미지"} className="max-w-full rounded-lg shadow-sm my-3" />,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
+
+interface SummaryCache {
+  summaryText: string;
+  audioBase64: string;
+  sentences: SubtitleSegment[];
+}
 
 /** DOCX/HWPX 마크다운 렌더러 */
 function MarkdownViewer({ content }: { content: string }) {
@@ -213,6 +285,13 @@ export function SharedSourceViewer({
   const isImage = ["image", "jpg", "jpeg", "png", "gif", "webp"].includes(effectiveExt);
   const isVideo = ["video", "mp4", "mov", "avi", "mkv", "webm"].includes(effectiveExt);
   const isAudio = ["audio", "mp3", "m4a", "wav"].includes(effectiveExt);
+  
+  const canAudioSummary = AUDIO_SUMMARY_EXTS.has(effectiveExt) || isUrlSource;
+
+  // 현재 재생 위치에 해당하는 자막 문장
+  const currentSentence = sentences.find(
+    (s) => audioCurrent >= s.start && audioCurrent <= s.end + 0.3
+  ) ?? null;
 
   const mediaUrl = sourceUrl || sourceFileUrl;
   const timelineEntries = useMemo(
@@ -260,6 +339,27 @@ export function SharedSourceViewer({
     void target.play().catch(() => undefined);
   }, [isEmbeddableYoutube, isVideo, youtubeEmbedUrl]);
 
+  const stopSummaryAudio = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    if (summaryAudioRef.current) {
+      summaryAudioRef.current.pause();
+      summaryAudioRef.current.ontimeupdate = null;
+      summaryAudioRef.current.onloadedmetadata = null;
+      summaryAudioRef.current.onended = null;
+      summaryAudioRef.current.onerror = null;
+      summaryAudioRef.current = null;
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = "";
+    }
+    setAudioSummaryState("idle");
+    setAudioProgress(0);
+    setAudioCurrent(0);
+    setAudioDuration(0);
+  }, []);
+
   const stopPlayback = useCallback(() => {
     if (videoRef.current) {
       videoRef.current.pause();
@@ -274,7 +374,28 @@ export function SharedSourceViewer({
     if (iframeRef.current) {
       iframeRef.current.src = "about:blank";
     }
-  }, []);
+    stopSummaryAudio();
+  }, [stopSummaryAudio]);
+
+  // 파일 변경 시 오디오 중지, 캐시 복원
+  useEffect(() => {
+    stopSummaryAudio();
+    const cached = summaryCache.current.get(source.id);
+    if (cached) {
+      setSummaryText(cached.summaryText);
+      setSentences(cached.sentences);
+      setHasSummary(true);
+    } else {
+      setSummaryText("");
+      setSentences([]);
+      setHasSummary(false);
+    }
+    setSummaryExpanded(false);
+    setPlaybackRate(1);
+    setSelectedVoice("sarah");
+    setSummaryError("");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source.id]);
 
   useEffect(() => () => stopPlayback(), [stopPlayback]);
 
@@ -437,6 +558,31 @@ export function SharedSourceViewer({
           <h2 className="text-[17px] font-bold text-gray-900 truncate leading-tight">{source.filename}</h2>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-4">
+          {canAudioSummary ? (
+            <button
+              onClick={handleAudioSummary}
+              disabled={audioSummaryState === "loading"}
+              title={
+                audioSummaryState === "playing" ? "일시정지"
+                : audioSummaryState === "paused" ? "이어서 듣기"
+                : "음성으로 요약 듣기"
+              }
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-60 ${
+                audioSummaryState === "playing" || audioSummaryState === "paused"
+                  ? "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              }`}
+            >
+              {audioSummaryState === "loading" ? <Loader2 className="w-4 h-4 animate-spin" />
+                : audioSummaryState === "playing" ? <Pause className="w-3.5 h-3.5 fill-current" />
+                : audioSummaryState === "paused" ? <Play className="w-3.5 h-3.5 fill-current" />
+                : <Volume2 className="w-4 h-4" />}
+              {audioSummaryState === "loading" ? "생성 중..."
+                : audioSummaryState === "playing" ? "일시정지"
+                : audioSummaryState === "paused" ? "이어서 듣기"
+                : "음성 요약"}
+            </button>
+          ) : null}
           {(sourceFileUrl && !isEmbeddableYoutube && lowerType !== "url") ? (
             <button onClick={() => downloadUrl(sourceFileUrl, source.filename)} title="다운로드"
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200">
@@ -644,7 +790,210 @@ export function SharedSourceViewer({
             className="w-full h-full rounded-lg border border-gray-200 bg-white"
           />
         )}
+
+        {/* 실시간 자막 오버레이 — DOM 노드 유지, opacity로 표시/숨김 */}
+        <div
+          className={`absolute left-1/2 -translate-x-1/2 w-[90%] max-w-2xl pointer-events-none transition-opacity duration-200 ${subtitlePosition === "top" ? "top-5" : "bottom-5"}`}
+          style={{
+            opacity: (audioSummaryState === "playing" || audioSummaryState === "paused") && currentSentence ? 1 : 0,
+          }}
+        >
+          <div className="bg-black/70 text-white text-[14px] leading-relaxed rounded-xl px-5 py-3 text-center backdrop-blur-sm shadow-lg">
+            {currentSentence?.text ?? ""}
+          </div>
+        </div>
       </div>
+
+      {/* 음성 요약 패널 — canAudioSummary면 항상 표시 */}
+      {canAudioSummary ? (
+        <div className="shrink-0 border-t border-gray-100 bg-white">
+
+          {/* ── 상태별 메인 영역 (단일 삼항 체인 — &&로 분기하면 DOM 조정 오류) ── */}
+          {audioSummaryState === "loading" ? (
+            <div className="px-4 py-3 flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center shrink-0">
+                <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[13px] font-medium text-gray-800">음성 요약 생성 중...</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">AI가 내용을 분석하고 있습니다</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="flex gap-[3px] items-end h-5">
+                  {[4,6,9,6,8,5,7].map((h, i) => (
+                    <span key={i} className="w-1 rounded-full bg-blue-300"
+                      style={{ height: `${h * 2}px`, animation: `waveBar 0.8s ease-in-out ${(i * 0.1).toFixed(1)}s infinite alternate` }} />
+                  ))}
+                </div>
+                {/* 취소 버튼 */}
+                <button
+                  onClick={stopSummaryAudio}
+                  className="px-2.5 py-1 rounded-full bg-gray-100 text-[11px] text-gray-500 hover:bg-red-50 hover:text-red-500 transition-colors font-medium"
+                >
+                  취소
+                </button>
+              </div>
+            </div>
+          ) : audioSummaryState === "playing" || audioSummaryState === "paused" ? (
+            <div className="px-4 pt-3 pb-2">
+              <div className="flex items-center gap-2.5 mb-2.5">
+                <button onClick={handleAudioSummary}
+                  className="w-8 h-8 rounded-full bg-blue-500 hover:bg-blue-600 flex items-center justify-center shrink-0 transition-all active:scale-95 shadow-sm">
+                  {audioSummaryState === "playing"
+                    ? <Pause className="w-3.5 h-3.5 fill-white text-white" />
+                    : <Play className="w-3.5 h-3.5 fill-white text-white ml-0.5" />}
+                </button>
+                <div className="flex-1 flex flex-col gap-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    {audioSummaryState === "playing"
+                      ? <Waveform />
+                      : <span className="flex items-end gap-[2px] h-4">
+                          {[3,5,8,5,7,4,6,3,7,5].map((h, i) => (
+                            <span key={i} className="w-[3px] rounded-full bg-gray-300" style={{ height: `${h * 2}px` }} />
+                          ))}
+                        </span>
+                    }
+                    <span className="text-[11px] text-gray-400 tabular-nums ml-auto shrink-0">
+                      {formatTime(audioCurrent)} / {formatTime(audioDuration)}
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-gray-100 rounded-full cursor-pointer relative overflow-hidden group" onClick={handleSeek}>
+                    <div className="absolute left-0 top-0 h-full bg-blue-500 rounded-full transition-all group-hover:bg-blue-600"
+                      style={{ width: `${audioProgress * 100}%` }} />
+                  </div>
+                </div>
+                <button onClick={stopSummaryAudio}
+                  className="w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center shrink-0 transition-colors" title="정지">
+                  <Square className="w-3 h-3 fill-gray-500 text-gray-500" />
+                </button>
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1">
+                  {[0.75, 1, 1.25, 1.5].map((rate) => (
+                    <button key={rate} onClick={() => handleSpeedChange(rate)}
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-all ${
+                        playbackRate === rate ? "bg-blue-500 text-white" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                      }`}>
+                      {rate}x
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => setSubtitlePosition((p) => p === "bottom" ? "top" : "bottom")}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-gray-100 text-[11px] text-gray-500 hover:bg-gray-200 transition-colors">
+                    {subtitlePosition === "bottom" ? <ArrowUpToLine className="w-3 h-3" /> : <ArrowDownToLine className="w-3 h-3" />}
+                    자막
+                  </button>
+                  <button onClick={handleDownloadAudio}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-gray-100 text-[11px] text-gray-500 hover:bg-gray-200 transition-colors">
+                    <Download className="w-3 h-3" /> MP3
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : hasSummary ? (
+            <div className="px-4 py-2.5 flex items-center gap-3">
+              <div className="w-7 h-7 rounded-full bg-blue-50 flex items-center justify-center shrink-0">
+                <Volume2 className="w-3.5 h-3.5 text-blue-400" />
+              </div>
+              <div className="flex-1 flex items-center gap-2 flex-wrap">
+                {([
+                  { key: "sarah", label: "Sarah" }, { key: "rachel", label: "Rachel" },
+                  { key: "josh",  label: "Josh"  }, { key: "adam",   label: "Adam"  },
+                ] as const).map(({ key, label }) => (
+                  <button key={key} onClick={() => handleVoiceChange(key)}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-all ${
+                      selectedVoice === key ? "bg-blue-500 text-white shadow-sm" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                    }`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <button onClick={handleAudioSummary}
+                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500 text-white text-[12px] font-semibold hover:bg-blue-600 active:scale-95 transition-all shadow-sm">
+                <Play className="w-3.5 h-3.5 fill-current" /> 다시 듣기
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col">
+              {/* 에러 메시지 */}
+              {summaryError ? (
+                <div className="mx-4 mt-3 px-3 py-2 bg-red-50 border border-red-100 rounded-xl flex items-start gap-2">
+                  <span className="text-red-400 text-[13px] mt-0.5 shrink-0">⚠</span>
+                  <p className="text-[12px] text-red-600 leading-relaxed flex-1">{summaryError}</p>
+                  <button onClick={() => setSummaryError("")} className="text-red-300 hover:text-red-500 shrink-0 mt-0.5">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ) : null}
+              <div className="px-4 py-3 flex items-center gap-3">
+                <Volume2 className="w-4 h-4 text-gray-400 shrink-0" />
+                <div className="flex-1 flex items-center gap-2 flex-wrap">
+                  <span className="text-[12px] text-gray-500 shrink-0">음성 요약</span>
+                  <div className="flex items-center gap-1">
+                    {([
+                      { key: "sarah",  label: "Sarah",  desc: "차분한 여성" },
+                      { key: "rachel", label: "Rachel", desc: "명확한 여성" },
+                      { key: "josh",   label: "Josh",   desc: "친근한 남성" },
+                      { key: "adam",   label: "Adam",   desc: "전문적인 남성" },
+                    ] as const).map(({ key, label, desc }) => (
+                      <button key={key} onClick={() => setSelectedVoice(key)} title={desc}
+                        className={`px-2.5 py-1 rounded-full text-[12px] font-medium transition-all ${
+                          selectedVoice === key ? "bg-blue-500 text-white shadow-sm" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                        }`}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button onClick={handleAudioSummary}
+                  className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500 text-white text-[12px] font-semibold hover:bg-blue-600 active:scale-95 transition-all shadow-sm">
+                  <Play className="w-3.5 h-3.5 fill-current" /> 생성하기
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 요약 텍스트 접기/펼치기 (생성 후) */}
+          {summaryText ? (
+            <div className="border-t border-gray-50">
+              <div className="px-4 py-2 flex items-center justify-between">
+                <button onClick={() => setSummaryExpanded((v) => !v)}
+                  className="flex items-center gap-1.5 text-[12px] text-gray-400 hover:text-gray-600 transition-colors">
+                  {summaryExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  {summaryExpanded ? "요약 텍스트 접기" : "요약 텍스트 보기"}
+                </button>
+                <button onClick={handleCopyText}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all ${
+                    copied ? "bg-green-100 text-green-600" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                  }`}>
+                  {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  {copied ? "복사됨" : "복사"}
+                </button>
+              </div>
+              {summaryExpanded ? (
+                <div className="mx-4 mb-3 bg-gray-50 rounded-xl p-3 text-[12px] text-gray-600 leading-relaxed max-h-44 overflow-y-auto border border-gray-100">
+                  {sentences.length > 0
+                    ? sentences.map((seg, i) => (
+                        <span
+                          key={i}
+                          className={`transition-colors duration-200 ${
+                            currentSentence === seg
+                              ? "bg-blue-100 text-blue-700 rounded px-0.5"
+                              : ""
+                          }`}
+                        >
+                          {seg.text}{" "}
+                        </span>
+                      ))
+                    : <span className="whitespace-pre-wrap">{summaryText}</span>
+                  }
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
