@@ -178,11 +178,4 @@ route.ts에서 code를 세션으로 교환
 → Supabase 대시보드 → Authentication → URL Configuration에서
    Redirect URLs에 `http://localhost:3000/**` 추가
 
----
 
-## 🔜 다음 단계 (2주차)
-
-- [ ] 노트북 생성/삭제 UI
-- [ ] 2패널 레이아웃 (좌: 소스, 우: 대화)
-- [ ] FastAPI 백엔드 프로젝트 세팅
-- [ ] 파일 업로드 UI 시작

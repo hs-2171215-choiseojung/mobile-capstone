@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { Download, ExternalLink, Loader2, X } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 async function downloadUrl(url: string, filename: string) {
   try {
@@ -11,23 +12,40 @@ async function downloadUrl(url: string, filename: string) {
     const blob = await res.blob();
     const objUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = objUrl; a.download = filename; a.click();
+    a.href = objUrl;
+    a.download = filename;
+    a.click();
     URL.revokeObjectURL(objUrl);
   } catch {
     window.open(url, "_blank");
   }
 }
+
 function downloadText(text: string, filename: string) {
   const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click();
+  a.href = url;
+  a.download = filename;
+  a.click();
   URL.revokeObjectURL(url);
 }
 
+function formatTimestamp(totalSeconds: number) {
+  const safe = Math.max(0, Math.floor(totalSeconds || 0));
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const seconds = safe % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 const KNOWN_EXTS = new Set([
-  "pdf","docx","doc","pptx","ppt","hwp","hwpx","txt","xlsx","xls",
-  "jpg","jpeg","png","gif","webp","mp4","mov","avi","mkv","webm","mp3","m4a","wav",
+  "pdf", "docx", "doc", "pptx", "ppt", "hwp", "hwpx", "txt", "xlsx", "xls",
+  "jpg", "jpeg", "png", "gif", "webp", "mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a", "wav",
 ]);
 
 export interface SharedSourceInfo {
@@ -35,6 +53,25 @@ export interface SharedSourceInfo {
   filename: string;
   file_type: string;
   storage_path?: string;
+}
+
+export interface MediaTimelineEntry {
+  time_sec: number;
+  label?: string;
+  text: string;
+}
+
+export interface MediaSummarySection {
+  title: string;
+  start_sec: number;
+  end_sec?: number;
+  summary: string;
+}
+
+export interface MediaSummaryData {
+  title: string;
+  overview: string;
+  sections: MediaSummarySection[];
 }
 
 export interface SharedSourceViewerProps {
@@ -45,6 +82,15 @@ export interface SharedSourceViewerProps {
   error?: string;
   onClose: () => void;
   transcriptText?: string;
+  mediaTimeline?: MediaTimelineEntry[];
+  mediaSummaryData?: MediaSummaryData | null;
+  mediaSummaryLoading?: boolean;
+  showMediaSummaryToggle?: boolean;
+  onRequestMediaSummary?: () => void;
+  seekRequest?: { seconds: number; nonce: number } | null;
+  onMediaInfoChange?: (info: { kind: "audio" | "video" | null; duration: number }) => void;
+  highlightRange?: { start: number; length: number };
+  customViewer?: ReactNode;
 }
 
 export function SharedSourceViewer({
@@ -55,6 +101,15 @@ export function SharedSourceViewer({
   error,
   onClose,
   transcriptText,
+  mediaTimeline = [],
+  mediaSummaryData = null,
+  mediaSummaryLoading = false,
+  showMediaSummaryToggle = false,
+  onRequestMediaSummary,
+  seekRequest,
+  onMediaInfoChange,
+  highlightRange,
+  customViewer,
 }: SharedSourceViewerProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const videoRef  = useRef<HTMLVideoElement | null>(null);
@@ -71,6 +126,18 @@ export function SharedSourceViewer({
   const isImage = ["image", "jpg", "jpeg", "png", "gif", "webp"].includes(effectiveExt);
   const isVideo = ["video", "mp4", "mov", "avi", "mkv", "webm"].includes(effectiveExt);
   const isAudio = ["audio", "mp3", "m4a", "wav"].includes(effectiveExt);
+
+  const mediaUrl = sourceUrl || sourceFileUrl;
+  const timelineEntries = useMemo(
+    () => mediaTimeline.filter((entry) => entry && typeof entry.text === "string" && entry.text.trim()),
+    [mediaTimeline]
+  );
+  const summaryTitle = mediaSummaryData?.title?.trim() || "전체 내용 요약";
+  const summaryOverview = mediaSummaryData?.overview?.trim() || "";
+  const summarySections = useMemo(
+    () => (mediaSummaryData?.sections ?? []).filter((section) => section && typeof section.summary === "string" && section.summary.trim()),
+    [mediaSummaryData]
+  );
 
   const getYoutubeEmbedUrl = (url: string) => {
     try {
@@ -94,8 +161,23 @@ export function SharedSourceViewer({
     return "";
   };
 
-  const youtubeEmbedUrl = sourceUrl ? getYoutubeEmbedUrl(sourceUrl) : "";
+  const youtubeEmbedUrl = mediaUrl ? getYoutubeEmbedUrl(mediaUrl) : "";
   const isEmbeddableYoutube = Boolean(youtubeEmbedUrl);
+  const isMediaLike = isVideo || isAudio || isEmbeddableYoutube;
+
+  const seekMedia = useCallback((seconds: number) => {
+    if (isEmbeddableYoutube && iframeRef.current) {
+      const targetUrl = new URL(youtubeEmbedUrl);
+      targetUrl.searchParams.set("start", String(Math.max(0, Math.floor(seconds))));
+      targetUrl.searchParams.set("autoplay", "1");
+      iframeRef.current.src = targetUrl.toString();
+      return;
+    }
+    const target = isVideo ? videoRef.current : audioRef.current;
+    if (!target || Number.isNaN(seconds)) return;
+    target.currentTime = Math.max(0, seconds);
+    void target.play().catch(() => undefined);
+  }, [isEmbeddableYoutube, isVideo, youtubeEmbedUrl]);
 
   const stopPlayback = useCallback(() => {
     if (videoRef.current) {
@@ -115,10 +197,155 @@ export function SharedSourceViewer({
 
   useEffect(() => () => stopPlayback(), [stopPlayback]);
 
+  useEffect(() => {
+    if (!seekRequest) return;
+    seekMedia(seekRequest.seconds);
+  }, [seekMedia, seekRequest]);
+
+  useEffect(() => {
+    const target = isVideo ? videoRef.current : isAudio ? audioRef.current : null;
+    if (!target || !onMediaInfoChange) return;
+
+    const notify = () => {
+      onMediaInfoChange({
+        kind: isVideo ? "video" : "audio",
+        duration: Number.isFinite(target.duration) ? target.duration : 0,
+      });
+    };
+
+    target.addEventListener("loadedmetadata", notify);
+    target.addEventListener("durationchange", notify);
+    notify();
+
+    return () => {
+      target.removeEventListener("loadedmetadata", notify);
+      target.removeEventListener("durationchange", notify);
+    };
+  }, [isAudio, isVideo, mediaUrl, onMediaInfoChange]);
+
+  useEffect(() => {
+    if (isEmbeddableYoutube && onMediaInfoChange) {
+      onMediaInfoChange({ kind: "video", duration: 0 });
+    } else if (!isAudio && !isVideo && onMediaInfoChange) {
+      onMediaInfoChange({ kind: null, duration: 0 });
+    }
+  }, [isAudio, isEmbeddableYoutube, isVideo, onMediaInfoChange]);
+
+  useEffect(() => {
+    setMediaTextView("transcript");
+  }, [source.id]);
+
+  useEffect(() => {
+    if (isEmbeddableYoutube) {
+      setVideoPaneHeight(360);
+    }
+  }, [isEmbeddableYoutube, source.id]);
+
   const handleClose = () => {
     stopPlayback();
     onClose();
   };
+
+
+  const handleCopyText = async () => {
+    if (!summaryText) return;
+    try {
+      await navigator.clipboard.writeText(summaryText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // fallback
+      const el = document.createElement("textarea");
+      el.value = summaryText;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleSelectMediaTextView = (nextView: "transcript" | "summary") => {
+    setMediaTextView(nextView);
+    }
+  };
+
+  const startVideoResize = useCallback((clientY: number) => {
+    const containerRect = videoSectionRef.current?.getBoundingClientRect();
+    if (!containerRect) return;
+
+    const startHeight = videoPaneHeight;
+    const startY = clientY;
+    const minHeight = 220;
+    const maxHeight = Math.max(minHeight, Math.min(760, containerRect.height - 120));
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const nextHeight = startHeight + (event.clientY - startY);
+      setVideoPaneHeight(Math.max(minHeight, Math.min(maxHeight, nextHeight)));
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  }, [videoPaneHeight]);
+
+  const renderTranscriptBody = (heading: string) => {
+    if (timelineEntries.length > 0) {
+      return (
+        <div>
+          {heading ? (
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{heading}</p>
+          ) : null}
+          <div className="space-y-3">
+            {timelineEntries.map((entry, index) => (
+              <div key={`${entry.time_sec}-${index}`} className="rounded-xl border border-gray-200 bg-white p-4">
+                <button
+                  type="button"
+                  onClick={() => seekMedia(entry.time_sec)}
+                  className="text-sm font-semibold text-blue-600 hover:text-blue-700 hover:underline"
+                >
+                  {formatTimestamp(entry.time_sec)}
+                </button>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-gray-700">{entry.text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    if (typeof transcriptText !== "string") return null;
+
+    return (
+      <div>
+        {heading ? (
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{heading}</p>
+        ) : null}
+        <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm leading-relaxed text-gray-700 whitespace-pre-wrap">
+          {transcriptText}
+        </div>
+      </div>
+    );
+  };
+
+ 
+
+  const renderMediaContentSection = () => {
+    const heading = "";
+    const canShowSummaryToggle = showMediaSummaryToggle && isMediaLike;
+  };
+  // DOCX/HWP/HWPX: sourceUrl + transcriptText 둘 다 있고, 이미지/비디오/오디오/유튜브가 아닌 경우 탭 표시
+  const hasBothViews = Boolean(
+    sourceUrl && transcriptText !== undefined && !isImage && !isVideo && !isAudio && !isEmbeddableYoutube && !isUrlSource
+  );
+
+  // 탭바: 하이라이트 점 표시 여부 (DOCX/HWP/HWPX)
+  const hasHighlight = Boolean(highlightRange && highlightRange.start >= 0);
 
   return (
     <div className="h-full w-full bg-white flex flex-col">
@@ -134,6 +361,16 @@ export function SharedSourceViewer({
               <Download className="w-4 h-4" /> 저장
             </button>
           ) : null}
+          {!mediaUrl && transcriptText && (
+            <button
+              onClick={() => downloadText(transcriptText, `${source.filename}.txt`)}
+              title="텍스트 다운로드"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200"
+            >
+              <Download className="w-4 h-4" />
+              저장
+            </button>
+          )}
           {(!sourceUrl && transcriptText) ? (
             <button onClick={() => downloadText(transcriptText, `${source.filename}.txt`)} title="텍스트 다운로드"
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200">
@@ -152,8 +389,37 @@ export function SharedSourceViewer({
         </div>
       </div>
 
-      {/* 본문 */}
-      <div className="flex-1 bg-[#f8f9fb] p-3 overflow-auto">
+      {/* 탭 바 — DOCX/HWP/HWPX: sourceUrl + transcriptText 둘 다 있을 때만 표시 */}
+      {hasBothViews && (
+        <div className="shrink-0 flex border-b border-gray-200 bg-white px-4">
+          <button
+            onClick={() => setActiveTab("document")}
+            className={`px-4 py-2 text-[13px] font-medium border-b-2 transition-colors ${
+              activeTab === "document"
+                ? "border-[#155dfc] text-[#155dfc]"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            문서 보기
+          </button>
+          <button
+            onClick={() => setActiveTab("text")}
+            className={`px-4 py-2 text-[13px] font-medium border-b-2 transition-colors ${
+              activeTab === "text"
+                ? "border-[#155dfc] text-[#155dfc]"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            텍스트 보기
+            {hasHighlight && activeTab !== "text" && (
+              <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-[#155dfc] inline-block align-middle" />
+            )}
+          </button>
+        </div>
+      )}
+
+      {/* 본문 (자막 오버레이 포함) */}
+      <div className="flex-1 bg-[#f8f9fb] p-3 overflow-auto relative">
         {loading ? (
           <div className="h-full flex flex-col items-center justify-center text-gray-500 gap-3">
             <Loader2 className="w-8 h-8 animate-spin" />
@@ -163,62 +429,128 @@ export function SharedSourceViewer({
           <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 gap-3">
             <p className="text-sm">{error}</p>
           </div>
-        ) : !sourceUrl && transcriptText ? (
+        ) : !mediaUrl && transcriptText !== undefined ? (
           <div className="h-full p-4 overflow-y-auto">
             <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">
-              {transcriptText}
+              {transcriptText
+                ? renderTranscript(transcriptText, highlightRange)
+                : <span className="text-gray-400">텍스트를 추출하지 못했습니다. 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.</span>
+              }
             </div>
           </div>
-        ) : !sourceUrl ? (
+        ) : !mediaUrl ? (
           <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 gap-3">
             <p className="text-sm">표시할 문서 URL이 없습니다.</p>
+          </div>
+        ) : hasBothViews && activeTab === "text" ? (
+          /* 텍스트 탭 (DOCX·PPTX 등) */
+          <div className="h-full p-4 overflow-y-auto">
+            <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">
+              {transcriptText
+                ? renderTranscript(transcriptText, highlightRange)
+                : <span className="text-gray-400">텍스트를 불러오는 중입니다...</span>
+              }
+            </div>
           </div>
         ) : isImage ? (
           <div className="h-full flex items-center justify-center">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={sourceUrl} alt={source.filename} className="max-w-full max-h-full object-contain rounded-lg shadow-sm" />
+            <img src={mediaUrl} alt={source.filename} className="max-w-full max-h-full object-contain rounded-lg shadow-sm" />
           </div>
         ) : isEmbeddableYoutube ? (
-          <div className="h-full flex flex-col items-center justify-center gap-4 p-4">
-            <div className="w-full max-w-5xl aspect-video rounded-lg overflow-hidden bg-black shadow-sm relative">
-              <iframe ref={iframeRef} src={youtubeEmbedUrl} title={source.filename} className="w-full h-full"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen />
+          <div ref={videoSectionRef} className="h-full flex flex-col p-4 overflow-hidden">
+            <div className="shrink-0" style={{ height: videoPaneHeight }}>
+              <div className="h-full w-full rounded-xl overflow-hidden bg-black shadow-sm">
+                <iframe
+                  ref={iframeRef}
+                  src={youtubeEmbedUrl}
+                  title={source.filename}
+                  className="h-full w-full"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  allowFullScreen
+                />
+              </div>
             </div>
-            <a href={sourceUrl} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-sm font-medium hover:bg-red-100 transition-colors">
-              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
-              </svg>
-              영상이 차단된 경우 YouTube에서 보기
-            </a>
+            <button
+              type="button"
+              aria-label="Resize video and transcript panels"
+              onPointerDown={(event) => {
+                event.preventDefault();
+                startVideoResize(event.clientY);
+              }}
+              className="shrink-0 mt-2 mb-2 flex h-6 w-full cursor-row-resize items-center justify-center"
+            >
+              <span className="flex w-full items-center gap-3 px-1">
+                <span className="h-px flex-1 bg-[#d7dce5]" />
+                <span className="h-1.5 w-20 rounded-full bg-[#b8c0cc]" />
+                <span className="h-px flex-1 bg-[#d7dce5]" />
+              </span>
+            </button>
+            <div className="min-h-[240px] flex-1 overflow-y-auto pr-1 pt-2">
+              {renderMediaContentSection()}
+              <a
+                href={mediaUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-sm font-medium hover:bg-red-100 transition-colors"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+                </svg>
+                영상이 차단되는 경우 YouTube에서 보기
+              </a>
+            </div>
           </div>
         ) : isVideo ? (
-          <div className="h-full flex flex-col gap-4 p-4 overflow-y-auto">
-            <div className="bg-black rounded-xl overflow-hidden flex items-center justify-center">
-              <video ref={videoRef} src={sourceUrl} controls className="max-w-full rounded-lg" style={{ maxHeight: "calc(100vh - 320px)" }} />
-            </div>
-            {transcriptText ? (
-              <div>
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">변환된 텍스트</p>
-                <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">{transcriptText}</div>
+          <div ref={videoSectionRef} className="h-full flex flex-col p-4 overflow-hidden">
+            <div className="shrink-0" style={{ height: videoPaneHeight }}>
+              <div className="h-full w-full bg-black rounded-xl overflow-hidden flex items-center justify-center">
+                <video
+                  ref={videoRef}
+                  src={mediaUrl}
+                  controls
+                  className="h-full w-full object-contain rounded-xl bg-black"
+                />
               </div>
-            ) : null}
+            </div>
+            <button
+              type="button"
+              aria-label="Resize video and transcript panels"
+              onPointerDown={(event) => {
+                event.preventDefault();
+                startVideoResize(event.clientY);
+              }}
+              className="shrink-0 mt-2 mb-2 flex h-6 w-full cursor-row-resize items-center justify-center"
+            >
+              <span className="flex w-full items-center gap-3 px-1">
+                <span className="h-px flex-1 bg-[#d7dce5]" />
+                <span className="h-1.5 w-20 rounded-full bg-[#b8c0cc]" />
+                <span className="h-px flex-1 bg-[#d7dce5]" />
+              </span>
+            </button>
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1 pt-2">
+              {renderMediaContentSection()}
+            </div>
           </div>
         ) : isAudio ? (
-          <div className="h-full flex flex-col gap-4 p-4 overflow-y-auto">
-            <div className="flex justify-center">
-              <audio ref={audioRef} src={sourceUrl} controls className="w-full max-w-xl" />
+          <div className="h-full flex flex-col gap-4 p-4 overflow-hidden">
+            <div className="shrink-0 flex justify-center">
+              <audio ref={audioRef} src={mediaUrl} controls className="w-full max-w-xl" />
             </div>
-            {transcriptText ? (
-              <div>
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">변환된 텍스트</p>
-                <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">{transcriptText}</div>
-              </div>
-            ) : null}
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              {renderMediaContentSection()}
+            </div>
           </div>
+        ) : customViewer ? (
+          <div className="w-full h-full">{customViewer}</div>
         ) : (
-          <iframe ref={iframeRef} src={sourceUrl} title={source.filename}
-            className="w-full h-full rounded-lg border border-gray-200 bg-white" />
+          <iframe
+            key={mediaUrl}
+            ref={iframeRef}
+            src={mediaUrl}
+            title={source.filename}
+            className="w-full h-full rounded-lg border border-gray-200 bg-white"
+          />
         )}
       </div>
     </div>

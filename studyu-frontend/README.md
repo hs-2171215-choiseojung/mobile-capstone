@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # STUDY:U Frontend
 
 문서 기반 AI 학습 코치 — Next.js + Supabase
@@ -187,7 +186,5 @@ route.ts에서 code를 세션으로 교환
 - [ ] 2패널 레이아웃 (좌: 소스, 우: 대화)
 - [ ] FastAPI 백엔드 프로젝트 세팅
 - [ ] 파일 업로드 UI 시작
-=======
 # mobile-capstone
 STUDY:U - 문서 기반 AI 학습 코치
->>>>>>> 017c80093065fd62518a496e42d29f39f94d7a7f

@@ -29,13 +29,296 @@ from pydantic import BaseModel
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.supabase import supabase_admin
-from app.services.rag import ingest_document, ingest_url, SUPPORTED_EXTENSIONS
 from app.services.tts import tts_with_timestamps, ELEVENLABS_VOICES, DEFAULT_VOICE, serialize_summary
 from app.services.audio_cache import load_cached_summary, save_cached_summary
+from app.services.rag import (
+    ingest_document,
+    ingest_url,
+    prepare_media_for_browser_playback,
+    SUPPORTED_EXTENSIONS,
+    VIDEO_AUDIO_EXTENSIONS,
+    _extract_youtube_video_id,
+    _strip_media_metadata,
+    _build_media_timeline_from_chunks_v2,
+    build_media_summary_from_chunks,
+    _parse_media_summary,
+    _inject_media_summary,
+)
 
 router = APIRouter()
 
 STORAGE_BUCKET = "documents"
+SLIDE_ASSETS_PREFIX = "slide-assets"
+
+
+def _generate_and_upload_slides(file_bytes: bytes, doc_id: str) -> tuple[int, dict]:
+    """PPT/PPTX → WebP 슬라이드 이미지 생성 + 영상 추출 + Vision AI 분석.
+
+    Returns:
+        (total_slides, vision_descriptions)
+        vision_descriptions: {slide_num(int): description_str}
+        실패 시 (0, {})
+    """
+    import subprocess, tempfile, os, base64
+    import fitz  # PyMuPDF
+    from PIL import Image
+    import io as _io
+    from pptx import Presentation
+    from openai import OpenAI
+
+    prefix = f"{SLIDE_ASSETS_PREFIX}/{doc_id}"
+    vision_descriptions: dict = {}
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ppt_path = os.path.join(tmpdir, "input.pptx")
+        with open(ppt_path, "wb") as f:
+            f.write(file_bytes)
+
+        # 1) PPTX에서 영상 파일 직접 추출 + Whisper 트랜스크립션
+        VIDEO_EXTS = {"mp4", "mov", "avi", "wmv", "webm", "mkv"}
+        VIDEO_MIME = {"mp4": "video/mp4", "mov": "video/quicktime", "avi": "video/x-msvideo",
+                      "wmv": "video/x-ms-wmv", "webm": "video/webm", "mkv": "video/x-matroska"}
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        # 중복 업로드 방지용 (같은 media_part가 여러 slide에 연결될 수 있음)
+        uploaded_parts: set = set()
+        try:
+            prs = Presentation(ppt_path)
+            for slide_idx, slide in enumerate(prs.slides, start=1):
+                for rel in slide.part.rels.values():
+                    reltype = rel.reltype.lower()
+                    if "video" in reltype or ("media" in reltype and "audio" not in reltype):
+                        try:
+                            media_part = rel.target_part
+                            part_name = str(media_part.partname)
+                            ext = part_name.rsplit(".", 1)[-1].lower()
+                            if ext not in VIDEO_EXTS:
+                                continue
+                            if part_name in uploaded_parts:
+                                continue
+                            uploaded_parts.add(part_name)
+
+                            video_bytes = media_part.blob
+                            mime = VIDEO_MIME.get(ext, "video/mp4")
+                            supabase_admin.storage.from_(STORAGE_BUCKET).upload(
+                                f"{prefix}/video_{slide_idx}.{ext}",
+                                video_bytes,
+                                {"content-type": mime, "upsert": "true"},
+                            )
+                            print(f"[slides] 슬라이드 {slide_idx} 영상 업로드: video_{slide_idx}.{ext}")
+
+                            # Whisper로 영상 내 음성 트랜스크립션
+                            try:
+                                import tempfile as _tf
+                                with _tf.NamedTemporaryFile(suffix=f".{ext}", delete=False) as vtmp:
+                                    vtmp.write(video_bytes)
+                                    vtmp_path = vtmp.name
+                                with open(vtmp_path, "rb") as vf:
+                                    transcript_resp = client.audio.transcriptions.create(
+                                        model="whisper-1",
+                                        file=vf,
+                                        prompt="Transcribe the audio exactly as spoken. Keep Korean in Korean and English in English.",
+                                        response_format="text",
+                                    )
+                                transcript_text = (transcript_resp or "").strip()
+                                import os as _os; _os.unlink(vtmp_path)
+                                if transcript_text:
+                                    vision_descriptions[slide_idx] = (
+                                        vision_descriptions.get(slide_idx, "") +
+                                        f"\n[동영상 음성 내용] {transcript_text}"
+                                    )
+                                    print(f"[slides] 슬라이드 {slide_idx} 영상 트랜스크립션 완료 ({len(transcript_text)}자)")
+                                else:
+                                    vision_descriptions[slide_idx] = (
+                                        vision_descriptions.get(slide_idx, "") +
+                                        "\n[동영상이 포함되어 있으나 음성 내용이 없습니다]"
+                                    )
+                            except Exception as te:
+                                print(f"[slides] Whisper 트랜스크립션 실패 (슬라이드 {slide_idx}): {te}")
+                                vision_descriptions[slide_idx] = (
+                                    vision_descriptions.get(slide_idx, "") +
+                                    "\n[동영상이 포함되어 있습니다]"
+                                )
+                        except Exception as ve:
+                            print(f"[slides] 영상 추출 실패 (슬라이드 {slide_idx}): {ve}")
+        except Exception as e:
+            print(f"[slides] PPTX 영상 추출 오류: {e}")
+
+        # 2) LibreOffice로 PDF 변환
+        try:
+            result = subprocess.run(
+                ["soffice", "--headless", "--convert-to", "pdf", "--outdir", tmpdir, ppt_path],
+                capture_output=True, timeout=120
+            )
+            if result.returncode != 0:
+                print(f"[slides] soffice 변환 실패: {result.stderr.decode()}")
+                return 0, {}
+        except Exception as e:
+            print(f"[slides] soffice 실행 오류: {e}")
+            return 0, {}
+
+        pdf_path = os.path.join(tmpdir, "input.pdf")
+        if not os.path.exists(pdf_path):
+            print("[slides] PDF 파일이 생성되지 않았습니다.")
+            return 0, {}
+
+        # 3) PDF → WebP 슬라이드 이미지 (PyMuPDF → Pillow) + Vision AI 분석
+        try:
+            doc = fitz.open(pdf_path)
+            total = len(doc)
+
+            for i, page in enumerate(doc, start=1):
+                mat = fitz.Matrix(1.5, 1.5)
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                png_bytes = pix.tobytes("png")
+                img = Image.open(_io.BytesIO(png_bytes))
+                buf = _io.BytesIO()
+                img.save(buf, format="WEBP", quality=85)
+                webp_bytes = buf.getvalue()
+
+                # WebP 업로드
+                supabase_admin.storage.from_(STORAGE_BUCKET).upload(
+                    f"{prefix}/{i}.webp",
+                    webp_bytes,
+                    {"content-type": "image/webp", "upsert": "true"},
+                )
+
+                # Vision AI로 슬라이드 시각 요소 분석 (gpt-4o, high detail)
+                try:
+                    b64 = base64.b64encode(webp_bytes).decode()
+                    resp = client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {
+                                    "url": f"data:image/webp;base64,{b64}",
+                                    "detail": "high"
+                                }},
+                                {"type": "text", "text": (
+                                    "이 PPT 슬라이드에서 텍스트 외의 시각적 요소를 분석해주세요.\n"
+                                    "- 이미지/사진: 무엇을 나타내는지, 어떤 장면인지\n"
+                                    "- 차트/그래프: 종류, 데이터 값, 추세, 축 레이블\n"
+                                    "- 다이어그램/흐름도: 구조, 관계, 흐름\n"
+                                    "- 표: 항목과 값\n"
+                                    "- 코드/스크린샷: 내용 요약\n"
+                                    "시각적 요소가 없고 텍스트만 있으면 정확히 '없음'이라고만 답하세요.\n"
+                                    "한국어로 상세하게 설명하세요."
+                                )}
+                            ]
+                        }],
+                        max_tokens=800,
+                    )
+                    desc = resp.choices[0].message.content.strip()
+                    if desc and desc != "없음":
+                        existing = vision_descriptions.get(i, "")
+                        vision_descriptions[i] = (existing + f"\n[시각 자료] {desc}").strip()
+                        print(f"[slides] 슬라이드 {i} Vision 분석 완료")
+                except Exception as ve:
+                    print(f"[slides] Vision AI 실패 (슬라이드 {i}): {ve}")
+
+            doc.close()
+            print(f"[slides] 슬라이드 {total}장 처리 완료: {prefix}")
+            return total, vision_descriptions
+
+        except Exception as e:
+            print(f"[slides] 이미지 생성/업로드 오류: {e}")
+            import traceback; traceback.print_exc()
+            return 0, {}
+
+def _analyze_pdf_images(file_bytes: bytes) -> dict:
+    """PDF 각 페이지를 렌더링 → 이미지가 있는 페이지를 GPT-4o Vision으로 분석.
+
+    - 이미지 내 텍스트(코드, 레이블 등)도 읽어서 포함
+    - 페이지의 텍스트 컨텍스트와 함께 전달해 문서 흐름과 연결
+
+    Returns:
+        {page_num(int): description_str}
+    """
+    import base64
+    import io as _io
+    import fitz  # PyMuPDF
+    import pdfplumber
+    from PIL import Image
+    from openai import OpenAI
+
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    vision_descriptions: dict = {}
+
+    try:
+        # pdfplumber로 페이지별 텍스트 미리 추출 (Vision 맥락 제공용)
+        page_texts: dict[int, str] = {}
+        with pdfplumber.open(_io.BytesIO(file_bytes)) as plumb_pdf:
+            for page_idx, page in enumerate(plumb_pdf.pages, start=1):
+                raw = (page.extract_text() or "").strip()
+                if raw:
+                    page_texts[page_idx] = raw[:2000]  # 너무 길면 앞부분만
+
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        total_pages = len(doc)
+
+        for page_idx, page in enumerate(doc, start=1):
+            image_list = page.get_images(full=False)
+            if not image_list:
+                continue  # 이미지 없는 페이지 스킵
+
+            # 페이지 PNG 렌더링 → WebP 변환
+            mat = fitz.Matrix(1.5, 1.5)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            img = Image.open(_io.BytesIO(pix.tobytes("png")))
+            buf = _io.BytesIO()
+            img.save(buf, format="WEBP", quality=85)
+            webp_bytes = buf.getvalue()
+
+            # 앞뒤 페이지 텍스트로 문서 흐름 컨텍스트 구성
+            context_parts: list[str] = []
+            for ctx_idx in [page_idx - 1, page_idx, page_idx + 1]:
+                if ctx_idx in page_texts:
+                    label = f"[페이지 {ctx_idx} 텍스트]"
+                    context_parts.append(f"{label}\n{page_texts[ctx_idx]}")
+            context_text = "\n\n".join(context_parts)
+
+            try:
+                b64 = base64.b64encode(webp_bytes).decode()
+                prompt = (
+                    f"이 PDF는 총 {total_pages}페이지 문서의 {page_idx}페이지입니다.\n\n"
+                    f"【주변 페이지 텍스트 (문서 흐름 파악용)】\n{context_text}\n\n"
+                    "위 문서 흐름을 참고하여 이 페이지에 포함된 이미지(사진, 차트, 다이어그램, 표, 코드 스크린샷 등)를 분석하세요.\n\n"
+                    "분석 항목:\n"
+                    "- 이미지/사진: 무엇을 나타내는지, 문서 맥락에서 어떤 의미인지\n"
+                    "- 이미지 내 텍스트·코드: 이미지 안에 적힌 글자, 코드, 레이블을 정확히 읽어서 그대로 인용하고 의미 설명\n"
+                    "- 차트/그래프: 종류, 데이터 값, 추세, 축 레이블, 문서 맥락에서의 해석\n"
+                    "- 다이어그램/흐름도: 구조, 관계, 흐름, 문서에서 이 다이어그램이 설명하는 개념\n"
+                    "- 표: 항목과 값\n"
+                    "설명은 문서 전체 흐름과 연결지어 학생이 이해할 수 있게 한국어로 작성하세요."
+                )
+                resp = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {
+                                "url": f"data:image/webp;base64,{b64}",
+                                "detail": "high"
+                            }},
+                            {"type": "text", "text": prompt},
+                        ]
+                    }],
+                    max_tokens=1000,
+                )
+                desc = resp.choices[0].message.content.strip()
+                if desc:
+                    vision_descriptions[page_idx] = desc
+                    print(f"[pdf_vision] 페이지 {page_idx} Vision 분석 완료")
+            except Exception as ve:
+                print(f"[pdf_vision] Vision AI 실패 (페이지 {page_idx}): {ve}")
+
+        doc.close()
+        print(f"[pdf_vision] 총 {len(vision_descriptions)}개 페이지 Vision 분석 완료")
+    except Exception as e:
+        print(f"[pdf_vision] PDF Vision 분석 오류: {e}")
+
+    return vision_descriptions
+
 
 STORAGE_CONTENT_TYPES = {
     "pdf": "application/pdf",
@@ -62,6 +345,26 @@ STORABLE_EXTENSIONS = set(STORAGE_CONTENT_TYPES.keys())
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 MAX_VIDEO_SIZE = 25 * 1024 * 1024  # Whisper API 제한 25MB
 VIDEO_AUDIO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a"}
+
+
+def _ensure_youtube_document_chunks(document_id: str, storage_path: str) -> None:
+    if not storage_path or not storage_path.startswith(("http://", "https://")):
+        return
+
+    existing = (
+        supabase_admin.table("document_chunks")
+        .select("chunk_index")
+        .eq("doc_id", document_id)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return
+
+    ingest_url(storage_path, document_id)
+    supabase_admin.table("documents").update({
+        "status": "ready",
+    }).eq("id", document_id).execute()
 
 
 @router.post("/documents/upload")
@@ -91,12 +394,25 @@ async def upload_document(
 
     # 1. Supabase Storage에 업로드 (PDF·이미지·비디오·오디오)
     if ext in STORABLE_EXTENSIONS:
-        storage_path = f"{user['id']}/{doc_id}.{ext}"
+        storage_bytes = file_bytes
+        storage_ext = ext
         content_type = STORAGE_CONTENT_TYPES[ext]
+
+        if ext in {"avi", "mkv", "mov"}:
+            converted_bytes, converted_ext, converted_content_type = prepare_media_for_browser_playback(
+                file_bytes,
+                file.filename,
+            )
+            if converted_ext != ext and converted_content_type:
+                storage_bytes = converted_bytes
+                storage_ext = converted_ext
+                content_type = converted_content_type
+
+        storage_path = f"{user['id']}/{doc_id}.{storage_ext}"
         try:
             supabase_admin.storage.from_(STORAGE_BUCKET).upload(
                 storage_path,
-                file_bytes,
+                storage_bytes,
                 {"content-type": content_type},
             )
         except Exception as e:
@@ -123,16 +439,29 @@ async def upload_document(
             supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
         raise HTTPException(status_code=500, detail=f"문서 등록 실패: {str(e)}")
 
-    # 3. RAG 청킹 → document_chunks 저장
+    # 3-A. PPT/PPTX: 슬라이드 이미지 생성 + 영상 추출 + Vision AI 분석 (RAG보다 먼저)
+    pptx_vision: dict = {}
+    if ext in ("pptx", "ppt"):
+        _, pptx_vision = _generate_and_upload_slides(file_bytes, doc_id)
+
+    # 3-B. PDF: 이미지 페이지 Vision AI 분석 (RAG보다 먼저)
+    pdf_vision: dict = {}
+    if ext == "pdf":
+        pdf_vision = _analyze_pdf_images(file_bytes)
+
+    # 4. RAG 청킹 → document_chunks 저장
     try:
-        chunk_count, page_count = ingest_document(file_bytes, doc_id, filename=file.filename)
+        chunk_count, page_count = ingest_document(
+            file_bytes, doc_id, filename=file.filename,
+            pptx_vision=pptx_vision, pdf_vision=pdf_vision,
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()
         supabase_admin.table("documents").update({"status": "error"}).eq("id", doc_id).execute()
         raise HTTPException(status_code=500, detail=f"파일 파싱 실패: {str(e)}")
 
-    # 4. 상태 업데이트
+    # 5. 상태 업데이트
     supabase_admin.table("documents").update({
         "status": "ready",
         "chunk_count": chunk_count,
@@ -302,6 +631,80 @@ async def get_document_access_url(
     return {"url": signed_url, "kind": "signed", "expires_in": 3600}
 
 
+@router.get("/documents/{document_id}/slides")
+async def get_document_slides(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """PPT 슬라이드 에셋 정보 반환.
+    meta.json 로드 후 각 슬라이드의 signed URL (webp + 영상) 반환."""
+    doc_res = (
+        supabase_admin.table("documents")
+        .select("id, notebook_id, user_id, filename, status")
+        .eq("id", document_id)
+        .limit(1)
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+    doc = doc_res.data[0]
+
+    # 권한 확인
+    nb = supabase_admin.table("notebooks").select("user_id").eq("id", doc["notebook_id"]).single().execute().data
+    is_owner = nb and nb.get("user_id") == user["id"]
+    if not is_owner:
+        enrolled = supabase_admin.table("notebook_enrollments").select("id").eq("notebook_id", doc["notebook_id"]).eq("student_id", user["id"]).execute().data
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    prefix = f"{SLIDE_ASSETS_PREFIX}/{document_id}"
+
+    # 파일 목록으로 슬라이드 수 및 영상 파일 파악
+    try:
+        file_list = supabase_admin.storage.from_(STORAGE_BUCKET).list(prefix)
+    except Exception:
+        raise HTTPException(status_code=404, detail="슬라이드 에셋이 없습니다. PPT 처리 중이거나 지원하지 않는 파일입니다.")
+
+    if not file_list:
+        raise HTTPException(status_code=404, detail="슬라이드 에셋이 없습니다. PPT 처리 중이거나 지원하지 않는 파일입니다.")
+
+    # N.webp 파일만 필터링해서 total 계산
+    import re as _re
+    slide_nums = []
+    videos: dict = {}  # {"3": "mp4", ...}
+    for f in file_list:
+        name = f.get("name", "")
+        m = _re.match(r'^(\d+)\.webp$', name)
+        if m:
+            slide_nums.append(int(m.group(1)))
+        v = _re.match(r'^video_(\d+)\.(\w+)$', name)
+        if v:
+            videos[v.group(1)] = v.group(2)
+
+    if not slide_nums:
+        raise HTTPException(status_code=404, detail="슬라이드 에셋이 없습니다. PPT 처리 중이거나 지원하지 않는 파일입니다.")
+
+    total = max(slide_nums)
+
+    def _signed(path: str, expires: int = 3600) -> str:
+        try:
+            resp = supabase_admin.storage.from_(STORAGE_BUCKET).create_signed_url(path, expires)
+            return resp.get("signedURL") or resp.get("signedUrl") or ""
+        except Exception:
+            return ""
+
+    slides = []
+    for i in range(1, total + 1):
+        img_url = _signed(f"{prefix}/{i}.webp")
+        video_url = ""
+        if str(i) in videos:
+            ext = videos[str(i)]
+            video_url = _signed(f"{prefix}/video_{i}.{ext}")
+        slides.append({"slide_number": i, "image_url": img_url, "video_url": video_url})
+
+    return {"total": total, "slides": slides}
+
+
 _IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp"}
 _TEXT_DOC_EXTS = {"pdf", "docx", "doc", "pptx", "ppt", "hwp", "hwpx", "txt"}
 
@@ -373,14 +776,22 @@ async def get_document_audio_summary(
 
     # 3. 파일 형식 판별
     filename = doc.get("filename", "")
+    storage_path = doc.get("storage_path", "") or ""
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    file_type = doc.get("file_type", "") or ""
     is_image = ext in _IMAGE_EXTS
-    is_text_doc = ext in _TEXT_DOC_EXTS
+    is_url_doc = (
+        file_type in ("url", "link")
+        or storage_path.startswith(("http://", "https://"))
+    )
+    is_youtube_doc = bool(storage_path) and _extract_youtube_video_id(storage_path) is not None
+    is_media_doc = ext in VIDEO_AUDIO_EXTENSIONS or is_youtube_doc
+    is_text_doc = ext in _TEXT_DOC_EXTS or is_url_doc or is_media_doc
 
     if not is_image and not is_text_doc:
         raise HTTPException(
             status_code=400,
-            detail=f"지원하지 않는 파일 형식입니다. (지원: 이미지, PDF, DOCX, PPTX, TXT 등)",
+            detail=f"지원하지 않는 파일 형식입니다. (지원: 이미지, PDF, DOCX, PPTX, TXT, 웹 URL, 비디오, 오디오 등)",
         )
 
     openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -427,6 +838,7 @@ async def get_document_audio_summary(
 
     # 4-B. 텍스트 문서: chunks → GPT-4o 요약
     else:
+        _ensure_youtube_document_chunks(document_id, storage_path)
         chunks_res = (
             supabase_admin.table("document_chunks")
             .select("content, chunk_index")
@@ -435,6 +847,11 @@ async def get_document_audio_summary(
             .execute()
         )
         if not chunks_res.data:
+            if is_youtube_doc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="유튜브 자막을 불러오지 못했습니다. 서버에 youtube-transcript-api가 설치되어 있는지 확인해주세요.",
+                )
             raise HTTPException(status_code=400, detail="문서 내용이 없습니다. 문서가 아직 처리 중일 수 있습니다.")
         raw_text = "\n\n".join(c["content"] for c in chunks_res.data)[:8000]
         try:
@@ -486,7 +903,7 @@ async def get_document_chunks(
     """문서 청크 텍스트 반환 (미리보기용)."""
     doc_res = (
         supabase_admin.table("documents")
-        .select("user_id, notebook_id")
+        .select("user_id, notebook_id, storage_path")
         .eq("id", document_id)
         .single()
         .execute()
@@ -507,6 +924,63 @@ async def get_document_chunks(
         if not enrolled:
             raise HTTPException(status_code=403, detail="권한이 없습니다.")
 
+    _ensure_youtube_document_chunks(document_id, doc_res.data.get("storage_path") or "")
+
+    chunks_res = (
+        supabase_admin.table("document_chunks")
+        .select("content, chunk_index")
+        .eq("doc_id", document_id)
+        .order("chunk_index")
+        .execute()
+    )
+    rows = chunks_res.data or []
+    if not rows and _extract_youtube_video_id(doc_res.data.get("storage_path") or "") is not None:
+        raise HTTPException(
+            status_code=500,
+            detail="유튜브 자막을 불러오지 못했습니다. 서버에 youtube-transcript-api가 설치되어 있는지 확인해주세요.",
+        )
+    text = "\n\n".join(_strip_media_metadata(c["content"]) for c in rows)
+    timeline = _build_media_timeline_from_chunks_v2(rows)
+    return {"text": text, "timeline": timeline}
+
+
+
+@router.get("/documents/{document_id}/media-summary")
+async def get_document_media_summary(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    doc_res = (
+        supabase_admin.table("documents")
+        .select("user_id, notebook_id, filename, storage_path")
+        .eq("id", document_id)
+        .single()
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    if doc_res.data["user_id"] != user["id"]:
+        enrolled = (
+            supabase_admin.table("notebook_enrollments")
+            .select("id")
+            .eq("notebook_id", doc_res.data["notebook_id"])
+            .eq("student_id", user["id"])
+            .execute()
+            .data
+        )
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    filename = doc_res.data.get("filename") or ""
+    storage_path = doc_res.data.get("storage_path") or ""
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    is_youtube_doc = bool(storage_path) and _extract_youtube_video_id(storage_path) is not None
+    if ext not in VIDEO_AUDIO_EXTENSIONS and not is_youtube_doc:
+        raise HTTPException(status_code=400, detail="비디오/오디오 문서에만 사용할 수 있습니다.")
+
+    _ensure_youtube_document_chunks(document_id, doc_res.data.get("storage_path") or "")
+
     chunks_res = (
         supabase_admin.table("document_chunks")
         .select("content")
@@ -514,8 +988,29 @@ async def get_document_chunks(
         .order("chunk_index")
         .execute()
     )
-    text = "\n\n".join(c["content"] for c in (chunks_res.data or []))
-    return {"text": text}
+    rows = chunks_res.data or []
+    if not rows and is_youtube_doc:
+        raise HTTPException(
+            status_code=500,
+            detail="??? ??? ???? ?????. ??? youtube-transcript-api? ???? ??? ??????.",
+        )
+    summary = _parse_media_summary(rows[0]["content"]) if rows else {"title": "전체 내용 요약", "overview": "", "sections": []}
+    if not summary.get("sections"):
+        summary = build_media_summary_from_chunks(rows, filename)
+        if summary.get("sections") and rows:
+            updated_chunks = _inject_media_summary([row["content"] for row in rows], summary)
+            try:
+                supabase_admin.table("document_chunks").update({
+                    "content": updated_chunks[0],
+                }).eq("doc_id", document_id).eq("chunk_index", 0).execute()
+            except Exception:
+                pass
+    return summary
+
+    # 청크는 CHUNK_OVERLAP(100자) 슬라이딩 윈도우로 생성되므로
+    # 두 번째 청크부터는 앞 CHUNK_OVERLAP 글자가 이전 청크 끝과 중복됨.
+    # 원본 텍스트 복원: 첫 청크는 그대로, 나머지는 overlap 부분 제거 후 바로 이어붙임.
+    # separator 없이 ""로 join — 원본 줄바꿈은 텍스트 내부에 이미 포함되어 있음.
 
 
 @router.patch("/documents/{document_id}")

@@ -29,8 +29,10 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    sources: list[str]
+    sources: list[Any]
+    references: list[dict[str, Any]] = []
     session_id: str
+    suggested_questions: list[str] = []
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -48,7 +50,7 @@ async def chat(
         _history_cache[session_key] = []
     chat_history = _history_cache[session_key]
 
-    answer, sources = chat_with_docs(
+    answer, sources, references, suggested_questions = chat_with_docs(
         doc_ids=doc_ids,
         question=req.question,
         model=req.model or "gpt-4o-mini",
@@ -62,7 +64,9 @@ async def chat(
     return ChatResponse(
         answer=answer,
         sources=sources,
+        references=references,
         session_id=req.session_id or "default",
+        suggested_questions=suggested_questions,
     )
 
 
@@ -70,6 +74,7 @@ class SuggestionsRequest(BaseModel):
     doc_ids: list[str]
     asked_questions: list[str] = []
     model: Optional[str] = "gpt-4o-mini"
+    last_answer: str = ""
 
 
 class SuggestionsResponse(BaseModel):
@@ -89,5 +94,6 @@ async def get_suggestions(
         doc_ids=req.doc_ids,
         asked_questions=req.asked_questions,
         model=req.model or "gpt-4o-mini",
+        last_answer=req.last_answer,
     )
     return SuggestionsResponse(questions=questions)
