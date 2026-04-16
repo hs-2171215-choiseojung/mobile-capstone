@@ -8,9 +8,10 @@ import { Resizable } from 're-resizable';
 
 import { TopNavBar } from "@/components/workspace/student/TopNavBar";
 import { WeeklyPlanCard } from "@/components/workspace/student/WeeklyPlanCard";
-import { StudentChatPanel } from "@/components/workspace/student/StudentChatPanel";
+import { StudentChatPanel, SourceChunk } from "@/components/workspace/student/StudentChatPanel";
 import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer";
 import { StudentSourceViewer } from "@/components/workspace/student/StudentSourceViewer";
+import { PptSlideViewer } from "@/components/workspace/PptSlideViewer";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -37,10 +38,44 @@ interface DocumentInfo {
   status?: string;
 }
 
+interface MediaTimelineEntry {
+  time_sec: number;
+  label?: string;
+  text: string;
+}
+
+interface MediaSummarySection {
+  title: string;
+  start_sec: number;
+  end_sec?: number;
+  summary: string;
+}
+
+interface MediaSummaryData {
+  title: string;
+  overview: string;
+  sections: MediaSummarySection[];
+}
+
 const PREVIEWABLE_OFFICE_EXTS = new Set(["docx", "pptx", "ppt"]);
 
 function getOfficeEmbedUrl(url: string): string {
   return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`;
+}
+
+function isYoutubeUrl(url?: string): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    return ["youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(host);
+  } catch {
+    return false;
+  }
+}
+
+function isHttpUrl(url?: string): boolean {
+  return typeof url === "string" && /^https?:\/\//i.test(url);
 }
 
 export default function StudentWorkspacePage() {
@@ -60,6 +95,18 @@ export default function StudentWorkspacePage() {
   const [selectedSourceError, setSelectedSourceError] = useState("");
   const [isSourceLoading, setIsSourceLoading] = useState(false);
   const [selectedSourceTranscript, setSelectedSourceTranscript] = useState<string | undefined>(undefined);
+  const [selectedSourceTimeline, setSelectedSourceTimeline] = useState<MediaTimelineEntry[]>([]);
+  const [selectedSourceSummary, setSelectedSourceSummary] = useState<MediaSummaryData | null>(null);
+  const [selectedSourceSummaryLoading, setSelectedSourceSummaryLoading] = useState(false);
+  const [selectedSourceMediaDuration, setSelectedSourceMediaDuration] = useState(0);
+  const [selectedSourceMediaType, setSelectedSourceMediaType] = useState<"audio" | "video" | null>(null);
+  const [selectedSourceSeekRequest, setSelectedSourceSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
+  const [highlightRange, setHighlightRange] = useState<{ start: number; length: number } | null>(null);
+  const pendingHighlightRef = useRef<{ start: number; length: number } | null>(null);
+  const [citationScrollText, setCitationScrollText] = useState<string | undefined>(undefined);
+  const pendingScrollTextRef = useRef<string | undefined>(undefined);
+  const [currentSlide, setCurrentSlide] = useState<number | null>(null);
+  const [chatRequestedSlide, setChatRequestedSlide] = useState<number | null>(null);
 
   const [selectedLLM, setSelectedLLM] = useState('gpt-4o');
   const [selectedDifficulty, setSelectedDifficulty] = useState('intermediate');
@@ -91,18 +138,17 @@ export default function StudentWorkspacePage() {
   const isReadyDocument = (doc: Partial<DocumentInfo> | null | undefined) =>
     !!doc?.id && (!doc.status || doc.status === "ready");
 
-  const getDocumentIdentityKeys = (doc: Partial<DocumentInfo>) => {
-    const keys: string[] = [];
+  const getDocumentIdentityKey = (doc: Partial<DocumentInfo>) => {
     const id = typeof doc.id === "string" ? doc.id.trim() : "";
-    if (id) keys.push(`id:${id}`);
+    if (id) return `id:${id}`;
 
     const storagePath = typeof doc.storage_path === "string" ? doc.storage_path.trim().toLowerCase() : "";
-    if (storagePath) keys.push(`path:${storagePath}`);
+    if (storagePath) return `path:${storagePath}`;
 
     const filename = typeof doc.filename === "string" ? doc.filename.trim().toLowerCase() : "";
-    if (filename) keys.push(`name:${filename}`);
+    if (filename) return `name:${filename}`;
 
-    return keys;
+    return "";
   };
 
   const mergeUniqueDocuments = (...groups: Array<Partial<DocumentInfo>[]>) => {
@@ -120,11 +166,11 @@ export default function StudentWorkspacePage() {
         status: toText(rawDoc.status),
       };
 
-      const identityKeys = getDocumentIdentityKeys(normalizedDoc);
-      if (identityKeys.length === 0) return;
-      if (identityKeys.some((key) => seenKeys.has(key))) return;
+      const identityKey = getDocumentIdentityKey(normalizedDoc);
+      if (!identityKey) return;
+      if (seenKeys.has(identityKey)) return;
 
-      identityKeys.forEach((key) => seenKeys.add(key));
+      seenKeys.add(identityKey);
       uniqueDocs.push(normalizedDoc);
     });
 
@@ -321,6 +367,8 @@ export default function StudentWorkspacePage() {
   }, [selectedSourceUrl]);
 
   const AUDIO_EXTS = new Set(["mp3", "m4a", "wav"]);
+  const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp"]);
+  const PDF_EXTS = new Set(["pdf"]);
   const TEXT_ONLY_EXTS = new Set(["docx", "pptx", "ppt", "hwp", "hwpx"]);
 
   const openSourceDocument = async (doc: DocumentInfo) => {
@@ -334,6 +382,12 @@ export default function StudentWorkspacePage() {
     setSelectedSourceDownloadUrl("");
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
+    setSelectedSourceTimeline([]);
+    setSelectedSourceSummary(null);
+    setSelectedSourceSummaryLoading(false);
+    setSelectedSourceMediaDuration(0);
+    setSelectedSourceMediaType(null);
+    setSelectedSourceSeekRequest(null);
     setIsSourceLoading(true);
     try {
       const supabase = createClient();
@@ -342,18 +396,34 @@ export default function StudentWorkspacePage() {
       if (!token) { setSelectedSourceError("로그인이 필요합니다."); return; }
 
       const ext = doc.filename.toLowerCase().split(".").pop() ?? doc.file_type;
+      const rawTypeIsUrl = doc.file_type === "url" || doc.file_type === "link";
+      const isYoutubeSource = isYoutubeUrl(doc.storage_path);
       const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
-      const needsAccessUrl = !TEXT_ONLY_EXTS.has(ext) || PREVIEWABLE_OFFICE_EXTS.has(ext);
-      const needsText = AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext) || TEXT_ONLY_EXTS.has(ext);
+      const needsAccessUrl = rawTypeIsUrl || !TEXT_ONLY_EXTS.has(ext) || PREVIEWABLE_OFFICE_EXTS.has(ext) || !ext;
+      const needsText = rawTypeIsUrl || isYoutubeSource || AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext) || TEXT_ONLY_EXTS.has(ext);
       const needsPreviewPdf = PREVIEWABLE_OFFICE_EXTS.has(ext);
+      const isKnownFileExt =
+        AUDIO_EXTS.has(ext) ||
+        VIDEO_EXTS.has(ext) ||
+        TEXT_ONLY_EXTS.has(ext) ||
+        PREVIEWABLE_OFFICE_EXTS.has(ext) ||
+        IMAGE_EXTS.has(ext) ||
+        PDF_EXTS.has(ext);
 
-      const nextSourceTextPromise = needsText
+      let resolvedAccessUrl = "";
+      const _unusedNextSourceTextPromise = needsText
         ? fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } })
             .then((r) => r.json().catch(() => ({})))
-            .then((data) => { if (data?.text) setSelectedSourceTranscript(data.text); })
+            .then((data) => {
+              // TEXT_ONLY 파일(HWP 등)은 텍스트가 없어도 transcript 뷰를 표시하기 위해 항상 설정
+              if (TEXT_ONLY_EXTS.has(ext)) {
+                setSelectedSourceTranscript(data?.text ?? "");
+              } else if (data?.text) {
+                setSelectedSourceTranscript(data.text);
+              }
+            })
         : Promise.resolve();
 
-      let nextAccessUrl = "";
       if (needsAccessUrl) {
         const accessResponse = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
           headers: { Authorization: `Bearer ${token}` },
@@ -361,26 +431,70 @@ export default function StudentWorkspacePage() {
         const accessData = await accessResponse.json().catch(() => ({}));
 
         if (accessResponse.ok && accessData?.url) {
-          nextAccessUrl = accessData.url;
+          resolvedAccessUrl = accessData.url;
           setSelectedSourceDownloadUrl(accessData.url);
-          if (!needsPreviewPdf) {
-            setSelectedSourceUrl(accessData.url);
-          }
         } else if (!needsText && !needsPreviewPdf) {
           setSelectedSourceError(accessData?.detail || "문서 URL을 가져오지 못했습니다.");
         }
       }
 
-      if (needsPreviewPdf) {
-        const previewResponse = await fetch(`${API}/api/documents/${doc.id}/preview-pdf`, {
+      const shouldUseUrlDocumentFlow =
+        rawTypeIsUrl ||
+        isYoutubeSource ||
+        isYoutubeUrl(resolvedAccessUrl) ||
+        (isHttpUrl(resolvedAccessUrl) && !isKnownFileExt);
+
+      if (shouldUseUrlDocumentFlow) {
+        const textRes = await fetch(`${API}/api/documents/${doc.id}/chunks`, {
           headers: { Authorization: `Bearer ${token}` },
         });
+        const textData = await textRes.json().catch(() => ({}));
 
-        if (previewResponse.ok) {
-          const blob = await previewResponse.blob();
-          setSelectedSourceUrl(URL.createObjectURL(blob));
-        } else if (nextAccessUrl) {
-          setSelectedSourceUrl(getOfficeEmbedUrl(nextAccessUrl));
+        if (resolvedAccessUrl) {
+          setSelectedSourceUrl(resolvedAccessUrl);
+        } else {
+          setSelectedSourceError("문서 URL을 가져오지 못했습니다.");
+        }
+
+        if (textRes.ok) {
+          setSelectedSourceTranscript(typeof textData?.text === "string" ? textData.text : "");
+          setSelectedSourceTimeline(Array.isArray(textData?.timeline) ? textData.timeline : []);
+        } else {
+          const detail = typeof textData?.detail === "string" ? textData.detail : "텍스트를 불러오지 못했습니다.";
+          setSelectedSourceTranscript(detail);
+          setSelectedSourceTimeline([]);
+        }
+        return;
+      }
+
+      const nextSourceTextPromise = needsText
+        ? fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } })
+            .then(async (r) => {
+              const data = await r.json().catch(() => ({}));
+              if (!r.ok) {
+                const detail = typeof data?.detail === "string" ? data.detail : "텍스트를 불러오지 못했습니다.";
+                setSelectedSourceTranscript(detail);
+                setSelectedSourceTimeline([]);
+                return;
+              }
+              if (typeof data?.text === "string") {
+                setSelectedSourceTranscript(data.text);
+              } else {
+                setSelectedSourceTranscript("");
+              }
+              if (Array.isArray(data?.timeline)) setSelectedSourceTimeline(data.timeline);
+            })
+        : Promise.resolve();
+
+      if (resolvedAccessUrl) {
+        if (!needsPreviewPdf) {
+          setSelectedSourceUrl(resolvedAccessUrl);
+        }
+      }
+
+      if (needsPreviewPdf) {
+        if (resolvedAccessUrl) {
+          setSelectedSourceUrl(getOfficeEmbedUrl(resolvedAccessUrl));
         }
       }
 
@@ -389,6 +503,38 @@ export default function StudentWorkspacePage() {
       setSelectedSourceError("문서를 여는 중 오류가 발생했습니다.");
     } finally {
       setIsSourceLoading(false);
+    }
+  };
+
+  // 소스 로딩 완료 후 대기 중인 하이라이트 적용
+  useEffect(() => {
+    if (!isSourceLoading && pendingHighlightRef.current) {
+      setHighlightRange(pendingHighlightRef.current);
+      pendingHighlightRef.current = null;
+    }
+    if (!isSourceLoading && pendingScrollTextRef.current) {
+      setCitationScrollText(pendingScrollTextRef.current);
+      pendingScrollTextRef.current = undefined;
+    }
+  }, [isSourceLoading]);
+
+  const handleCitationClick = (chunk: SourceChunk) => {
+    const doc = docs.find((d: DocumentInfo) => d.id === chunk.doc_id);
+    if (!doc) return;
+    // char_offset 이 있으면 정확한 위치, 없으면 null (븷어가 fallback 처리)
+    const range =
+      chunk.char_offset !== undefined && chunk.char_offset >= 0 && chunk.char_length
+        ? { start: chunk.char_offset, length: chunk.char_length }
+        : null;
+    const scrollText = chunk.text?.slice(0, 80) || undefined;
+    if (selectedSource?.id === chunk.doc_id) {
+      setHighlightRange(range);
+      setCitationScrollText(scrollText);
+    } else {
+      setHighlightRange(null);
+      pendingHighlightRef.current = range;
+      pendingScrollTextRef.current = scrollText;
+      void openSourceDocument(doc as DocumentInfo);
     }
   };
 
@@ -416,8 +562,62 @@ export default function StudentWorkspacePage() {
     setSelectedSourceDownloadUrl("");
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
+    setSelectedSourceTimeline([]);
+    setSelectedSourceSummary(null);
+    setSelectedSourceSummaryLoading(false);
+    setSelectedSourceMediaDuration(0);
+    setSelectedSourceMediaType(null);
+    setSelectedSourceSeekRequest(null);
     setActiveDocIds([]);
     shouldRestoreCenterScrollRef.current = true;
+  };
+
+  const requestSelectedSourceSummary = async () => {
+    if (!selectedSource || selectedSourceSummaryLoading || (selectedSourceSummary?.sections?.length ?? 0) > 0) return;
+
+    const ext = selectedSource.filename.toLowerCase().split(".").pop() ?? selectedSource.file_type;
+    const isYoutubeSource =
+      isYoutubeUrl(selectedSource.storage_path) ||
+      isYoutubeUrl(selectedSourceUrl) ||
+      isYoutubeUrl(selectedSourceDownloadUrl);
+    const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
+    const isExternalLinkLike =
+      (isHttpUrl(selectedSourceUrl) || isHttpUrl(selectedSourceDownloadUrl)) &&
+      !AUDIO_EXTS.has(ext) &&
+      !VIDEO_EXTS.has(ext) &&
+      !TEXT_ONLY_EXTS.has(ext) &&
+      !PREVIEWABLE_OFFICE_EXTS.has(ext) &&
+      !IMAGE_EXTS.has(ext) &&
+      !PDF_EXTS.has(ext);
+    if (!isYoutubeSource && !isExternalLinkLike && !AUDIO_EXTS.has(ext) && !VIDEO_EXTS.has(ext)) return;
+
+    setSelectedSourceSummaryLoading(true);
+    try {
+      const supabase = createClient();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) return;
+
+      const response = await fetch(`${API}/api/documents/${selectedSource.id}/media-summary`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && Array.isArray(data?.sections)) {
+        setSelectedSourceSummary({
+          title: typeof data?.title === "string" ? data.title : "전체 내용 요약",
+          overview: typeof data?.overview === "string" ? data.overview : "",
+          sections: data.sections,
+        });
+      } else if (typeof data?.detail === "string") {
+        setSelectedSourceSummary({
+          title: "요약을 불러오지 못했습니다",
+          overview: data.detail,
+          sections: [],
+        });
+      }
+    } finally {
+      setSelectedSourceSummaryLoading(false);
+    }
   };
 
   return (
@@ -431,34 +631,77 @@ export default function StudentWorkspacePage() {
           const normalizeType = (t: string) => ({ memo: "notepad", summary: "report", plan: "mindmap", data: "table" }[t] || t);
           const itemNeedsNoChat = selectedItem && CHAT_TYPES.has(normalizeType(selectedItem.type ?? ""));
 
-          if (selectedSource) return (
-            /* 소스 문서: 뷰어 + 우측 채팅 (Resizable) */
-            <div className="flex flex-1 overflow-hidden">
-              <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative min-h-0">
-                <StudentSourceViewer
-                  source={selectedSource}
-                  sourceUrl={selectedSourceUrl}
-                  sourceFileUrl={selectedSourceDownloadUrl || selectedSourceUrl}
-                  loading={isSourceLoading}
-                  error={selectedSourceError}
-                  transcriptText={selectedSourceTranscript}
-                  onClose={closeSource}
-                />
+          if (selectedSource) {
+            const srcExt = selectedSource.filename.toLowerCase().split(".").pop() ?? selectedSource.file_type;
+            const isPpt = (srcExt === "pptx" || srcExt === "ppt") && !selectedSource.storage_path?.startsWith("http");
+            const isPdf = srcExt === "pdf";
+            return (
+              /* 소스 문서: 뷰어 + 우측 채팅 (Resizable) */
+              <div className="flex flex-1 overflow-hidden">
+                <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative min-h-0">
+                  <StudentSourceViewer
+                    source={selectedSource}
+                    sourceUrl={selectedSourceUrl}
+                    sourceFileUrl={selectedSourceDownloadUrl || selectedSourceUrl}
+                    loading={isSourceLoading}
+                    error={selectedSourceError}
+                    transcriptText={selectedSourceTranscript}
+                    mediaSummaryData={selectedSourceSummary}
+                    mediaSummaryLoading={selectedSourceSummaryLoading}
+                    showMediaSummaryToggle
+                    onRequestMediaSummary={() => {
+                      void requestSelectedSourceSummary();
+                    }}
+                    seekRequest={selectedSourceSeekRequest}
+                    onMediaInfoChange={({ kind, duration }) => {
+                      setSelectedSourceMediaType(kind);
+                      setSelectedSourceMediaDuration(duration);
+                    }}
+                    highlightRange={highlightRange ?? undefined}
+                    scrollToText={citationScrollText}
+                    onClose={closeSource}
+                    customViewer={isPpt ? (
+                      <PptSlideViewer
+                        docId={selectedSource.id}
+                        currentSlide={chatRequestedSlide}
+                        onSlideChange={(n) => setCurrentSlide(n)}
+                      />
+                    ) : undefined}
+                  />
+                </div>
+                <Resizable
+                  size={{ width: chatWidth, height: '100%' }}
+                  minWidth={280}
+                  maxWidth={640}
+                  enable={{ left: true }}
+                  onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
+                  handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
+                  handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
+                  className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
+                >
+                  <StudentChatPanel
+                    activeDocIds={activeDocIds}
+                    docs={docs}
+                    notebookId={notebookId}
+                    selectedLLM={selectedLLM}
+                    selectedDifficulty={selectedDifficulty}
+                    activeSourceId={selectedSource.id}
+                    activeSourceMediaType={selectedSourceMediaType}
+                    activeSourceMediaDuration={selectedSourceMediaDuration}
+                    onSeekToTimestamp={(seconds) => setSelectedSourceSeekRequest({ seconds, nonce: Date.now() })}
+                    onCitationClick={handleCitationClick}
+                    onSlideClick={isPpt ? (n) => setChatRequestedSlide(n) : undefined}
+                    onPageClick={isPdf ? (n) => {
+                      setSelectedSourceUrl((prev) => {
+                        const base = prev.split("#")[0];
+                        return `${base}#page=${n}`;
+                      });
+                    } : undefined}
+                  />
+                </Resizable>
               </div>
-              <Resizable
-                size={{ width: chatWidth, height: '100%' }}
-                minWidth={280}
-                maxWidth={640}
-                enable={{ left: true }}
-                onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
-                handleStyles={{ left: { width: '12px', left: '-6px', zIndex: 50, cursor: 'col-resize' } }}
-                handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
-                className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
-              >
-                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} />
-              </Resizable>
-            </div>
-          );
+            );
+          }
 
           if (selectedItem && itemNeedsNoChat) return (
             /* 퀴즈·마인드맵·표·플래시카드: 단독 전체화면 */
@@ -489,7 +732,7 @@ export default function StudentWorkspacePage() {
                 handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
                 className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
               >
-                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} />
+                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} onCitationClick={handleCitationClick} />
               </Resizable>
             </div>
           );
@@ -693,7 +936,7 @@ export default function StudentWorkspacePage() {
                   }}
                   className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
                 >
-                  <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} onClose={() => setIsChatOpen(false)} />
+                  <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} onClose={() => setIsChatOpen(false)} onCitationClick={handleCitationClick} />
                 </Resizable>
               )}
             </div>
