@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
-import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2, X } from 'lucide-react';
+import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2, X, Volume2, VolumeX } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import MarkdownPreview from '@/components/workspace/MarkdownPreview';
 
@@ -55,6 +55,50 @@ interface ChatMessage {
 }
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// ── 음성 목록 ────────────────────────────────────────────────
+const VOICES = [
+  { key: "sarah",  label: "Sarah",  desc: "차분한 여성" },
+  { key: "rachel", label: "Rachel", desc: "명확한 여성" },
+  { key: "josh",   label: "Josh",   desc: "친근한 남성" },
+  { key: "adam",   label: "Adam",   desc: "전문적인 남성" },
+] as const;
+type VoiceKey = typeof VOICES[number]["key"];
+
+type WordSegment = { text: string; start: number; end: number };
+type CachedAudio = { audioBase64: string; words: WordSegment[] };
+
+const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5] as const;
+
+// ── IndexedDB 헬퍼 ───────────────────────────────────────────
+const IDB_NAME  = 'studyu_audio_cache';
+const IDB_STORE = 'audio';
+
+function idbOpen(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+async function idbGet(key: string): Promise<CachedAudio | undefined> {
+  const db = await idbOpen();
+  return new Promise(resolve => {
+    const req = db.transaction(IDB_STORE).objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => resolve(req.result ?? undefined);
+    req.onerror   = () => resolve(undefined);
+  });
+}
+async function idbSet(key: string, value: CachedAudio): Promise<void> {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
+  });
+}
 
 function formatTimestamp(totalSeconds: number) {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
@@ -265,6 +309,12 @@ function renderWithCitations(
   });
 }
 
+const DEFAULT_INITIAL_QUESTIONS = [
+  "이 자료의 핵심 개념을 설명해줘",
+  "주요 내용들 간의 관계를 분석해줘",
+  "실제로 어떻게 활용할 수 있을까?",
+];
+
 export function StudentChatPanel({
   activeDocIds,
   docs,
@@ -306,9 +356,8 @@ export function StudentChatPanel({
     ];
   });
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
-  const [suggestionsPage, setSuggestionsPage] = useState(0);
+  const [initialQuestions, setInitialQuestions] = useState<string[]>(DEFAULT_INITIAL_QUESTIONS);
   const askedQuestionsRef = useRef<string[]>([]);
-  const clickedIndexRef = useRef<number>(-1);
   const suggestionFromChatRef = useRef(false);
   const suggestionFetchAbortRef = useRef<AbortController | null>(null);
   const suggestionsRef = useRef<Suggestion[]>(suggestions);
@@ -323,12 +372,45 @@ export function StudentChatPanel({
 
   const chatKeyRef = useRef(chatKey);
 
+  // ── 음성 모드 state/ref ────────────────────────────────────
+  const [voiceMode,        setVoiceMode]        = useState(false);
+  const [podcastMode,      setPodcastMode]      = useState(false);
+  const [selectedVoice,    setSelectedVoice]    = useState<VoiceKey>("sarah");
+  const [voiceDropdownOpen, setVoiceDropdownOpen] = useState(false);
+  const voiceDropdownRef = useRef<HTMLDivElement>(null);
+  const [playbackRate,     setPlaybackRate]     = useState<number>(() =>
+    typeof window !== 'undefined'
+      ? parseFloat(localStorage.getItem('studyu_playback_rate') || '1')
+      : 1
+  );
+  const [speakingMsgIdx,   setSpeakingMsgIdx]   = useState<number | null>(null);
+  const [loadingAudioIdx,  setLoadingAudioIdx]  = useState<number | null>(null);
+  const [currentWordIdx,   setCurrentWordIdx]   = useState<number | null>(null);
+  const [audioProgress,    setAudioProgress]    = useState<number>(0);
+
+  const audioRef         = useRef<HTMLAudioElement | null>(null);
+  const wordsRef         = useRef<WordSegment[]>([]);
+  const playbackRateRef  = useRef<number>(
+    typeof window !== 'undefined'
+      ? parseFloat(localStorage.getItem('studyu_playback_rate') || '1')
+      : 1
+  );
+  const audioCacheRef    = useRef<Map<string, CachedAudio>>(new Map());
+  const autoSpeakRef     = useRef<string | null>(null);
+  const podcastModeRef   = useRef(false);
+  const messagesRef      = useRef<any[]>([]);
+  const podcastNextRef   = useRef<number | null>(null);
+
+  // ── STT 상태 ─────────────────────────────────────────────
+  const [isRecording, setIsRecording] = useState(false);
+  const [sttError,    setSttError]    = useState<string | null>(null);
+  const recognitionRef = useRef<any>(null);
+
   // activeDocIds 변경 시 추천 질문 fetch (localStorage에 없을 때만)
   useEffect(() => {
     const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
     if (targetDocIds.length === 0) return;
     suggestionFromChatRef.current = false;
-    setSuggestionsPage(0);
 
     // localStorage에 저장된 추천 질문 복원 시도
     const savedKey = `${chatKey}_suggestions`;
@@ -338,7 +420,6 @@ export function StudentChatPanel({
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
           setSuggestions(parsed as Suggestion[]);
-          setSuggestionsPage(Math.floor((parsed.length - 1) / 3));
           askedQuestionsRef.current = [];
           return;
         }
@@ -422,10 +503,177 @@ export function StudentChatPanel({
     return sessionData.session?.access_token || "";
   };
 
-  const handleSendMessage = async () => {
-    if (!inputValue.trim() || isLoading) return;
+  // ── 음성 재생 ─────────────────────────────────────────────
+  const stopSpeaking = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      audioRef.current = null;
+    }
+    wordsRef.current = [];
+    setSpeakingMsgIdx(null);
+    setCurrentWordIdx(null);
+    setLoadingAudioIdx(null);
+  };
 
-    const userMessage = inputValue.trim();
+  const createAndPlayAudio = (audioBase64: string, words: WordSegment[], msgIdx: number) => {
+    const bytes = Uint8Array.from(atob(audioBase64), c => c.charCodeAt(0));
+    const url   = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
+    const audio = new Audio(url);
+    audio.playbackRate = playbackRateRef.current;
+
+    audioRef.current   = audio;
+    wordsRef.current   = words;
+    setSpeakingMsgIdx(msgIdx);
+    setCurrentWordIdx(words.length > 0 ? 0 : null);
+    setLoadingAudioIdx(null);
+    setAudioProgress(0);
+
+    audio.ontimeupdate = () => {
+      const t = audio.currentTime;
+      // 진행 바
+      if (audio.duration > 0) setAudioProgress(t / audio.duration);
+      // 단어 하이라이팅
+      const ws = wordsRef.current;
+      if (!ws.length) return;
+      let active = 0;
+      for (let i = 0; i < ws.length; i++) {
+        if (ws[i].start <= t) active = i;
+        else break;
+      }
+      setCurrentWordIdx(prev => (prev === active ? prev : active));
+    };
+    const cleanup = () => {
+      setSpeakingMsgIdx(null);
+      setCurrentWordIdx(null);
+      setAudioProgress(0);
+      wordsRef.current = [];
+      URL.revokeObjectURL(url);
+      // 팟캐스트 모드: 다음 AI 메시지 예약
+      if (podcastModeRef.current) {
+        const msgs = messagesRef.current;
+        for (let i = msgIdx + 1; i < msgs.length; i++) {
+          if (msgs[i].type === 'ai') { podcastNextRef.current = i; break; }
+        }
+      }
+    };
+    audio.onended = cleanup;
+    audio.onerror = cleanup;
+    audio.play();
+  };
+
+  const speakMessage = async (text: string, msgIdx: number) => {
+    if (speakingMsgIdx === msgIdx) { stopSpeaking(); return; }
+    stopSpeaking();
+
+    const cacheKey = `${selectedVoice}:${text}`;
+
+    // 1. 인메모리 캐시
+    const memHit = audioCacheRef.current.get(cacheKey);
+    if (memHit) { createAndPlayAudio(memHit.audioBase64, memHit.words, msgIdx); return; }
+
+    setLoadingAudioIdx(msgIdx);
+
+    // 2. IndexedDB 캐시
+    try {
+      const idbHit = await idbGet(cacheKey);
+      if (idbHit) {
+        audioCacheRef.current.set(cacheKey, idbHit);
+        createAndPlayAudio(idbHit.audioBase64, idbHit.words, msgIdx);
+        return;
+      }
+    } catch { /* IndexedDB 실패 시 무시하고 API 호출 */ }
+
+    // 3. API 호출
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API}/api/tts/synthesize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ text, voice: selectedVoice }),
+      });
+      if (!res.ok) throw new Error("TTS 생성 실패");
+      const data = await res.json();
+
+      const cached: CachedAudio = { audioBase64: data.audio_base64, words: data.words ?? [] };
+      audioCacheRef.current.set(cacheKey, cached);
+      idbSet(cacheKey, cached).catch(() => {}); // fire-and-forget
+
+      createAndPlayAudio(data.audio_base64, data.words ?? [], msgIdx);
+    } catch {
+      setLoadingAudioIdx(null);
+    }
+  };
+
+  const changeSpeed = (rate: number) => {
+    setPlaybackRate(rate);
+    playbackRateRef.current = rate;
+    if (audioRef.current) audioRef.current.playbackRate = rate;
+    localStorage.setItem('studyu_playback_rate', String(rate));
+  };
+
+  const toggleVoiceMode = () => {
+    if (voiceMode) {
+      stopSpeaking();
+      podcastNextRef.current = null;
+      autoSpeakRef.current = null;
+      setPodcastMode(false);
+      podcastModeRef.current = false;
+    }
+    setVoiceMode(v => !v);
+  };
+
+  // ── STT (음성 입력, Web Speech API) ──────────────────────
+  const handleMicClick = () => {
+    setSttError(null);
+
+    if (isRecording) {
+      recognitionRef.current?.stop();
+      return;
+    }
+
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setSttError("이 브라우저는 음성 인식을 지원하지 않습니다. Chrome 또는 Edge를 사용해주세요.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ko-KR';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart  = () => setIsRecording(true);
+    recognition.onend    = () => setIsRecording(false);
+
+    recognition.onresult = (e: any) => {
+      const text = e.results[0]?.[0]?.transcript?.trim();
+      if (text) {
+        setInputValue(text);
+      } else {
+        setSttError("인식된 내용이 없어요. 다시 시도해 보세요.");
+      }
+    };
+
+    recognition.onerror = (e: any) => {
+      if (e.error === 'not-allowed') {
+        setSttError("마이크 접근 권한이 필요합니다.");
+      } else if (e.error !== 'no-speech') {
+        setSttError("음성 인식 중 오류가 발생했습니다.");
+      }
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  };
+
+  // ── 채팅 전송 ─────────────────────────────────────────────
+  const handleSendMessage = async (textOverride?: string) => {
+    const userMessage = (textOverride ?? inputValue).trim();
+    if (!userMessage || isLoading) return;
+
+
     setMessages(prev => [...prev, { type: 'user', content: userMessage }]);
     setInputValue(''); 
     setIsLoading(true);
@@ -459,6 +707,14 @@ export function StudentChatPanel({
       }
 
       const data = await res.json();
+      const normalizedAnswer = normalizeInlineListMarkers(
+        normalizeDetachedPageRefs(
+          collapseNearbyTimestampLists(data.answer ?? "")
+        )
+      );
+
+      if (voiceMode || podcastMode) autoSpeakRef.current = normalizedAnswer;
+
       setMessages(prev => [
         ...prev,
         {
@@ -476,25 +732,19 @@ export function StudentChatPanel({
       // 추천 질문 처리
       lastAnswerRef.current = data.answer ?? "";
       askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
-      const replacingIndex = clickedIndexRef.current;
-      clickedIndexRef.current = -1;
 
       const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
       const pptSuggestions: string[] = Array.isArray(data.suggested_questions) ? data.suggested_questions : [];
 
       const applyNewSuggestions = (newQuestions: string[]) => {
         const currentSuggestions = suggestionsRef.current;
-        const marked = replacingIndex >= 0
-          ? currentSuggestions.map((s: Suggestion, idx: number) => idx === replacingIndex ? { ...s, isOld: true } : s)
-          : currentSuggestions;
         const newChips = newQuestions.slice(0, 3).map((text, i) => ({
           text,
           category: CATS[i % 3],
           isOld: false,
         })) as Suggestion[];
-        const nextSuggestions = [...marked, ...newChips];
+        const nextSuggestions = [...currentSuggestions, ...newChips];
         setSuggestions(nextSuggestions);
-        setSuggestionsPage(Math.floor((nextSuggestions.length - 1) / 3));
         try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(nextSuggestions)); } catch {}
       };
 
@@ -796,78 +1046,6 @@ export function StudentChatPanel({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* 추천 질문 — 채팅 시작 후에만 표시 */}
-      {messages.length > 0 && (() => {
-        const PAGE_SIZE = 3;
-        const totalPages = Math.max(1, Math.ceil(suggestions.length / PAGE_SIZE));
-        const clampedPage = Math.min(suggestionsPage, totalPages - 1);
-        const pageSlice = suggestions.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE);
-        const BORDER_COLORS = ["border-l-blue-400", "border-l-purple-400", "border-l-emerald-400"];
-        return (
-          <div className="shrink-0 px-3 py-3 border-t border-[#e7e9ed] bg-[#f8f9fb]">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[11px] font-medium text-[#99a1af] flex items-center gap-1.5">
-                <span className="text-amber-400 text-xs">✦</span>
-                이런 건 어떠세요?
-              </span>
-              <div className="flex items-center gap-0.5">
-                {totalPages > 1 && (
-                  <>
-                    <button
-                      onClick={() => setSuggestionsPage((p) => Math.max(0, p - 1))}
-                      disabled={clampedPage === 0}
-                      className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
-                    >
-                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                        <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                    </button>
-                    <span className="text-[10px] text-[#c8cdd5] px-0.5">{clampedPage + 1}/{totalPages}</span>
-                    <button
-                      onClick={() => setSuggestionsPage((p) => Math.min(totalPages - 1, p + 1))}
-                      disabled={clampedPage === totalPages - 1}
-                      className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
-                    >
-                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                        <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              {suggestionsLoading
-                ? Array.from({ length: PAGE_SIZE }).map((_, i) => (
-                    <div key={i} className="h-8 rounded-lg bg-[#e7e9ed]/60 animate-pulse" />
-                  ))
-                : pageSlice.map((s, i) => {
-                    const globalIdx = clampedPage * PAGE_SIZE + i;
-                    const borderColor = BORDER_COLORS[i % BORDER_COLORS.length];
-                    return (
-                      <button
-                        key={s.text}
-                        onClick={() => { clickedIndexRef.current = globalIdx; setInputValue(s.text); }}
-                        disabled={isLoading}
-                        className={`w-full flex items-center gap-2.5 pl-3 pr-2.5 py-2.5 rounded-lg border border-l-2 ${borderColor} text-left transition-all disabled:opacity-40 group ${
-                          s.isOld
-                            ? "bg-[#f8f9fb] opacity-50 hover:opacity-70"
-                            : "bg-white hover:border-[#c8cdd5] hover:shadow-sm"
-                        }`}
-                      >
-                        <span className={`text-[12px] flex-1 leading-snug ${s.isOld ? "text-[#99a1af]" : "text-[#414751]"}`}>{s.text}</span>
-                        <svg className="w-3.5 h-3.5 text-[#c8cdd5] group-hover:text-[#155dfc] shrink-0 transition-colors" viewBox="0 0 24 24" fill="none">
-                          <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      </button>
-                    );
-                  })
-              }
-            </div>
-          </div>
-        );
-      })()}
-
       {/* 입력 영역 */}
       <div className="p-3 bg-white flex flex-col gap-2 shrink-0">
         <div className="relative flex items-end gap-2 bg-[#f8f9fb] rounded-xl p-1.5 focus-within:ring-2 focus-within:ring-[#155dfc]/20 transition-all border border-[#e7e9ed] focus-within:border-[#155dfc]/30 shadow-sm">
@@ -894,7 +1072,7 @@ export function StudentChatPanel({
               <Mic className="w-4 h-4" />
             </button>
             <button 
-              onClick={handleSendMessage}
+              onClick={() => handleSendMessage()}
               disabled={!inputValue.trim()}
               className="p-2 text-white bg-[#155dfc] hover:bg-[#0d4ac4] rounded-lg disabled:opacity-50 disabled:bg-[#99a1af] transition-colors shadow-sm"
             >
