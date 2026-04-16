@@ -3,21 +3,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2, X, Volume2, VolumeX } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
-import MarkdownPreview from '@/components/workspace/MarkdownPreview';
 
 interface Doc {
   id: string;
   name: string;
-}
-
-export interface SourceChunk {
-  num: number;
-  doc_id: string;
-  filename: string;
-  chunk_index: number;
-  text: string;
-  char_offset?: number;
-  char_length?: number;
 }
 
 interface StudentChatPanelProps {
@@ -27,31 +16,7 @@ interface StudentChatPanelProps {
   docs: Doc[];
   selectedLLM?: string;
   selectedDifficulty?: string;
-  activeSourceId?: string;
-  activeSourceMediaType?: "audio" | "video" | null;
-  activeSourceMediaDuration?: number;
-  onSeekToTimestamp?: (seconds: number) => void;
   onClose?: () => void;
-  onCitationClick?: (chunk: SourceChunk) => void;
-  onSlideClick?: (slideNum: number) => void;
-  onPageClick?: (pageNum: number) => void;
-}
-
-interface ChatReference {
-  doc_id: string;
-  filename: string;
-  chunk_index: number;
-  total_chunks: number;
-  start_sec?: number | null;
-  end_sec?: number | null;
-  excerpt: string;
-}
-
-interface ChatMessage {
-  type: 'user' | 'ai' | 'system';
-  content: string;
-  sources?: SourceChunk[];
-  references?: ChatReference[];
 }
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -157,264 +122,6 @@ export function StudentChatPanel({ activeDocIds, docs, notebookId, selectedLLM, 
   const [sttError,    setSttError]    = useState<string | null>(null);
   const recognitionRef = useRef<any>(null);
 
-function formatTimestamp(totalSeconds: number) {
-  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
-  const hours = Math.floor(safeSeconds / 3600);
-  const minutes = Math.floor((safeSeconds % 3600) / 60);
-  const seconds = safeSeconds % 60;
-  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-  return `${minutes}:${String(seconds).padStart(2, '0')}`;
-}
-
-function getReferenceSeconds(reference: ChatReference, duration: number) {
-  if (typeof reference.start_sec === "number" && Number.isFinite(reference.start_sec)) {
-    return Math.max(0, reference.start_sec);
-  }
-  if (!Number.isFinite(duration) || duration <= 0) return null;
-  if (!Number.isFinite(reference.total_chunks) || reference.total_chunks <= 0) return null;
-  const ratio = (reference.chunk_index + 0.5) / reference.total_chunks;
-  return Math.max(0, Math.min(duration, duration * ratio));
-}
-
-function isApproximateReference(reference: ChatReference) {
-  return !(typeof reference.start_sec === "number" && Number.isFinite(reference.start_sec));
-}
-
-function parseTimestampToSeconds(value: string) {
-  const trimmed = value.trim();
-  const match = trimmed.match(/^((\d+):)?([0-5]?\d):([0-5]\d)$/);
-  if (!match) return null;
-  const hours = match[2] ? Number(match[2]) : 0;
-  const minutes = Number(match[3]);
-  const seconds = Number(match[4]);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds)) return null;
-  return hours * 3600 + minutes * 60 + seconds;
-}
-
-function containsTimestampText(content: string) {
-  return /\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b/.test(content);
-}
-
-function collapseNearbyTimestampLists(content: string) {
-  const timestampPattern = /(?:(?:\d+):)?(?:[0-5]?\d):(?:[0-5]\d)/;
-  const listPattern = new RegExp(`${timestampPattern.source}(?:\\s*,\\s*${timestampPattern.source})+`, "g");
-
-  return content.replace(listPattern, (matched) => {
-    const rawParts = matched.split(/\s*,\s*/).filter(Boolean);
-    const parsed = rawParts
-      .map((part) => ({ raw: part, seconds: parseTimestampToSeconds(part) }))
-      .filter((item): item is { raw: string; seconds: number } => item.seconds !== null);
-
-    if (parsed.length < 2) {
-      return matched;
-    }
-
-    const groups: Array<{ start: number; end: number }> = [];
-    parsed.forEach(({ seconds }) => {
-      const current = groups[groups.length - 1];
-      if (!current) {
-        groups.push({ start: seconds, end: seconds });
-        return;
-      }
-
-      if (seconds - current.end <= 12) {
-        current.end = seconds;
-        return;
-      }
-
-      groups.push({ start: seconds, end: seconds });
-    });
-
-    return groups
-      .map((group) =>
-        group.start === group.end
-          ? formatTimestamp(group.start)
-          : `${formatTimestamp(group.start)}-${formatTimestamp(group.end)}`
-      )
-      .join(", ");
-  });
-}
-
-function normalizeDetachedPageRefs(content: string) {
-  return content
-    .replace(/\s*\n+\s*(\[(?:출처\s*\d+\s*,\s*)?페이지\s*\d+[^\]]*\])\s*\n+\s*([.,!?])/g, " $1$2")
-    .replace(/([^\n])\s*\n+\s*(\[(?:출처\s*\d+\s*,\s*)?페이지\s*\d+[^\]]*\])\s*\n+\s*/g, "$1 $2 ")
-    .replace(/\s{2,}/g, " ");
-}
-
-function normalizeInlineListMarkers(content: string) {
-  return content
-    .replace(/:\s+([*-]\s+(?=\S))/g, ":\n$1")
-    .replace(/:\s+(\d+\.\s+(?=\S))/g, ":\n$1")
-    .replace(/([.!?])\s+([*-]\s+(?=\S))/g, "$1\n$2")
-    .replace(/([.!?])\s+(\d+\.\s+(?=\S))/g, "$1\n$2");
-}
-
-function injectReferenceTimesIntoAnswer(
-  content: string,
-  mediaReferences: Array<{ reference: ChatReference; seconds: number }>
-) {
-  if (!content.trim() || mediaReferences.length === 0 || containsTimestampText(content)) {
-    return content;
-  }
-
-  const uniqueTimes = mediaReferences
-    .map(({ seconds }) => formatTimestamp(seconds))
-    .filter((time, index, arr) => arr.indexOf(time) === index);
-
-  if (uniqueTimes.length === 0) {
-    return content;
-  }
-
-  const lines = content.split("\n");
-  let timeIndex = 0;
-  let numberedLineCount = 0;
-  let appliedInlineTime = false;
-
-  const updatedLines = lines.map((line) => {
-    const trimmed = line.trim();
-    const isNumbered = /^\d+\.\s+/.test(trimmed);
-    const isBullet = /^[-*]\s+/.test(trimmed);
-
-    if (!isNumbered && !isBullet) {
-      return line;
-    }
-    if (containsTimestampText(line)) {
-      return line;
-    }
-
-    const nextTime = uniqueTimes[Math.min(timeIndex, uniqueTimes.length - 1)];
-    if (!nextTime) {
-      return line;
-    }
-
-    if (isNumbered) {
-      numberedLineCount += 1;
-      timeIndex += 1;
-    } else if (numberedLineCount === 0) {
-      timeIndex += 1;
-    }
-
-    const boldTitleMatch = line.match(/^(\s*(?:\d+\.|[-*])\s+\*\*[^*]+\*\*)(.*)$/);
-    if (boldTitleMatch) {
-      appliedInlineTime = true;
-      return `${boldTitleMatch[1]}(${nextTime})${boldTitleMatch[2]}`;
-    }
-
-    const plainTitleMatch = line.match(/^(\s*(?:\d+\.|[-*])\s+[^:：]+)(:\s*.*)$/);
-    if (plainTitleMatch) {
-      appliedInlineTime = true;
-      return `${plainTitleMatch[1]}(${nextTime})${plainTitleMatch[2]}`;
-    }
-
-    appliedInlineTime = true;
-    return `${line} (${nextTime})`;
-  });
-
-  if (appliedInlineTime) {
-    return updatedLines.join("\n");
-  }
-
-  const sentenceParts = content
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-
-  if (sentenceParts.length === 0) {
-    return content;
-  }
-
-  const inlineSentences = sentenceParts.map((sentence, index) => {
-    if (containsTimestampText(sentence)) {
-      return sentence;
-    }
-
-    const nextTime = uniqueTimes[Math.min(index, uniqueTimes.length - 1)];
-    if (!nextTime) {
-      return sentence;
-    }
-
-    const featureMatch = sentence.match(/^(기능\s*\d+)/);
-    if (featureMatch) {
-      return `${featureMatch[1]}(${nextTime}): ${sentence}`;
-    }
-
-    const titleMatch = sentence.match(/^([^:：]{2,24}?)(은|는|이|가)\s+/);
-    if (titleMatch) {
-      return `${titleMatch[1]}(${nextTime})${titleMatch[2]} ${sentence.slice(titleMatch[0].length)}`;
-    }
-
-    return `${sentence} (${nextTime})`;
-  });
-
-  return inlineSentences.join("\n");
-}
-function renderWithCitations(
-  content: string,
-  sources: SourceChunk[],
-  onCitationClick?: (chunk: SourceChunk) => void,
-  renderText?: (text: string) => any,
-) {
-  const parts = content.split(/(\[\d+\])/g);
-  return parts.map((part, i) => {
-    const match = part.match(/^\[(\d+)\]$/);
-    if (match) {
-      // 소스 인용 번호 숨김
-      return <span key={i} />;
-    }
-    return <span key={i}>{renderText ? renderText(part) : part}</span>;
-  });
-}
-
-export function StudentChatPanel({
-  activeDocIds,
-  docs,
-  notebookId,
-  selectedLLM,
-  selectedDifficulty,
-  activeSourceId,
-  activeSourceMediaType,
-  activeSourceMediaDuration,
-  onSeekToTimestamp,
-  onClose,
-  onCitationClick,
-  onSlideClick,
-  onPageClick,
-}: StudentChatPanelProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [inputValue, setInputValue] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [isLoaded, setIsLoaded] = useState(false);
-  interface Suggestion { text: string; category: "이해" | "분석" | "적용"; isOld?: boolean; }
-  const CATEGORY_STYLE: Record<string, { bg: string; text: string; border: string }> = {
-    이해: { bg: "bg-blue-50",   text: "text-blue-600",  border: "border-blue-200" },
-    분석: { bg: "bg-purple-50", text: "text-purple-600", border: "border-purple-200" },
-    적용: { bg: "bg-green-50",  text: "text-green-600",  border: "border-green-200" },
-  };
-  const [suggestions, setSuggestions] = useState<Suggestion[]>(() => {
-    // 마운트 시 localStorage에서 즉시 복원 (effect 순서 문제 회피)
-    try {
-      const saved = localStorage.getItem(`${chatKey}_suggestions`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed as Suggestion[];
-      }
-    } catch {}
-    return [
-      { text: "이 자료의 핵심 개념을 설명해줘", category: "이해" },
-      { text: "주요 내용들 간의 관계를 분석해줘", category: "분석" },
-      { text: "실제로 어떻게 활용할 수 있을까?", category: "적용" },
-    ];
-  });
-  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
-  const [suggestionsPage, setSuggestionsPage] = useState(0);
-  const askedQuestionsRef = useRef<string[]>([]);
-  const clickedIndexRef = useRef<number>(-1);
-  const suggestionFromChatRef = useRef(false);
-  const suggestionFetchAbortRef = useRef<AbortController | null>(null);
-  const suggestionsRef = useRef<Suggestion[]>(suggestions);
-  const lastAnswerRef = useRef<string>("");
-  
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // 항상 최신 값을 ref에 동기화 (stale closure 방지)
@@ -439,80 +146,36 @@ export function StudentChatPanel({
   useEffect(() => {
     const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
     if (targetDocIds.length === 0) return;
-    suggestionFromChatRef.current = false;
-    setSuggestionsPage(0);
-
-    // localStorage에 저장된 추천 질문 복원 시도
-    const savedKey = `${chatKey}_suggestions`;
-    const saved = localStorage.getItem(savedKey);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setSuggestions(parsed as Suggestion[]);
-          setSuggestionsPage(Math.floor((parsed.length - 1) / 3));
-          askedQuestionsRef.current = [];
-          return;
-        }
-      } catch {}
-    }
-
-    // 없으면 fetch
-    const abort = new AbortController();
-    suggestionFetchAbortRef.current = abort;
+    let cancelled = false;
     setSuggestionsLoading(true);
     getToken().then(token =>
       fetch(`${API}/api/chat/suggestions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ doc_ids: targetDocIds, asked_questions: [] }),
-        signal: abort.signal,
       })
-        .then((r) => r.json())
-        .then((data) => {
-          if (!abort.signal.aborted && !suggestionFromChatRef.current && data.questions?.length) {
-            const newSugs = data.questions.slice(0, 3) as Suggestion[];
-            setSuggestions(newSugs);
-            try { localStorage.setItem(`${chatKey}_suggestions`, JSON.stringify(newSugs)); } catch {}
-          }
-        })
+        .then(r => r.json())
+        .then(data => { if (!cancelled && data.questions?.length) setSuggestions(data.questions.slice(0, 3) as Suggestion[]); })
         .catch(() => {})
-        .finally(() => { if (!abort.signal.aborted) setSuggestionsLoading(false); })
+        .finally(() => { if (!cancelled) setSuggestionsLoading(false); })
     );
     askedQuestionsRef.current = [];
-    return () => { abort.abort(); };
+    return () => { cancelled = true; };
   }, [activeDocIds.join(","), docs.map(d => d.id).join(",")]);
 
- 
-  // activeDocIds 변경 시 해당 자료의 채팅 히스토리 로드
+  // activeDocIds 변경 시 채팅 히스토리 로드
   useEffect(() => {
     chatKeyRef.current = chatKey;
     setIsLoaded(false);
-    stopSpeaking(); 
-    const savedMessages = localStorage.getItem(chatKey);
-    if (savedMessages) {
-      try {
-        const parsed = JSON.parse(savedMessages);
-        setMessages(Array.isArray(parsed) ? parsed : []);
-      } catch (e) {
-        setMessages([]);
-      }
-    } else {
-      setMessages([]);
-    }
+    stopSpeaking();
+    const saved = localStorage.getItem(chatKey);
+    setMessages(saved ? (() => { try { return JSON.parse(saved); } catch { return []; } })() : []);
+    setInitialQuestions([...DEFAULT_INITIAL_QUESTIONS]);
     setIsLoaded(true);
   }, [chatKey]);
 
   useEffect(() => {
     if (isLoaded) localStorage.setItem(chatKeyRef.current, JSON.stringify(messages));
-    suggestionsRef.current = suggestions;
-  }, [suggestions]);
-
-  useEffect(() => {
-    if (isLoaded) {
-      localStorage.setItem(chatKeyRef.current, JSON.stringify(messages));
-    }
-    
     if (messagesEndRef.current) {
       const el = messagesEndRef.current.parentElement;
       el?.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
@@ -556,7 +219,6 @@ export function StudentChatPanel({
       setMessages([]);
       setInitialQuestions([...DEFAULT_INITIAL_QUESTIONS]);
       localStorage.removeItem(chatKeyRef.current);
-      localStorage.removeItem(`${chatKeyRef.current}_suggestions`);
     }
   };
 
@@ -769,77 +431,19 @@ export function StudentChatPanel({
         ...(cachedSugg.length > 0 ? [{ type: 'suggestions', items: cachedSugg }] : []),
       ]);
 
-    
-      setMessages(prev => [
-        ...prev,
-        {
-          type: 'ai',
-          content: normalizeInlineListMarkers(
-            normalizeDetachedPageRefs(
-              collapseNearbyTimestampLists(data.answer ?? "")
-            )
-          ),
-          references: Array.isArray(data.references) ? data.references : [],
-          sources: Array.isArray(data.sources) ? data.sources : [],
-        },
-      ]);
-
-      // 추천 질문 처리
-      lastAnswerRef.current = data.answer ?? "";
-      askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
-      const replacingIndex = clickedIndexRef.current;
-      clickedIndexRef.current = -1;
-
-      const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
-      const pptSuggestions: string[] = Array.isArray(data.suggested_questions) ? data.suggested_questions : [];
-
-      const applyNewSuggestions = (newQuestions: string[]) => {
-        const currentSuggestions = suggestionsRef.current;
-        const marked = replacingIndex >= 0
-          ? currentSuggestions.map((s: Suggestion, idx: number) => idx === replacingIndex ? { ...s, isOld: true } : s)
-          : currentSuggestions;
-        const newChips = newQuestions.slice(0, 3).map((text, i) => ({
-          text,
-          category: CATS[i % 3],
-          isOld: false,
-        })) as Suggestion[];
-        const nextSuggestions = [...marked, ...newChips];
-        setSuggestions(nextSuggestions);
-        setSuggestionsPage(Math.floor((nextSuggestions.length - 1) / 3));
-        try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(nextSuggestions)); } catch {}
-      };
-
-      if (pptSuggestions.length > 0) {
-        // AI 답변에서 추천 질문이 왔을 때
-        suggestionFetchAbortRef.current?.abort();
-        suggestionFromChatRef.current = true;
-        setSuggestionsLoading(false);
-        applyNewSuggestions(pptSuggestions);
-      } else {
-        // 추천 질문이 없을 때: /api/chat/suggestions fallback 호출
-        const currentTexts = suggestionsRef.current.map((s) => s.text);
-        getToken().then((t) =>
-          fetch(`${API}/api/chat/suggestions`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
-            body: JSON.stringify({
-              doc_ids: targetDocIds,
-              asked_questions: [...askedQuestionsRef.current, ...currentTexts],
-              last_answer: lastAnswerRef.current,
-            }),
-          })
-            .then((r) => r.json())
-            .then((d) => {
-              if (d.questions?.length) {
-                const texts = (d.questions as Array<string | Suggestion>).map((q) =>
-                  typeof q === "string" ? q : q.text
-                );
-                applyNewSuggestions(texts);
-              }
-            })
-            .catch(() => {})
-        );
-      }
+      // 다음 사이클을 위한 새 suggestions 백그라운드 pre-fetch
+      const newAsked = [...askedQuestionsRef.current, userMessage].slice(-6);
+      askedQuestionsRef.current = newAsked;
+      getToken().then(t2 =>
+        fetch(`${API}/api/chat/suggestions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${t2}` },
+          body: JSON.stringify({ doc_ids: targetDocIds, asked_questions: newAsked }),
+        })
+          .then(r => r.ok ? r.json() : Promise.reject())
+          .then(d => { if (d.questions?.length) setSuggestions(d.questions.slice(0, 3) as Suggestion[]); })
+          .catch(() => {})
+      );
     } catch (error: any) {
       setMessages(prev => [...prev, { type: 'system', content: `[오류] ${error.message}` }]);
     } finally {
@@ -878,146 +482,6 @@ export function StudentChatPanel({
   };
 
   // ── 렌더 ─────────────────────────────────────────────────
-  const renderMessageContent = (
-    content: string,
-    enableTimestampLinks: boolean,
-    sources: SourceChunk[] = []
-  ) => {
-    const renderPlainText = (text: string, key?: string) => (
-      <span key={key} className="whitespace-pre-wrap">
-        {text.replace(/\n[ \t]+/g, "\n")}
-      </span>
-    );
-
-    const hasCitationRefs = onCitationClick && /\[\d+\]/.test(content);
-    const hasSlideRefs = onSlideClick && /\[슬라이드[\s\d,~\-~]+\]/g.test(content);
-    const hasPageRefs = onPageClick && /페이지\s*\d+/g.test(content);
-    if (!enableTimestampLinks && !hasCitationRefs && !hasSlideRefs && !hasPageRefs) {
-      return renderPlainText(content);
-    }
-
-    // Combined pattern:
-    //   그룹1: [슬라이드 N] 또는 [슬라이드 N, M, ...] (복수 슬라이드 포함)
-    //   그룹2: [출처 N, 페이지 N] 또는 [페이지 N] 등 "페이지 N" 포함 대괄호
-    //   그룹3: 괄호 없이 "페이지 N" 단독
-    //   그룹4+: timestamp ranges
-    const combinedPattern = /(\[(\d+)\])|(\[슬라이드[\s\d,~\-~]+\])|(\[[^\]]*페이지\s*(\d+)[^\]]*\])|((?<!\[)(?<!\w)페이지\s*(\d+)(?!\])(?!\w))|(\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?)/g;
-    const matches = Array.from(content.matchAll(combinedPattern));
-
-    if (matches.length === 0) {
-      return renderPlainText(content);
-    }
-
-    const nodes: JSX.Element[] = [];
-    let lastIndex = 0;
-
-    matches.forEach((match, index) => {
-      const matchedText = match[0];
-      const matchIndex = match.index ?? 0;
-      const citationNum = match[2] ? parseInt(match[2], 10) : null;
-      const isCitationRef = citationNum !== null;
-      const isSlideRef = Boolean(match[3]);
-      const isPageRef = Boolean(match[4] || match[6]);
-      const pageNum = match[5] ? parseInt(match[5], 10) : match[7] ? parseInt(match[7], 10) : null;
-
-      if (matchIndex > lastIndex) {
-        nodes.push(renderPlainText(content.slice(lastIndex, matchIndex), `text-${index}-${lastIndex}`));
-      }
-
-      if (isCitationRef && onCitationClick) {
-        const source = sources[citationNum - 1];
-        if (source) {
-          nodes.push(
-            <button
-              key={`cite-${index}-${citationNum}`}
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => onCitationClick(source)}
-              className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
-            >
-              {matchedText}
-            </button>
-          );
-        } else {
-          nodes.push(renderPlainText(matchedText, `cite-raw-${index}`));
-        }
-      } else if (isSlideRef && onSlideClick) {
-        // [슬라이드 9, 10] 같은 복수 슬라이드 파싱
-        const nums = Array.from(matchedText.matchAll(/\d+/g)).map(m => parseInt(m[0], 10));
-        if (nums.length === 1) {
-          nodes.push(
-            <button
-              key={`slide-${index}-${nums[0]}`}
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => onSlideClick(nums[0])}
-              className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
-            >
-              {matchedText}
-            </button>
-          );
-        } else {
-          // 복수: [슬라이드 9], [슬라이드 10] 버튼으로 분리
-          nodes.push(
-            <span key={`slide-multi-${index}`}>
-              {nums.map((n, ni) => (
-                <button
-                  key={`slide-${index}-${n}`}
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => onSlideClick(n)}
-                  className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff] mr-0.5"
-                >
-                  {`[슬라이드 ${n}]`}
-                </button>
-              ))}
-            </span>
-          );
-        }
-      } else if (isPageRef && pageNum !== null && onPageClick) {
-        nodes.push(
-          <button
-            key={`page-${index}-${pageNum}`}
-            type="button"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => onPageClick(pageNum)}
-            className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
-          >
-            {matchedText}
-          </button>
-        );
-      } else if (!isSlideRef && !isPageRef && enableTimestampLinks) {
-        const rangeStart = matchedText.split(/\s*-\s*/)[0] ?? matchedText;
-        const seconds = parseTimestampToSeconds(rangeStart);
-        if (seconds === null) {
-          nodes.push(renderPlainText(matchedText, `raw-${index}`));
-        } else {
-          nodes.push(
-            <button
-              key={`ts-${index}-${matchedText}`}
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => onSeekToTimestamp?.(seconds)}
-              className="inline rounded-md border border-[#dbe4ff] bg-white px-1.5 py-0.5 font-semibold text-[#155dfc] hover:bg-[#eef4ff]"
-            >
-              {matchedText}
-            </button>
-          );
-        }
-      } else {
-        nodes.push(renderPlainText(matchedText, `raw-${index}`));
-      }
-
-      lastIndex = matchIndex + matchedText.length;
-    });
-
-    if (lastIndex < content.length) {
-      nodes.push(renderPlainText(content.slice(lastIndex), `tail-${lastIndex}`));
-    }
-
-    return <>{nodes}</>;
-  };
-
   return (
     <div className="flex flex-col h-full bg-white relative">
       {/* 헤더 */}
@@ -1178,22 +642,8 @@ export function StudentChatPanel({
                           {w.text}{' '}
                         </span>
                       ))
-
-: msg.type === 'ai'
-? <MarkdownPreview
-    content={msg.content}
-    className="text-[#1a1d26]"
-    transformText={(text) =>
-      renderMessageContent(
-        text,
-        Boolean(activeSourceId && activeSourceMediaType && onSeekToTimestamp),
-        msg.sources ?? []
-      )
-    }
-  />
-: msg.type === 'system'
-? <span className="whitespace-pre-wrap">{msg.content}</span>
-: renderMessageContent(msg.content, false, msg.sources ?? [])                  }
+                    : msg.content
+                  }
                 </div>
 
                 {/* AI 메시지 재생 버튼 — 음성 모드일 때만 표시 */}
@@ -1269,78 +719,6 @@ export function StudentChatPanel({
 
         <div ref={messagesEndRef} />
       </div>
-
-      {/* 추천 질문 — 채팅 시작 후에만 표시 */}
-      {messages.length > 0 && (() => {
-        const PAGE_SIZE = 3;
-        const totalPages = Math.max(1, Math.ceil(suggestions.length / PAGE_SIZE));
-        const clampedPage = Math.min(suggestionsPage, totalPages - 1);
-        const pageSlice = suggestions.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE);
-        const BORDER_COLORS = ["border-l-blue-400", "border-l-purple-400", "border-l-emerald-400"];
-        return (
-          <div className="shrink-0 px-3 py-3 border-t border-[#e7e9ed] bg-[#f8f9fb]">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[11px] font-medium text-[#99a1af] flex items-center gap-1.5">
-                <span className="text-amber-400 text-xs">✦</span>
-                이런 건 어떠세요?
-              </span>
-              <div className="flex items-center gap-0.5">
-                {totalPages > 1 && (
-                  <>
-                    <button
-                      onClick={() => setSuggestionsPage((p) => Math.max(0, p - 1))}
-                      disabled={clampedPage === 0}
-                      className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
-                    >
-                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                        <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                    </button>
-                    <span className="text-[10px] text-[#c8cdd5] px-0.5">{clampedPage + 1}/{totalPages}</span>
-                    <button
-                      onClick={() => setSuggestionsPage((p) => Math.min(totalPages - 1, p + 1))}
-                      disabled={clampedPage === totalPages - 1}
-                      className="p-1 rounded-md text-[#c8cdd5] hover:text-[#155dfc] hover:bg-white transition-all disabled:opacity-30"
-                    >
-                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                        <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              {suggestionsLoading
-                ? Array.from({ length: PAGE_SIZE }).map((_, i) => (
-                    <div key={i} className="h-8 rounded-lg bg-[#e7e9ed]/60 animate-pulse" />
-                  ))
-                : pageSlice.map((s, i) => {
-                    const globalIdx = clampedPage * PAGE_SIZE + i;
-                    const borderColor = BORDER_COLORS[i % BORDER_COLORS.length];
-                    return (
-                      <button
-                        key={s.text}
-                        onClick={() => { clickedIndexRef.current = globalIdx; setInputValue(s.text); }}
-                        disabled={isLoading}
-                        className={`w-full flex items-center gap-2.5 pl-3 pr-2.5 py-2.5 rounded-lg border border-l-2 ${borderColor} text-left transition-all disabled:opacity-40 group ${
-                          s.isOld
-                            ? "bg-[#f8f9fb] opacity-50 hover:opacity-70"
-                            : "bg-white hover:border-[#c8cdd5] hover:shadow-sm"
-                        }`}
-                      >
-                        <span className={`text-[12px] flex-1 leading-snug ${s.isOld ? "text-[#99a1af]" : "text-[#414751]"}`}>{s.text}</span>
-                        <svg className="w-3.5 h-3.5 text-[#c8cdd5] group-hover:text-[#155dfc] shrink-0 transition-colors" viewBox="0 0 24 24" fill="none">
-                          <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      </button>
-                    );
-                  })
-              }
-            </div>
-          </div>
-        );
-      })()}
 
       {/* 입력 영역 */}
       <div className="p-3 bg-white flex flex-col gap-2 shrink-0">
