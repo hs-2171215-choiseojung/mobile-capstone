@@ -1,5 +1,7 @@
 "use client";
 
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Download, ExternalLink, Loader2, X, Volume2, Play, Pause, Square, ChevronDown, ChevronUp, Copy, Check, ArrowUpToLine, ArrowDownToLine } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import MarkdownPreview from "@/components/workspace/MarkdownPreview";
@@ -80,6 +82,40 @@ function Waveform() {
 
 interface SubtitleSegment { text: string; start: number; end: number; }
 
+/** DOCX/HWPX 마크다운 렌더러 */
+function MarkdownViewer({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      urlTransform={(url) => url}
+      components={{
+        h1: ({ children }) => <h1 className="text-2xl font-bold mt-6 mb-3 text-gray-900 border-b border-gray-200 pb-2">{children}</h1>,
+        h2: ({ children }) => <h2 className="text-xl font-bold mt-5 mb-2 text-gray-800">{children}</h2>,
+        h3: ({ children }) => <h3 className="text-lg font-semibold mt-4 mb-2 text-gray-800">{children}</h3>,
+        h4: ({ children }) => <h4 className="text-base font-semibold mt-3 mb-1 text-gray-700">{children}</h4>,
+        p: ({ children }) => <p className="mb-3 text-gray-700 leading-relaxed">{children}</p>,
+        strong: ({ children }) => <strong className="font-semibold text-gray-900">{children}</strong>,
+        em: ({ children }) => <em className="italic text-gray-700">{children}</em>,
+        ul: ({ children }) => <ul className="list-disc ml-5 mb-3 space-y-1 text-gray-700">{children}</ul>,
+        ol: ({ children }) => <ol className="list-decimal ml-5 mb-3 space-y-1 text-gray-700">{children}</ol>,
+        li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+        table: ({ children }) => <div className="overflow-x-auto mb-4"><table className="min-w-full border-collapse text-sm">{children}</table></div>,
+        thead: ({ children }) => <thead className="bg-gray-50">{children}</thead>,
+        tbody: ({ children }) => <tbody className="divide-y divide-gray-200">{children}</tbody>,
+        tr: ({ children }) => <tr className="hover:bg-gray-50">{children}</tr>,
+        th: ({ children }) => <th className="px-3 py-2 text-left text-xs font-semibold text-gray-600 uppercase border border-gray-200">{children}</th>,
+        td: ({ children }) => <td className="px-3 py-2 text-gray-700 border border-gray-200">{children}</td>,
+        blockquote: ({ children }) => <blockquote className="border-l-4 border-gray-300 pl-4 italic text-gray-600 mb-3">{children}</blockquote>,
+        hr: () => <hr className="border-gray-200 my-4" />,
+        // eslint-disable-next-line @next/next/no-img-element
+        img: ({ src, alt }) => <img src={src} alt={alt ?? "이미지"} className="max-w-full rounded-lg shadow-sm my-3" />,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
+
 interface SummaryCache {
   summaryText: string;
   audioBase64: string;
@@ -128,6 +164,7 @@ export interface SharedSourceViewerProps {
   seekRequest?: { seconds: number; nonce: number } | null;
   onMediaInfoChange?: (info: { kind: "audio" | "video" | null; duration: number }) => void;
   highlightRange?: { start: number; length: number };
+  scrollToText?: string;
   customViewer?: ReactNode;
 }
 
@@ -147,6 +184,7 @@ export function SharedSourceViewer({
   seekRequest,
   onMediaInfoChange,
   highlightRange,
+  scrollToText,
   customViewer,
 }: SharedSourceViewerProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -158,6 +196,10 @@ export function SharedSourceViewer({
   const summaryCache = useRef<Map<string, SummaryCache>>(new Map());
   const abortControllerRef = useRef<AbortController | null>(null);
   const highlightMarkRef = useRef<HTMLElement | null>(null);
+  const textScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const [markdownText, setMarkdownText] = useState<string | null>(null);
+  const [markdownLoading, setMarkdownLoading] = useState(false);
 
   const [audioSummaryState, setAudioSummaryState] = useState<"idle" | "loading" | "playing" | "paused">("idle");
   const [hasSummary, setHasSummary] = useState(false);
@@ -188,6 +230,33 @@ export function SharedSourceViewer({
       highlightMarkRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [highlightRange]);
+
+  // scrollToText 가 설정되면 DOM에서 해당 텍스트를 찾아 스크롤
+  useEffect(() => {
+    if (!scrollToText) return;
+    setActiveTab("text");
+    const search = scrollToText.slice(0, 80).trim();
+    if (!search) return;
+    const attempt = (retries: number) => {
+      const container = textScrollRef.current;
+      if (!container) {
+        if (retries > 0) setTimeout(() => attempt(retries - 1), 100);
+        return;
+      }
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+      let node: Text | null;
+      while ((node = walker.nextNode() as Text | null)) {
+        if (node.textContent && node.textContent.includes(search)) {
+          const el = node.parentElement;
+          if (el) {
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+            break;
+          }
+        }
+      }
+    };
+    setTimeout(() => attempt(3), 150);
+  }, [scrollToText]);
 
   function renderTranscript(text: string, range?: { start: number; length: number }) {
     if (!range || range.start < 0 || range.length <= 0) return <>{text}</>;
@@ -382,6 +451,38 @@ export function SharedSourceViewer({
       setVideoPaneHeight(360);
     }
   }, [isEmbeddableYoutube, source.id]);
+
+  // DOCX/HWPX: 마크다운 변환 텍스트 fetch
+  useEffect(() => {
+    const ext = source.filename.toLowerCase().split(".").pop() ?? "";
+    if (ext !== "docx" && ext !== "hwpx") {
+      setMarkdownText(null);
+      return;
+    }
+    let cancelled = false;
+    setMarkdownText(null);
+    setMarkdownLoading(true);
+    (async () => {
+      try {
+        const { createClient } = await import("@/lib/supabase/client");
+        const supabase = createClient();
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
+        if (!token || cancelled) return;
+        const res = await fetch(`${API}/api/documents/${source.id}/markdown`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) setMarkdownText(data.markdown ?? null);
+      } catch {
+        // 변환 실패 시 기존 텍스트로 폴백 (setMarkdownText(null) 유지)
+      } finally {
+        if (!cancelled) setMarkdownLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [source.id, source.filename]);
 
   const handleClose = () => {
     stopPlayback();
@@ -842,7 +943,7 @@ export function SharedSourceViewer({
                 : "border-transparent text-gray-500 hover:text-gray-700"
             }`}
           >
-            텍스트 보기
+            {fileExt === "docx" ? "마크다운 보기" : "텍스트 보기"}
             {hasHighlight && activeTab !== "text" && (
               <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-[#155dfc] inline-block align-middle" />
             )}
@@ -862,12 +963,17 @@ export function SharedSourceViewer({
             <p className="text-sm">{error}</p>
           </div>
         ) : !mediaUrl && transcriptText !== undefined ? (
-          <div className="h-full p-4 overflow-y-auto">
-            <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">
-              {transcriptText
-                ? renderTranscript(transcriptText, highlightRange)
-                : <span className="text-gray-400">텍스트를 추출하지 못했습니다. 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.</span>
-              }
+          <div ref={(el) => { textScrollRef.current = el; }} className="h-full p-4 overflow-y-auto">
+            <div className="bg-white rounded-xl p-4 text-sm leading-relaxed border border-gray-200">
+              {fileExt === "hwpx" && markdownText ? (
+                <MarkdownViewer content={markdownText} />
+              ) : transcriptText ? (
+                <span className="text-gray-700 whitespace-pre-wrap">{renderTranscript(transcriptText, highlightRange)}</span>
+              ) : markdownLoading ? (
+                <span className="text-gray-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />불러오는 중...</span>
+              ) : (
+                <span className="text-gray-400">텍스트를 추출하지 못했습니다. 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.</span>
+              )}
             </div>
           </div>
         ) : !mediaUrl ? (
@@ -875,13 +981,18 @@ export function SharedSourceViewer({
             <p className="text-sm">표시할 문서 URL이 없습니다.</p>
           </div>
         ) : hasBothViews && activeTab === "text" ? (
-          /* 텍스트 탭 (DOCX·PPTX 등) */
-          <div className="h-full p-4 overflow-y-auto">
-            <div className="bg-white rounded-xl p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap border border-gray-200">
-              {transcriptText
-                ? renderTranscript(transcriptText, highlightRange)
-                : <span className="text-gray-400">텍스트를 불러오는 중입니다...</span>
-              }
+          /* 마크다운/텍스트 탭 (DOCX 등) */
+          <div ref={(el) => { textScrollRef.current = el; }} className="h-full p-4 overflow-y-auto">
+            <div className="bg-white rounded-xl p-4 text-sm leading-relaxed border border-gray-200">
+              {fileExt === "docx" && markdownText ? (
+                <MarkdownViewer content={markdownText} />
+              ) : fileExt === "docx" && markdownLoading ? (
+                <span className="text-gray-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />마크다운 변환 중...</span>
+              ) : transcriptText ? (
+                <span className="text-gray-700 whitespace-pre-wrap">{renderTranscript(transcriptText, highlightRange)}</span>
+              ) : (
+                <span className="text-gray-400">텍스트를 불러오는 중입니다...</span>
+              )}
             </div>
           </div>
         ) : isImage ? (

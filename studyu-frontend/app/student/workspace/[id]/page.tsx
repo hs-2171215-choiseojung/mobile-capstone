@@ -103,6 +103,8 @@ export default function StudentWorkspacePage() {
   const [selectedSourceSeekRequest, setSelectedSourceSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
   const [highlightRange, setHighlightRange] = useState<{ start: number; length: number } | null>(null);
   const pendingHighlightRef = useRef<{ start: number; length: number } | null>(null);
+  const [citationScrollText, setCitationScrollText] = useState<string | undefined>(undefined);
+  const pendingScrollTextRef = useRef<string | undefined>(undefined);
   const [currentSlide, setCurrentSlide] = useState<number | null>(null);
   const [chatRequestedSlide, setChatRequestedSlide] = useState<number | null>(null);
 
@@ -510,21 +512,28 @@ export default function StudentWorkspacePage() {
       setHighlightRange(pendingHighlightRef.current);
       pendingHighlightRef.current = null;
     }
+    if (!isSourceLoading && pendingScrollTextRef.current) {
+      setCitationScrollText(pendingScrollTextRef.current);
+      pendingScrollTextRef.current = undefined;
+    }
   }, [isSourceLoading]);
 
   const handleCitationClick = (chunk: SourceChunk) => {
     const doc = docs.find((d: DocumentInfo) => d.id === chunk.doc_id);
     if (!doc) return;
-    // char_offset 이 있으면 정확한 위치, 없으면 null (뷰어가 fallback 처리)
+    // char_offset 이 있으면 정확한 위치, 없으면 null (븷어가 fallback 처리)
     const range =
       chunk.char_offset !== undefined && chunk.char_offset >= 0 && chunk.char_length
         ? { start: chunk.char_offset, length: chunk.char_length }
         : null;
+    const scrollText = chunk.text?.slice(0, 80) || undefined;
     if (selectedSource?.id === chunk.doc_id) {
       setHighlightRange(range);
+      setCitationScrollText(scrollText);
     } else {
       setHighlightRange(null);
       pendingHighlightRef.current = range;
+      pendingScrollTextRef.current = scrollText;
       void openSourceDocument(doc as DocumentInfo);
     }
   };
@@ -624,7 +633,7 @@ export default function StudentWorkspacePage() {
 
           if (selectedSource) {
             const srcExt = selectedSource.filename.toLowerCase().split(".").pop() ?? selectedSource.file_type;
-            const isPpt = PREVIEWABLE_OFFICE_EXTS.has(srcExt) && !selectedSource.storage_path?.startsWith("http");
+            const isPpt = (srcExt === "pptx" || srcExt === "ppt") && !selectedSource.storage_path?.startsWith("http");
             const isPdf = srcExt === "pdf";
             return (
               /* 소스 문서: 뷰어 + 우측 채팅 (Resizable) */
@@ -649,6 +658,7 @@ export default function StudentWorkspacePage() {
                       setSelectedSourceMediaDuration(duration);
                     }}
                     highlightRange={highlightRange ?? undefined}
+                    scrollToText={citationScrollText}
                     onClose={closeSource}
                     customViewer={isPpt ? (
                       <PptSlideViewer

@@ -763,7 +763,18 @@ def _extract_text_from_hwpx(file_bytes: bytes) -> tuple[str, int]:
 
 
 def _extract_text_from_hwp(file_bytes: bytes) -> tuple[str, int]:
-    """HWP 5.x (OLE 바이너리)에서 텍스트 추출. (text, 0) 반환."""
+    """HWP 5.x (OLE 바이너리 포맷)에서 텍스트 추출. (text, 0) 반환.
+
+    HWP5 OLE 스트림 구조:
+      BodyText/Section0000 (or Section0) → zlib 압융 해제 후 레코드 스트림
+      레코드 포맷: 4바이트 헤더 (rec_type 10bit + 두패 + size 12bit)
+                          size == 0xFFF 이면 다음 4바이트가 확장 크기
+
+    HWPTAG_PARA_TEXT (rec_type 67) 파싱 규칙:
+      - 0x0020 이상: 2바이트 UTF-16-LE 코드포인트 → 실제 문자
+      - 0x0000~0x001F: 인라인 콘트롤 → 코드(2) + 헤더(8) = 10바이트 스킵
+        깴떴지 않으면 헤더 바이트가 한자 등으로 잘못 디코딩됨
+    """
     import zlib
     import struct
     import olefile
@@ -829,6 +840,573 @@ def _extract_text_from_hwp(file_bytes: bytes) -> tuple[str, int]:
     except Exception as e:
         raise ValueError(f"HWP 파일을 읽을 수 없습니다: {e}")
     return "\n".join(texts), 0
+
+
+def _compress_image_to_base64(img_bytes: bytes, max_width: int = 800, quality: int = 75) -> tuple[str, str]:
+    """이미지 bytes를 리사이즈·압축 후 (base64_str, mime_type) 반환.
+
+    브라우저에서 원본 크기 이미지(수 MB)를 Base64로 한꺼번에 로드하면
+    파싱 부하로 페이지가 멈추는 문제를 방지하기 위해 축소·압축한다.
+
+    처리 흐름:
+      1. Pillow로 이미지 열기
+      2. 투명 채널(RGBA/PA/LA) → 흰 배경 RGB 합성 (JPEG는 알파 미지원)
+      3. 가로가 max_width(기본 800px) 초과 시 비율 유지 축소
+      4. JPEG 품질 quality(기본 75)로 저장해 파일 크기 대폭 감소
+      5. Base64 인코딩 후 (base64_str, "image/jpeg") 반환
+
+    실패 시 Pillow 없이 원본을 그대로 Base64로 반환(PNG로 가정).
+    """
+    try:
+        from PIL import Image as _PILImage
+        import io as _io
+        import base64 as _b64
+        img = _PILImage.open(_io.BytesIO(img_bytes))
+        # RGBA / 팔레트(P) / LA 모드는 흰 배경 RGB로 합성
+        # (JPEG 포맷이 알파 채널을 지원하지 않으므로 변환 필요)
+        if img.mode in ("RGBA", "P", "LA"):
+            bg = _PILImage.new("RGB", img.size, (255, 255, 255))
+            if img.mode == "P":
+                img = img.convert("RGBA")
+            bg.paste(img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None)
+            img = bg
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+        # 가로 max_width 초과 시 비율 유지 축소 (세로는 자동 계산)
+        if img.width > max_width:
+            ratio = max_width / img.width
+            img = img.resize((max_width, int(img.height * ratio)), _PILImage.LANCZOS)
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        b64 = _b64.b64encode(buf.getvalue()).decode("utf-8")
+        return b64, "image/jpeg"
+    except Exception:
+        # Pillow 미설치 또는 지원하지 않는 포맷 → 원본 bytes를 그대로 Base64
+        import base64 as _b64
+        return _b64.b64encode(img_bytes).decode("utf-8"), "image/png"
+
+
+def _extract_markdown_from_docx(file_bytes: bytes) -> str:
+    """DOCX(Office Open XML) 파일을 마크다운으로 변환.
+
+    DOCX 구조에서 다음을 추출한다:
+      - 단락(w:p): 스타일 기반 헤딩(#~#####), 목록(- ), 인라인 볼드/이탤릭
+      - 표(w:tbl): GFM 파이프 테이블 형식으로 변환, 첫 행에 헤더 구분선 삽입
+      - 이미지(w:drawing → a:blip r:embed): 관계 ID로 blob 조회 후
+        _compress_image_to_base64()로 압축해 data: URL Base64 마크다운 삽입
+
+    주요 내부 함수:
+      _get_image_md(rId)  : 관계 ID → ![이미지](data:...) 마크다운
+      _is_on(rpr, tag)    : w:rPr 속성(w:val)으로 서식 on/off 판단
+      _para_to_md(p_elem) : 단락 하나를 마크다운 라인으로 변환
+      _tc_text(tc_elem)   : 셀(w:tc) 텍스트 추출 (중첩 표 포함)
+      _table_to_md(tbl)   : 표 전체를 GFM 테이블 행 목록으로 변환
+
+    반환: 마크다운 문자열 (연속 빈 줄 정리 완료)
+    """
+    import base64 as _b64
+    import zipfile as _zf
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    # ── OOXML 태그 QName 상수 ─────────────────────────────────────────
+    # python-docx의 qn()은 "prefix:local" → 완전한 Clark 표기({ns}local)로 변환
+    W_P      = qn("w:p")       # 단락
+    W_TBL    = qn("w:tbl")     # 표
+    W_TR     = qn("w:tr")      # 표 행
+    W_TC     = qn("w:tc")      # 표 셀
+    W_R      = qn("w:r")       # 텍스트 런(run)
+    W_T      = qn("w:t")       # 실제 텍스트 내용
+    W_B      = qn("w:b")       # 굵게(bold)
+    W_I      = qn("w:i")       # 기울임(italic)
+    W_RPR    = qn("w:rPr")     # 런 속성(run properties)
+    W_PPR    = qn("w:pPr")     # 단락 속성(paragraph properties)
+    W_PSTYLE = qn("w:pStyle")  # 단락 스타일 참조
+    W_VAL    = qn("w:val")     # 속성값 (w:val="0" 이면 서식 off 의미)
+    W_DRAWING = qn("w:drawing") # 이미지/도형 컨테이너
+    W_BLIP   = qn("a:blip")    # DrawingML 이미지 참조 (r:embed rId)
+    R_EMBED  = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"  # 관계 ID 속성
+
+    doc = Document(io.BytesIO(file_bytes))
+
+    # 스타일 ID → 이름 맵 (예: "Heading1" → "Heading 1")
+    # 헤딩 판별에 사용 — 한글 스타일명("제목 1" 등)도 포함
+    style_map: dict[str, str] = {s.style_id: s.name for s in doc.styles if s.style_id}
+
+    HEADING_MAP: dict[str, str] = {
+        "Heading 1": "#", "Heading 2": "##", "Heading 3": "###",
+        "Heading 4": "####", "Heading 5": "#####",
+        "Title": "#", "Subtitle": "##",
+        "제목 1": "#", "제목 2": "##", "제목 3": "###", "제목 4": "####",
+        "제목": "#",
+    }
+
+    # 이미지 관계 ID → Base64 마크다운 캐시
+    # 같은 이미지가 여러 단락에 반복 삽입된 경우 재압축 방지
+    _img_cache: dict[str, str] = {}
+
+    def _get_image_md(rId: str) -> str:
+        """관계 ID(rId)로 DOCX 내부 이미지를 조회해 마크다운 Base64 이미지로 반환.
+
+        DOCX에서 이미지는 w:drawing → a:blip r:embed=rId 경로로 참조된다.
+        doc.part.related_parts[rId].blob 으로 raw bytes를 가져와
+        _compress_image_to_base64()로 축소·압축 후 data: URL로 삽입한다.
+        """
+        if rId in _img_cache:
+            return _img_cache[rId]
+        try:
+            part = doc.part.related_parts.get(rId)
+            if part is None:
+                return ""
+            img_bytes = part.blob
+            b64, mime = _compress_image_to_base64(img_bytes)
+            result = f"![이미지](data:{mime};base64,{b64})"
+            _img_cache[rId] = result
+            return result
+        except Exception:
+            return ""
+
+    def _is_on(rpr_elem, tag):
+        """w:rPr 자식 요소의 서식이 활성화돼 있는지 확인.
+
+        OOXML에서 <w:b/> 처럼 단독으로 존재하면 on,
+        <w:b w:val="0"/> 이면 명시적 off다.
+        """
+        el = rpr_elem.find(tag)
+        return el is not None and el.get(W_VAL, "1") not in ("0", "false", "off")
+
+    def _para_to_md(p_elem) -> str:
+        ppr = p_elem.find(W_PPR)
+        style_id = ""
+        if ppr is not None:
+            ps = ppr.find(W_PSTYLE)
+            if ps is not None:
+                style_id = ps.get(W_VAL, "")
+        style_name = style_map.get(style_id, "")
+
+        # 이미지 포함 여부 확인
+        img_parts: list[str] = []
+        for drawing in p_elem.iter(W_DRAWING):
+            for blip in drawing.iter(W_BLIP):
+                rId = blip.get(R_EMBED, "")
+                if rId:
+                    md = _get_image_md(rId)
+                    if md:
+                        img_parts.append(md)
+
+        raw = "".join(
+            t.text or "" for r in p_elem.findall(W_R) for t in r.findall(W_T)
+        ).strip()
+
+        # 이미지만 있는 단락
+        if img_parts and not raw:
+            return "\n".join(img_parts)
+
+        if not raw and not img_parts:
+            return ""
+
+        # 헤딩
+        for key, prefix in HEADING_MAP.items():
+            if style_name == key or style_name.startswith(key + " "):
+                text_part = f"{prefix} {raw}" if raw else ""
+                return "\n".join(filter(None, img_parts + [text_part]))
+
+        # 목록
+        if "List" in style_name or "목록" in style_name:
+            text_part = f"- {raw}" if raw else ""
+            return "\n".join(filter(None, img_parts + [text_part]))
+
+        # 인라인 서식
+        parts: list[str] = []
+        for r in p_elem.findall(W_R):
+            text = "".join(t.text or "" for t in r.findall(W_T))
+            if not text:
+                continue
+            rpr = r.find(W_RPR)
+            bold   = rpr is not None and _is_on(rpr, W_B)
+            italic = rpr is not None and _is_on(rpr, W_I)
+            if bold and italic:
+                parts.append(f"***{text}***")
+            elif bold:
+                parts.append(f"**{text}**")
+            elif italic:
+                parts.append(f"*{text}*")
+            else:
+                parts.append(text)
+        text_part = "".join(parts).strip()
+        return "\n".join(filter(None, img_parts + [text_part]))
+
+    def _tc_text(tc_elem) -> str:
+        """표 셀(w:tc) 내 모든 단락 텍스트를 공백으로 이어붙여 반환.
+
+        파이프 테이블 열 구분자 '|'가 셀 내용에 포함되면 GFM 테이블이
+        깨지므로 전각 문자(｜)로 치환한다.
+        """
+        parts: list[str] = []
+        for p in tc_elem.findall(f".//{W_P}"):
+            t = "".join(
+                txt.text or "" for r in p.findall(W_R) for txt in r.findall(W_T)
+            ).strip()
+            if t:
+                parts.append(t)
+        return " ".join(parts).replace("|", "｜")
+
+    def _table_to_md(tbl_elem) -> list[str]:
+        """w:tbl 요소를 GFM 파이프 테이블 행 목록으로 변환.
+
+        첫 행 다음에 헤더/본문 구분선(| --- | --- |)을 자동 삽입한다.
+        직계 w:tr 만 처리해 중첩 표(표 안의 표)의 행이 섞이는 것을 방지한다.
+        """
+        rows_md: list[str] = []
+        # 직계 TR 자식만 처리 (중첩 표 혼입 방지)
+        direct_trs = [c for c in tbl_elem if c.tag == W_TR]
+        for row_idx, tr in enumerate(direct_trs):
+            cells = tr.findall(W_TC)
+            if not cells:
+                continue
+            cell_texts = [_tc_text(tc) for tc in cells]
+            rows_md.append("| " + " | ".join(cell_texts) + " |")
+            if row_idx == 0:
+                rows_md.append("| " + " | ".join(["---"] * len(cell_texts)) + " |")
+        return rows_md
+
+    lines: list[str] = []
+    for child in doc.element.body:
+        tag = child.tag
+        if tag == W_P:
+            lines.append(_para_to_md(child))
+        elif tag == W_TBL:
+            lines.append("")
+            lines.extend(_table_to_md(child))
+            lines.append("")
+
+    # 연속 빈 줄 정리
+    result: list[str] = []
+    prev_blank = False
+    for ln in lines:
+        blank = not ln.strip()
+        if blank and prev_blank:
+            continue
+        result.append(ln)
+        prev_blank = blank
+    return "\n".join(result).strip()
+
+
+def _extract_markdown_from_hwpx(file_bytes: bytes) -> str:
+    """HWPX(ZIP + OWPML XML) 파일을 마크다운으로 변환.
+
+    HWPX 파일 구조:
+      ├── Contents/section0.xml  ← 본문 섹션 (단락·표·이미지 포함)
+      ├── BinData/BIN0001.jpg    ← 이미지 바이너리
+      └── Header/header.xml      ← 스타일 정의 + binItem(이미지 ID↔파일 매핑)
+
+    이미지 처리 흐름 (2단계):
+      1) _raw_bin  : ZIP 내 모든 파일을 (경로/파일명/확장자 없는 이름) 3가지 키로 인덱싱
+      2) _binitem_map : header.xml의 <hh:binItem id="BIN0001" href="BinData/...">
+                        파싱으로 ID → (bytes, ext) 매핑 구성
+      → _para_images() 에서 <hp:img binaryItemIDRef="BIN0001"> 속성값으로 조회
+
+    * OWPML 공식 스펙에서 이미지 참조 속성명은 'binaryItemIDRef' 이므로
+      'href', 'src' 가 아닌 이 이름으로만 탐색해야 한다.
+
+    단락/표 처리:
+      - 단락(hp:p): 스타일 ID → 헤딩 prefix 변환, 표 셀 내 단락 중복 방지
+      - 표(hp:tbl): GFM 파이프 테이블로 변환, 중첩 표 스킵
+
+    반환: 마크다운 문자열 (연속 빈 줄 정리 완료)
+    """
+    import zipfile
+    import base64 as _b64
+    from xml.etree import ElementTree as ET
+
+    def local(tag: str) -> str:
+        return tag.split("}")[-1] if "}" in tag else tag
+
+    HEADING_PATTERNS: list[tuple[str, str]] = [
+        ("제목 1", "#"), ("제목1", "#"), ("Heading 1", "#"), ("Heading1", "#"),
+        ("제목 2", "##"), ("제목2", "##"), ("Heading 2", "##"), ("Heading2", "##"),
+        ("제목 3", "###"), ("제목3", "###"), ("Heading 3", "###"), ("Heading3", "###"),
+        ("제목 4", "####"), ("제목4", "####"),
+        ("제목", "#"),
+    ]
+
+    def _style_id(p_elem) -> str:
+        for child in p_elem:
+            if local(child.tag) == "pPr":
+                for sub in child:
+                    if local(sub.tag) == "pStyle":
+                        for attr, val in sub.attrib.items():
+                            if local(attr) in ("val", "styleId", "id"):
+                                return val
+        return ""
+
+    def _heading_prefix(sid: str, name_map: dict) -> str:
+        name = name_map.get(sid, sid)
+        for pattern, prefix in HEADING_PATTERNS:
+            if name == pattern or name.startswith(pattern):
+                return prefix
+        return ""
+
+    def _para_text(p_elem) -> str:
+        """p 요소 텍스트 추출. tbl 내부(표 셀)는 건너뜀 — 표 안의 텍스트가 단락으로 중복 출력되는 것 방지."""
+        texts: list[str] = []
+
+        def _collect(elem) -> None:
+            if local(elem.tag) == "t" and elem.text:
+                texts.append(elem.text)
+            for child in elem:
+                if local(child.tag) != "tbl":  # 표 내부로는 내려가지 않음
+                    _collect(child)
+
+        for child in p_elem:
+            if local(child.tag) != "tbl":
+                _collect(child)
+        return "".join(texts)
+
+    def _cell_text(tc_elem) -> str:
+        parts: list[str] = []
+        for elem in tc_elem.iter():
+            if local(elem.tag) == "p":
+                t = _para_text(elem).strip()
+                if t:
+                    parts.append(t)
+        return " ".join(parts).replace("|", "｜")
+
+    def _tbl_to_md(tbl_elem) -> list[str]:
+        rows_md: list[str] = []
+        row_idx = 0
+        # 직계 tr만 처리
+        direct_trs = [c for c in tbl_elem if local(c.tag) == "tr"]
+        for tr in direct_trs:
+            cells = [c for c in tr if local(c.tag) == "tc"]
+            if not cells:
+                continue
+            cell_texts = [_cell_text(c) for c in cells]
+            rows_md.append("| " + " | ".join(cell_texts) + " |")
+            if row_idx == 0:
+                rows_md.append("| " + " | ".join(["---"] * len(cell_texts)) + " |")
+            row_idx += 1
+        return rows_md
+
+    lines: list[str] = []
+
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+        # ── 레거시 BinData 인덱스 (하위 호환용, 현재는 _raw_bin으로 대체) ──
+        # 파일명(확장자 제거) → (bytes, ext) 매핑
+        # _raw_bin 이 더 넓은 경로/이름 변형을 커버하므로 실제 조회는 _raw_bin/_binitem_map 사용
+        bin_data: dict[str, tuple] = {}
+        for zname in z.namelist():
+            if ("bindata" in zname.lower() or "BinData" in zname) and not zname.endswith("/"):
+                bname = zname.split("/")[-1]
+                if "." in bname:
+                    bid, ext = bname.rsplit(".", 1)
+                    ext = ext.lower()
+                else:
+                    bid, ext = bname, "png"
+                try:
+                    bin_data[bid] = (z.read(zname), ext)
+                except Exception:
+                    pass
+
+        MIME_MAP = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                    "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp"}
+
+        # ── 이미지 로드 단계 1: ZIP 내 모든 파일 3-key 인덱싱 ──────────────────
+        # HWPX에서 이미지 파일 경로는 한컴 버전마다 다를 수 있으므로
+        # 전체 경로 / 파일명 / 확장자 없는 이름 세 가지 키로 동시 등록해
+        # 어떤 참조 방식이 와도 빠르게 조회할 수 있도록 한다.
+        _raw_bin: dict[str, tuple] = {}  # {lowercase_key: (bytes, ext)}
+        for zname in z.namelist():
+            if zname.endswith("/"):
+                continue
+            bname = zname.split("/")[-1]
+            if "." in bname:
+                bid_raw, ext = bname.rsplit(".", 1)
+            else:
+                bid_raw, ext = bname, "png"
+            try:
+                data = z.read(zname)
+                _raw_bin[zname.lower()] = (data, ext.lower())      # 전체 경로 키
+                _raw_bin[bname.lower()] = (data, ext.lower())      # 파일명만 키
+                _raw_bin[bid_raw.lower()] = (data, ext.lower())    # 확장자 없는 이름 키
+            except Exception:
+                pass
+
+        # ── 이미지 로드 단계 2: header.xml binItem → ID 매핑 구성 ───────────────
+        # OWPML 스펙: <hh:binItem id="BIN0001" href="BinData/BIN0001.jpg" type="Embed"/>
+        # 본문 XML의 <hp:img binaryItemIDRef="BIN0001"> 가 이 ID를 참조한다.
+        # ID(대소문자 양쪽)를 키로 등록해 대소문자 불일치를 방지한다.
+        _binitem_map: dict[str, tuple] = {}  # {id_string: (bytes, ext)}
+        for zname in z.namelist():
+            if ("header" in zname.lower() or "head" in zname.lower()) and zname.endswith(".xml"):
+                try:
+                    with z.open(zname) as f:
+                        ht = ET.fromstring(f.read())
+                    for elem in ht.iter():
+                        if local(elem.tag) == "binItem":
+                            bitem_id, href = None, None
+                            for attr, val in elem.attrib.items():
+                                la = local(attr)
+                                if la == "id":
+                                    bitem_id = val
+                                elif la == "href":
+                                    href = val
+                            if bitem_id and href:
+                                # 전체 경로 조회 → 실패 시 파일명만으로 재시도
+                                entry = _raw_bin.get(href.lower()) or _raw_bin.get(href.split("/")[-1].lower())
+                                if entry:
+                                    _binitem_map[bitem_id] = entry
+                                    _binitem_map[bitem_id.lower()] = entry  # 소문자 키 중복 등록
+                except Exception:
+                    pass
+
+        def _get_img_md_by_ref(ref: str) -> str:
+            """binaryItemIDRef 값으로 Base64 마크다운 이미지 태그를 반환.
+
+            조회 우선순위:
+              1. _binitem_map[ref]        — header.xml binItem ID 정확 매칭
+              2. _binitem_map[ref.lower()]— 대소문자 무시 매칭
+              3. _raw_bin[파일명]         — ID가 파일명 형태일 때 직접 조회
+              4. _raw_bin[확장자 제거명]  — 마지막 fallback
+
+            실패 시 빈 문자열 반환 (이미지 누락 처리는 호출 측에서 담당).
+            """
+            # 1~2단계: binItem ID 기반 조회
+            entry = _binitem_map.get(ref) or _binitem_map.get(ref.lower())
+            if not entry:
+                # 3~4단계: 파일명/확장자 제거 이름으로 직접 조회
+                fname = ref.replace("\\", "/").split("/")[-1].lower()
+                bid_only = fname.rsplit(".", 1)[0] if "." in fname else fname
+                entry = _raw_bin.get(fname) or _raw_bin.get(bid_only)
+            if not entry:
+                return ""
+            img_bytes, _ext = entry
+            b64, mime = _compress_image_to_base64(img_bytes)
+            return f"![이미지](data:{mime};base64,{b64})"
+
+        def _para_images(p_elem) -> list[str]:
+            """p 요소 내 hp:img 태그(binaryItemIDRef 속성)를 찾아 Base64 마크다운 반환.
+            HWPX 구조: <hp:picture><hp:img binaryItemIDRef="BIN0001" .../></hp:picture>"""
+            imgs: list[str] = []
+            seen: set[str] = set()
+            for child in p_elem.iter():
+                ltag = local(child.tag)
+                if ltag == "img":
+                    ref = None
+                    for attr, val in child.attrib.items():
+                        if local(attr) == "binaryItemIDRef" and val:
+                            ref = val
+                            break
+                    if ref and ref not in seen:
+                        seen.add(ref)
+                        md = _get_img_md_by_ref(ref)
+                        if md:
+                            imgs.append(md)
+            return imgs
+
+        # 스타일 ID → 이름 맵 로드 (header.xml의 <style> 요소에서 수집)
+        # 헤딩 판별에 사용: style_name_map["s1"] == "제목 1" 이면 # 프리픽스 적용
+        style_name_map: dict[str, str] = {}
+        for zname in z.namelist():
+            if "header" in zname.lower() and zname.endswith(".xml"):
+                try:
+                    with z.open(zname) as f:
+                        sr = ET.fromstring(f.read())
+                    for elem in sr.iter():
+                        if local(elem.tag) == "style":
+                            sid, sname = None, None
+                            for attr, val in elem.attrib.items():
+                                if local(attr) in ("id", "styleId"):
+                                    sid = val
+                                elif local(attr) == "name":
+                                    sname = val
+                            for child in elem:
+                                ltag = local(child.tag)
+                                if ltag in ("id", "styleId") and child.text:
+                                    sid = child.text.strip()
+                                elif ltag in ("name", "localName") and child.text and not sname:
+                                    sname = child.text.strip()
+                            if sid and sname:
+                                style_name_map[sid] = sname
+                except Exception:
+                    pass
+
+        # HWPX 본문 섹션 파일 목록 (Contents/section0.xml, section1.xml ...)
+        # 섹션이 없으면 Contents 폴더의 모든 XML로 폴백
+        section_files = sorted(
+            n for n in z.namelist()
+            if n.startswith("Contents/") and n.endswith(".xml") and "section" in n.lower()
+        )
+        if not section_files:
+            section_files = sorted(
+                n for n in z.namelist() if "Contents" in n and n.endswith(".xml")
+            )
+
+        for sec_file in section_files:
+            with z.open(sec_file) as f:
+                try:
+                    root = ET.fromstring(f.read())
+                except Exception:
+                    continue
+
+            # parent_map: 자식 → 부모 역방향 매핑
+            # _is_inside_tc() 에서 특정 요소가 표 셀(tc) 안에 있는지 빠르게 판단하기 위해 사용
+            parent_map: dict = {}
+            for parent in root.iter():
+                for child in parent:
+                    parent_map[child] = parent
+
+            def _is_inside_tc(elem) -> bool:
+                """elem 이 hp:tc(표 셀) 의 자손이면 True 반환.
+
+                표 셀 내부 단락은 _tbl_to_md() 에서 별도로 처리되므로
+                최상위 순회 시 중복 출력을 막기 위해 이 함수로 필터링한다.
+                """
+                current = elem
+                while current in parent_map:
+                    current = parent_map[current]
+                    if local(current.tag) == "tc":
+                        return True
+                return False
+
+            # 섹션 XML을 문서 순서 그대로 순회
+            # 표 셀 바깥의 단락(p)과 표(tbl)만 처리한다
+            # (표 셀 안의 p는 _tbl_to_md → _cell_text 에서 처리)
+            for elem in root.iter():
+                etag = local(elem.tag)
+                if etag == "p":
+                    if _is_inside_tc(elem):
+                        continue
+                    img_mds = _para_images(elem)
+                    text = _para_text(elem).strip()
+                    if img_mds:
+                        lines.extend(img_mds)
+                    if not text:
+                        if not img_mds:
+                            lines.append("")
+                        continue
+                    sid = _style_id(elem)
+                    prefix = _heading_prefix(sid, style_name_map)
+                    lines.append(f"{prefix} {text}" if prefix else text)
+                elif etag == "tbl":
+                    if _is_inside_tc(elem):
+                        continue  # 중첩 표 스킵
+                    tbl_lines = _tbl_to_md(elem)
+                    if tbl_lines:
+                        lines.append("")
+                        lines.extend(tbl_lines)
+                        lines.append("")
+
+    # 연속 빈 줄 정리
+    result: list[str] = []
+    prev_blank = False
+    for ln in lines:
+        blank = not ln.strip()
+        if blank and prev_blank:
+            continue
+        result.append(ln)
+        prev_blank = blank
+    return "\n".join(result).strip()
 
 
 def _extract_text_from_image(file_bytes: bytes, filename: str) -> tuple[str, int]:
@@ -1005,9 +1583,58 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vis
                     if sub.strip():
                         chunks.append(sub)
     else:
-        step = CHUNK_SIZE - CHUNK_OVERLAP
-        for i in range(0, len(text), step):
-            chunk = _hard_sanitize(_sanitize(text[i: i + CHUNK_SIZE]))
+        # DOCX / HWPX / HWP 등 — 문단(빈 줄) 경계 기준 청킹
+        # 글자 수로 단순 자르면 문단 중간에서 끊겨 스크롤 위치 탐색 실패
+        # → 빈 줄(\n\n) 또는 개행(\n) 기준으로 문단 목록 추출 후 합산
+        paragraphs = [p.strip() for p in re.split(r'\n\n+', text) if p.strip()]
+        if not paragraphs:
+            paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
+
+        current_parts: list[str] = []
+        current_len = 0
+        overlap_parts: list[str] = []  # 다음 청크 시작에 붙일 오버랩 문단
+
+        for para in paragraphs:
+            para_len = len(para)
+
+            # 단일 문단이 CHUNK_SIZE를 초과하면 그 자체로 하나의 청크
+            if para_len > CHUNK_SIZE:
+                # 지금까지 모은 내용을 먼저 청크로 확정
+                if current_parts:
+                    chunk = _hard_sanitize(_sanitize("\n\n".join(current_parts)))
+                    if chunk.strip():
+                        chunks.append(chunk)
+                    overlap_parts = current_parts[-1:]  # 마지막 문단만 오버랩
+                    current_parts = []
+                    current_len = 0
+
+                # 긴 문단 자체를 청크로 추가
+                chunk = _hard_sanitize(_sanitize(para))
+                if chunk.strip():
+                    chunks.append(chunk)
+                overlap_parts = [para]
+                continue
+
+            # 현재 문단을 추가했을 때 CHUNK_SIZE 초과 여부 확인
+            sep_len = 2 if current_parts else 0  # "\n\n" 구분자
+            if current_len + sep_len + para_len > CHUNK_SIZE and current_parts:
+                # 현재까지 모은 내용으로 청크 확정
+                chunk = _hard_sanitize(_sanitize("\n\n".join(current_parts)))
+                if chunk.strip():
+                    chunks.append(chunk)
+                # 오버랩: 직전 청크의 마지막 문단(들)을 새 청크 시작에 포함
+                current_parts = list(overlap_parts)
+                current_len = sum(len(p) for p in current_parts) + 2 * max(0, len(current_parts) - 1)
+                overlap_parts = []
+
+            current_parts.append(para)
+            current_len += sep_len + para_len
+            # 다음 청크 오버랩을 위해 마지막 1개 문단 기억
+            overlap_parts = current_parts[-1:]
+
+        # 남은 문단 처리
+        if current_parts:
+            chunk = _hard_sanitize(_sanitize("\n\n".join(current_parts)))
             if chunk.strip():
                 chunks.append(chunk)
 
