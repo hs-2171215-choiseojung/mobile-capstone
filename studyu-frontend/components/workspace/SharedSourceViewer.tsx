@@ -2,8 +2,7 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Download, ExternalLink, Loader2, X, Volume2, Play, Pause, Square, ChevronDown, ChevronUp, Copy, Check, ArrowUpToLine, ArrowDownToLine } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
+import { Download, ExternalLink, Loader2, X } from "lucide-react";
 import MarkdownPreview from "@/components/workspace/MarkdownPreview";
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -122,6 +121,40 @@ interface SummaryCache {
   sentences: SubtitleSegment[];
 }
 
+/** DOCX/HWPX 마크다운 렌더러 */
+function MarkdownViewer({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      urlTransform={(url) => url}
+      components={{
+        h1: ({ children }) => <h1 className="text-2xl font-bold mt-6 mb-3 text-gray-900 border-b border-gray-200 pb-2">{children}</h1>,
+        h2: ({ children }) => <h2 className="text-xl font-bold mt-5 mb-2 text-gray-800">{children}</h2>,
+        h3: ({ children }) => <h3 className="text-lg font-semibold mt-4 mb-2 text-gray-800">{children}</h3>,
+        h4: ({ children }) => <h4 className="text-base font-semibold mt-3 mb-1 text-gray-700">{children}</h4>,
+        p: ({ children }) => <p className="mb-3 text-gray-700 leading-relaxed">{children}</p>,
+        strong: ({ children }) => <strong className="font-semibold text-gray-900">{children}</strong>,
+        em: ({ children }) => <em className="italic text-gray-700">{children}</em>,
+        ul: ({ children }) => <ul className="list-disc ml-5 mb-3 space-y-1 text-gray-700">{children}</ul>,
+        ol: ({ children }) => <ol className="list-decimal ml-5 mb-3 space-y-1 text-gray-700">{children}</ol>,
+        li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+        table: ({ children }) => <div className="overflow-x-auto mb-4"><table className="min-w-full border-collapse text-sm">{children}</table></div>,
+        thead: ({ children }) => <thead className="bg-gray-50">{children}</thead>,
+        tbody: ({ children }) => <tbody className="divide-y divide-gray-200">{children}</tbody>,
+        tr: ({ children }) => <tr className="hover:bg-gray-50">{children}</tr>,
+        th: ({ children }) => <th className="px-3 py-2 text-left text-xs font-semibold text-gray-600 uppercase border border-gray-200">{children}</th>,
+        td: ({ children }) => <td className="px-3 py-2 text-gray-700 border border-gray-200">{children}</td>,
+        blockquote: ({ children }) => <blockquote className="border-l-4 border-gray-300 pl-4 italic text-gray-600 mb-3">{children}</blockquote>,
+        hr: () => <hr className="border-gray-200 my-4" />,
+        // eslint-disable-next-line @next/next/no-img-element
+        img: ({ src, alt }) => <img src={src} alt={alt ?? "이미지"} className="max-w-full rounded-lg shadow-sm my-3" />,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
+
 export interface SharedSourceInfo {
   id: string;
   filename: string;
@@ -135,19 +168,6 @@ export interface MediaTimelineEntry {
   text: string;
 }
 
-export interface MediaSummarySection {
-  title: string;
-  start_sec: number;
-  end_sec?: number;
-  summary: string;
-}
-
-export interface MediaSummaryData {
-  title: string;
-  overview: string;
-  sections: MediaSummarySection[];
-}
-
 export interface SharedSourceViewerProps {
   source: SharedSourceInfo;
   sourceUrl?: string;
@@ -157,10 +177,6 @@ export interface SharedSourceViewerProps {
   onClose: () => void;
   transcriptText?: string;
   mediaTimeline?: MediaTimelineEntry[];
-  mediaSummaryData?: MediaSummaryData | null;
-  mediaSummaryLoading?: boolean;
-  showMediaSummaryToggle?: boolean;
-  onRequestMediaSummary?: () => void;
   seekRequest?: { seconds: number; nonce: number } | null;
   onMediaInfoChange?: (info: { kind: "audio" | "video" | null; duration: number }) => void;
   highlightRange?: { start: number; length: number };
@@ -177,10 +193,6 @@ export function SharedSourceViewer({
   onClose,
   transcriptText,
   mediaTimeline = [],
-  mediaSummaryData = null,
-  mediaSummaryLoading = false,
-  showMediaSummaryToggle = false,
-  onRequestMediaSummary,
   seekRequest,
   onMediaInfoChange,
   highlightRange,
@@ -190,34 +202,15 @@ export function SharedSourceViewer({
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  
-  const summaryAudioRef = useRef<HTMLAudioElement | null>(null);
-  const audioUrlRef = useRef<string>("");
-  const summaryCache = useRef<Map<string, SummaryCache>>(new Map());
-  const abortControllerRef = useRef<AbortController | null>(null);
+
   const highlightMarkRef = useRef<HTMLElement | null>(null);
   const textScrollRef = useRef<HTMLDivElement | null>(null);
 
   const [markdownText, setMarkdownText] = useState<string | null>(null);
   const [markdownLoading, setMarkdownLoading] = useState(false);
 
-  const [audioSummaryState, setAudioSummaryState] = useState<"idle" | "loading" | "playing" | "paused">("idle");
-  const [hasSummary, setHasSummary] = useState(false);
-  const [summaryText, setSummaryText] = useState("");
-  const [sentences, setSentences] = useState<SubtitleSegment[]>([]);
-  const [summaryExpanded, setSummaryExpanded] = useState(false);
-  const [audioProgress, setAudioProgress] = useState(0);
-  const [audioCurrent, setAudioCurrent] = useState(0);
-  const [audioDuration, setAudioDuration] = useState(0);
-  const [playbackRate, setPlaybackRate] = useState(1);
-  const [copied, setCopied] = useState(false);
-  const [selectedVoice, setSelectedVoice] = useState("sarah");
-  const [subtitlePosition, setSubtitlePosition] = useState<"bottom" | "top">("bottom");
-  const [summaryError, setSummaryError] = useState("");
-  
   const videoSectionRef = useRef<HTMLDivElement | null>(null);
   const [videoPaneHeight, setVideoPaneHeight] = useState(420);
-  const [mediaTextView, setMediaTextView] = useState<"transcript" | "summary">("transcript");
   const [activeTab, setActiveTab] = useState<"document" | "text">("document");
 
   // highlightRange 가 설정되면 자동으로 텍스트 탭으로 전환 (DOCX/HWP/HWPX)
@@ -237,10 +230,13 @@ export function SharedSourceViewer({
     setActiveTab("text");
     const search = scrollToText.slice(0, 80).trim();
     if (!search) return;
+    let cancelled = false;
+    const timeouts: ReturnType<typeof setTimeout>[] = [];
     const attempt = (retries: number) => {
+      if (cancelled) return;
       const container = textScrollRef.current;
       if (!container) {
-        if (retries > 0) setTimeout(() => attempt(retries - 1), 100);
+        if (retries > 0) timeouts.push(setTimeout(() => attempt(retries - 1), 100));
         return;
       }
       const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
@@ -255,7 +251,8 @@ export function SharedSourceViewer({
         }
       }
     };
-    setTimeout(() => attempt(3), 150);
+    timeouts.push(setTimeout(() => attempt(3), 150));
+    return () => { cancelled = true; timeouts.forEach(clearTimeout); };
   }, [scrollToText]);
 
   function renderTranscript(text: string, range?: { start: number; length: number }) {
@@ -300,12 +297,6 @@ export function SharedSourceViewer({
   const timelineEntries = useMemo(
     () => mediaTimeline.filter((entry) => entry && typeof entry.text === "string" && entry.text.trim()),
     [mediaTimeline]
-  );
-  const summaryTitle = mediaSummaryData?.title?.trim() || "전체 내용 요약";
-  const summaryOverview = mediaSummaryData?.overview?.trim() || "";
-  const summarySections = useMemo(
-    () => (mediaSummaryData?.sections ?? []).filter((section) => section && typeof section.summary === "string" && section.summary.trim()),
-    [mediaSummaryData]
   );
 
   const getYoutubeEmbedUrl = (url: string) => {
@@ -443,10 +434,6 @@ export function SharedSourceViewer({
   }, [isAudio, isEmbeddableYoutube, isVideo, onMediaInfoChange]);
 
   useEffect(() => {
-    setMediaTextView("transcript");
-  }, [source.id]);
-
-  useEffect(() => {
     if (isEmbeddableYoutube) {
       setVideoPaneHeight(360);
     }
@@ -487,203 +474,6 @@ export function SharedSourceViewer({
   const handleClose = () => {
     stopPlayback();
     onClose();
-  };
-
-  const playAudioFromBase64 = async (audioBase64: string) => {
-    const byteChars = atob(audioBase64);
-    const byteArr = new Uint8Array(byteChars.length);
-    for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
-    const blob = new Blob([byteArr], { type: "audio/mpeg" });
-    const audioUrl = URL.createObjectURL(blob);
-    audioUrlRef.current = audioUrl;
-
-    const audio = new Audio(audioUrl);
-    audio.playbackRate = playbackRate;
-    summaryAudioRef.current = audio;
-
-    audio.onloadedmetadata = () => setAudioDuration(audio.duration);
-    let lastUpdate = 0;
-    audio.ontimeupdate = () => {
-      const now = Date.now();
-      if (now - lastUpdate < 200) return; // 200ms throttle
-      lastUpdate = now;
-      setAudioCurrent(audio.currentTime);
-      setAudioProgress(audio.duration ? audio.currentTime / audio.duration : 0);
-    };
-    audio.onended = () => stopSummaryAudio();
-    audio.onerror = () => stopSummaryAudio();
-
-    await audio.play();
-    setAudioSummaryState("playing");
-  };
-
-  const handleAudioSummary = async () => {
-    if (audioSummaryState === "loading") return;
-
-    // 재생 중 → 일시정지
-    if (audioSummaryState === "playing") {
-      summaryAudioRef.current?.pause();
-      setAudioSummaryState("paused");
-      return;
-    }
-
-    // 일시정지 → 재개
-    if (audioSummaryState === "paused" && summaryAudioRef.current) {
-      await summaryAudioRef.current.play();
-      setAudioSummaryState("playing");
-      return;
-    }
-
-    // 캐시에 오디오 있으면 재생성 없이 바로 재생
-    const cached = summaryCache.current.get(source.id);
-    if (cached) {
-      await playAudioFromBase64(cached.audioBase64);
-      return;
-    }
-
-    // 새로 생성
-    setSummaryError("");
-    setAudioSummaryState("loading");
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    try {
-      const supabase = createClient();
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      if (!token) throw new Error("로그인이 필요합니다.");
-
-      const res = await fetch(`${API}/api/documents/${source.id}/audio-summary`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ voice: selectedVoice }),
-        signal: controller.signal,
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || "음성 요약 생성에 실패했습니다.");
-      }
-
-      const data = await res.json();
-      const { summary_text, audio_base64, sentences: segs } = data;
-
-      summaryCache.current.set(source.id, {
-        summaryText: summary_text,
-        audioBase64: audio_base64,
-        sentences: segs,
-      });
-      setSummaryText(summary_text);
-      setSentences(segs);
-      setHasSummary(true);
-
-      await playAudioFromBase64(audio_base64);
-    } catch (e: unknown) {
-      if (e instanceof Error && e.name === "AbortError") return; // 취소는 에러 아님
-      setSummaryError(e instanceof Error ? e.message : "음성 요약 생성에 실패했습니다.");
-      setAudioSummaryState("idle");
-    }
-  };
-
-  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
-    const audio = summaryAudioRef.current;
-    if (!audio || !audio.duration) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    audio.currentTime = ratio * audio.duration;
-  };
-
-  const handleSpeedChange = (rate: number) => {
-    setPlaybackRate(rate);
-    if (summaryAudioRef.current) summaryAudioRef.current.playbackRate = rate;
-  };
-
-  const handleDownloadAudio = () => {
-    const cached = summaryCache.current.get(source.id);
-    if (!cached) return;
-    const byteChars = atob(cached.audioBase64);
-    const byteArr = new Uint8Array(byteChars.length);
-    for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
-    const blob = new Blob([byteArr], { type: "audio/mpeg" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${source.filename}_요약.mp3`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleVoiceChange = async (voice: string) => {
-    if (voice === selectedVoice) return;
-    stopSummaryAudio();
-    summaryCache.current.delete(source.id);
-    setSummaryText("");
-    setSentences([]);
-    setHasSummary(false);
-    setSelectedVoice(voice);
-
-    // 즉시 새 음성으로 재생성 + 재생
-    setSummaryError("");
-    setAudioSummaryState("loading");
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    try {
-      const supabase = createClient();
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      if (!token) throw new Error("로그인이 필요합니다.");
-
-      const res = await fetch(`${API}/api/documents/${source.id}/audio-summary`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ voice }),
-        signal: controller.signal,
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || "음성 요약 생성에 실패했습니다.");
-      }
-
-      const data = await res.json();
-      summaryCache.current.set(source.id, {
-        summaryText: data.summary_text,
-        audioBase64: data.audio_base64,
-        sentences: data.sentences,
-      });
-      setSummaryText(data.summary_text);
-      setSentences(data.sentences);
-      setHasSummary(true);
-      await playAudioFromBase64(data.audio_base64);
-    } catch (e: unknown) {
-      if (e instanceof Error && e.name === "AbortError") return;
-      setSummaryError(e instanceof Error ? e.message : "음성 생성에 실패했습니다.");
-      setAudioSummaryState("idle");
-    }
-  };
-
-  const handleCopyText = async () => {
-    if (!summaryText) return;
-    try {
-      await navigator.clipboard.writeText(summaryText);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // fallback
-      const el = document.createElement("textarea");
-      el.value = summaryText;
-      document.body.appendChild(el);
-      el.select();
-      document.execCommand("copy");
-      document.body.removeChild(el);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
-
-  const handleSelectMediaTextView = (nextView: "transcript" | "summary") => {
-    setMediaTextView(nextView);
-    if (nextView === "summary" && summarySections.length === 0) {
-      onRequestMediaSummary?.();
-    }
   };
 
   const startVideoResize = useCallback((clientY: number) => {
@@ -748,105 +538,10 @@ export function SharedSourceViewer({
     );
   };
 
-  const renderSummarySection = () => {
-    if (mediaSummaryLoading) {
-      return (
-        <div className="rounded-xl border border-gray-200 bg-white p-5 text-sm text-gray-500">
-          주제별 요약을 생성하는 중입니다.
-        </div>
-      );
-    }
-
-    if (summarySections.length === 0) {
-      if (summaryOverview) {
-        return (
-          <article className="rounded-2xl border border-gray-200 bg-white px-6 py-7">
-            <header>
-              <h3 className="text-2xl font-bold tracking-tight text-gray-950">{summaryTitle}</h3>
-            </header>
-            <div className="mt-4">
-              <MarkdownPreview content={summaryOverview} className="text-[15px] leading-8 text-gray-700" />
-            </div>
-          </article>
-        );
-      }
-      return (
-        <div className="rounded-xl border border-dashed border-gray-200 bg-white p-5 text-sm text-gray-500">
-          아직 요약이 준비되지 않았습니다.
-        </div>
-      );
-    }
-
-    return (
-      <article className="rounded-2xl border border-gray-200 bg-white px-6 py-7">
-        <header>
-          <h3 className="text-2xl font-bold tracking-tight text-gray-950">{summaryTitle}</h3>
-          {summaryOverview ? (
-            <div className="mt-4">
-              <MarkdownPreview content={summaryOverview} className="text-[15px] leading-8 text-gray-700" />
-            </div>
-          ) : null}
-        </header>
-        {summarySections.map((section, index) => (
-          <section
-            key={`${section.start_sec}-${index}`}
-            className="mt-8"
-          >
-            <div className="flex items-baseline justify-between gap-3">
-              <h4 className="text-xl font-semibold tracking-tight text-gray-950">{section.title}</h4>
-              <button
-                type="button"
-                onClick={() => seekMedia(section.start_sec)}
-                className="shrink-0 text-base font-semibold text-blue-600 hover:text-blue-700 hover:underline"
-              >
-                ({formatTimestamp(section.start_sec)})
-              </button>
-            </div>
-            <div className="mt-3">
-              <MarkdownPreview content={section.summary} className="text-[15px] leading-8 text-gray-700" />
-            </div>
-          </section>
-        ))}
-      </article>
-    );
-  };
-
   const renderMediaContentSection = () => {
-    const heading = "";
-    const canShowSummaryToggle = showMediaSummaryToggle && isMediaLike;
-
-    if (!canShowSummaryToggle) {
-      return renderTranscriptBody(heading);
-    }
-
-    return (
-      <div>
-        <div className="mb-3 flex justify-end">
-          <div className="inline-flex rounded-full border border-gray-200 bg-white p-1">
-            <button
-              type="button"
-              onClick={() => handleSelectMediaTextView("transcript")}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                mediaTextView === "transcript" ? "bg-blue-600 text-white" : "text-gray-600 hover:bg-gray-100"
-              }`}
-            >
-              텍스트
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSelectMediaTextView("summary")}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                mediaTextView === "summary" ? "bg-blue-600 text-white" : "text-gray-600 hover:bg-gray-100"
-              }`}
-            >
-              요약
-            </button>
-          </div>
-        </div>
-        {mediaTextView === "summary" ? renderSummarySection() : renderTranscriptBody(heading)}
-      </div>
-    );
+    return renderTranscriptBody("");
   };
+
   // DOCX/HWP/HWPX: sourceUrl + transcriptText 둘 다 있고, 이미지/비디오/오디오/유튜브가 아닌 경우 탭 표시
   const hasBothViews = Boolean(
     sourceUrl && transcriptText !== undefined && !isImage && !isVideo && !isAudio && !isEmbeddableYoutube && !isUrlSource
@@ -951,7 +646,7 @@ export function SharedSourceViewer({
         </div>
       )}
 
-      {/* 본문 (자막 오버레이 포함) */}
+      {/* 본문 */}
       <div className="flex-1 bg-[#f8f9fb] p-3 overflow-auto relative">
         {loading ? (
           <div className="h-full flex flex-col items-center justify-center text-gray-500 gap-3">
