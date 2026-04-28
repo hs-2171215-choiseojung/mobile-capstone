@@ -338,8 +338,9 @@ STORAGE_CONTENT_TYPES = {
     "webm": "video/webm",
     "mp3": "audio/mpeg",
     "m4a": "audio/mp4",
+    # HWPX는 별도 처리 (마크다운 변환 후 text/plain 저장)
 }
-# Supabase Storage에 저장하는 확장자 (오피스 문서 형식은 MIME 미지원)
+# Supabase Storage에 저장하는 확장자
 STORABLE_EXTENSIONS = set(STORAGE_CONTENT_TYPES.keys())
 
 # 파일 크기 제한 (바이트)
@@ -393,8 +394,23 @@ async def upload_document(
 
     doc_id = str(uuid.uuid4())
 
-    # 1. Supabase Storage에 업로드 (PDF·이미지·비디오·오디오)
-    if ext in STORABLE_EXTENSIONS:
+    # HWPX 마크다운 미리 추출 (업로드 전, doc_id 확정 후 DB에 저장)
+    hwpx_markdown_text: str | None = None
+    if ext == "hwpx":
+        try:
+            from app.services.rag import _extract_markdown_from_hwpx
+            hwpx_markdown_text = _extract_markdown_from_hwpx(file_bytes)
+            print(f"[HWPX] 마크다운 변환 완료 ({len(hwpx_markdown_text)}자)")
+        except Exception as e:
+            import traceback
+            print(f"[HWPX] 마크다운 변환 실패: {e}")
+            traceback.print_exc()
+
+    # 1. Supabase Storage에 업로드
+    if ext == "hwpx":
+        # HWPX는 Supabase Storage MIME 타입 미지원 → Storage 저장 없이 마크다운만 DB 보관
+        storage_path = ""
+    elif ext in STORABLE_EXTENSIONS:
         storage_bytes = file_bytes
         storage_ext = ext
         content_type = STORAGE_CONTENT_TYPES[ext]
@@ -461,6 +477,18 @@ async def upload_document(
         traceback.print_exc()
         supabase_admin.table("documents").update({"status": "error"}).eq("id", doc_id).execute()
         raise HTTPException(status_code=500, detail=f"파일 파싱 실패: {str(e)}")
+
+    # 4-B. HWPX 마크다운을 document_chunks 테이블에 chunk_index=-1로 저장
+    if ext == "hwpx" and hwpx_markdown_text:
+        try:
+            supabase_admin.table("document_chunks").insert({
+                "doc_id": doc_id,
+                "chunk_index": -1,
+                "content": hwpx_markdown_text,
+            }).execute()
+            print(f"[HWPX] 마크다운 DB 저장 완료 (doc_id={doc_id})")
+        except Exception as e:
+            print(f"[HWPX] 마크다운 DB 저장 실패: {e}")
 
     # 5. 상태 업데이트
     supabase_admin.table("documents").update({
@@ -630,6 +658,89 @@ async def get_document_access_url(
         raise HTTPException(status_code=500, detail="문서 URL 생성에 실패했습니다.")
 
     return {"url": signed_url, "kind": "signed", "expires_in": 3600}
+
+
+@router.get("/documents/{document_id}/markdown")
+async def get_document_markdown(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """DOCX/HWPX 문서를 마크다운으로 변환 반환. 원본 파일을 Storage에서 다운받아 변환."""
+    doc_res = (
+        supabase_admin.table("documents")
+        .select("id, notebook_id, user_id, storage_path, filename, status")
+        .eq("id", document_id)
+        .limit(1)
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    doc = doc_res.data[0]
+    if doc.get("status") != "ready":
+        raise HTTPException(status_code=404, detail="사용할 수 없는 문서입니다.")
+
+    # 권한 확인 (소유자 또는 수강 학생)
+    notebook_id = doc.get("notebook_id")
+    nb = (
+        supabase_admin.table("notebooks")
+        .select("user_id")
+        .eq("id", notebook_id)
+        .single()
+        .execute()
+        .data
+    )
+    is_owner = nb and nb.get("user_id") == user["id"]
+    if not is_owner:
+        enrolled = (
+            supabase_admin.table("notebook_enrollments")
+            .select("id")
+            .eq("notebook_id", notebook_id)
+            .eq("student_id", user["id"])
+            .execute()
+            .data
+        )
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="문서 열람 권한이 없습니다.")
+
+    filename = doc.get("filename", "")
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if ext not in ("docx", "hwpx"):
+        raise HTTPException(status_code=400, detail="DOCX/HWPX 파일만 마크다운 변환을 지원합니다.")
+
+    # HWPX: Storage 사용 안 함 — DB에서 직접 조회
+    if ext == "hwpx":
+        try:
+            md_row = (
+                supabase_admin.table("document_chunks")
+                .select("content")
+                .eq("doc_id", document_id)
+                .eq("chunk_index", -1)
+                .limit(1)
+                .execute()
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"마크다운 조회 실패: {e}")
+        if not md_row.data:
+            raise HTTPException(status_code=400, detail="HWPX 마크다운이 없습니다. 파일을 다시 업로드해 주세요.")
+        return {"markdown": md_row.data[0]["content"]}
+
+    storage_path = (doc.get("storage_path") or "").strip()
+    if not storage_path:
+        raise HTTPException(status_code=400, detail="파일이 저장되지 않았습니다. 새로 업로드해 주세요.")
+
+    try:
+        file_bytes = supabase_admin.storage.from_(STORAGE_BUCKET).download(storage_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"파일 다운로드 실패: {e}")
+
+    try:
+        from app.services.rag import _extract_markdown_from_docx
+        markdown = _extract_markdown_from_docx(file_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"마크다운 변환 실패: {e}")
+
+    return {"markdown": markdown}
 
 
 @router.get("/documents/{document_id}/slides")

@@ -44,19 +44,6 @@ interface MediaTimelineEntry {
   text: string;
 }
 
-interface MediaSummarySection {
-  title: string;
-  start_sec: number;
-  end_sec?: number;
-  summary: string;
-}
-
-interface MediaSummaryData {
-  title: string;
-  overview: string;
-  sections: MediaSummarySection[];
-}
-
 const PREVIEWABLE_OFFICE_EXTS = new Set(["docx", "pptx", "ppt"]);
 
 function getOfficeEmbedUrl(url: string): string {
@@ -96,13 +83,13 @@ export default function StudentWorkspacePage() {
   const [isSourceLoading, setIsSourceLoading] = useState(false);
   const [selectedSourceTranscript, setSelectedSourceTranscript] = useState<string | undefined>(undefined);
   const [selectedSourceTimeline, setSelectedSourceTimeline] = useState<MediaTimelineEntry[]>([]);
-  const [selectedSourceSummary, setSelectedSourceSummary] = useState<MediaSummaryData | null>(null);
-  const [selectedSourceSummaryLoading, setSelectedSourceSummaryLoading] = useState(false);
   const [selectedSourceMediaDuration, setSelectedSourceMediaDuration] = useState(0);
   const [selectedSourceMediaType, setSelectedSourceMediaType] = useState<"audio" | "video" | null>(null);
   const [selectedSourceSeekRequest, setSelectedSourceSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
   const [highlightRange, setHighlightRange] = useState<{ start: number; length: number } | null>(null);
   const pendingHighlightRef = useRef<{ start: number; length: number } | null>(null);
+  const [citationScrollText, setCitationScrollText] = useState<string | undefined>(undefined);
+  const pendingScrollTextRef = useRef<string | undefined>(undefined);
   const [currentSlide, setCurrentSlide] = useState<number | null>(null);
   const [chatRequestedSlide, setChatRequestedSlide] = useState<number | null>(null);
 
@@ -381,8 +368,6 @@ export default function StudentWorkspacePage() {
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
     setSelectedSourceTimeline([]);
-    setSelectedSourceSummary(null);
-    setSelectedSourceSummaryLoading(false);
     setSelectedSourceMediaDuration(0);
     setSelectedSourceMediaType(null);
     setSelectedSourceSeekRequest(null);
@@ -510,21 +495,28 @@ export default function StudentWorkspacePage() {
       setHighlightRange(pendingHighlightRef.current);
       pendingHighlightRef.current = null;
     }
+    if (!isSourceLoading && pendingScrollTextRef.current) {
+      setCitationScrollText(pendingScrollTextRef.current);
+      pendingScrollTextRef.current = undefined;
+    }
   }, [isSourceLoading]);
 
   const handleCitationClick = (chunk: SourceChunk) => {
     const doc = docs.find((d: DocumentInfo) => d.id === chunk.doc_id);
     if (!doc) return;
-    // char_offset 이 있으면 정확한 위치, 없으면 null (뷰어가 fallback 처리)
+    // char_offset 이 있으면 정확한 위치, 없으면 null (븷어가 fallback 처리)
     const range =
       chunk.char_offset !== undefined && chunk.char_offset >= 0 && chunk.char_length
         ? { start: chunk.char_offset, length: chunk.char_length }
         : null;
+    const scrollText = chunk.text?.slice(0, 80) || undefined;
     if (selectedSource?.id === chunk.doc_id) {
       setHighlightRange(range);
+      setCitationScrollText(scrollText);
     } else {
       setHighlightRange(null);
       pendingHighlightRef.current = range;
+      pendingScrollTextRef.current = scrollText;
       void openSourceDocument(doc as DocumentInfo);
     }
   };
@@ -554,61 +546,11 @@ export default function StudentWorkspacePage() {
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
     setSelectedSourceTimeline([]);
-    setSelectedSourceSummary(null);
-    setSelectedSourceSummaryLoading(false);
     setSelectedSourceMediaDuration(0);
     setSelectedSourceMediaType(null);
     setSelectedSourceSeekRequest(null);
     setActiveDocIds([]);
     shouldRestoreCenterScrollRef.current = true;
-  };
-
-  const requestSelectedSourceSummary = async () => {
-    if (!selectedSource || selectedSourceSummaryLoading || (selectedSourceSummary?.sections?.length ?? 0) > 0) return;
-
-    const ext = selectedSource.filename.toLowerCase().split(".").pop() ?? selectedSource.file_type;
-    const isYoutubeSource =
-      isYoutubeUrl(selectedSource.storage_path) ||
-      isYoutubeUrl(selectedSourceUrl) ||
-      isYoutubeUrl(selectedSourceDownloadUrl);
-    const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
-    const isExternalLinkLike =
-      (isHttpUrl(selectedSourceUrl) || isHttpUrl(selectedSourceDownloadUrl)) &&
-      !AUDIO_EXTS.has(ext) &&
-      !VIDEO_EXTS.has(ext) &&
-      !TEXT_ONLY_EXTS.has(ext) &&
-      !PREVIEWABLE_OFFICE_EXTS.has(ext) &&
-      !IMAGE_EXTS.has(ext) &&
-      !PDF_EXTS.has(ext);
-    if (!isYoutubeSource && !isExternalLinkLike && !AUDIO_EXTS.has(ext) && !VIDEO_EXTS.has(ext)) return;
-
-    setSelectedSourceSummaryLoading(true);
-    try {
-      const supabase = createClient();
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      if (!token) return;
-
-      const response = await fetch(`${API}/api/documents/${selectedSource.id}/media-summary`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await response.json().catch(() => ({}));
-      if (response.ok && Array.isArray(data?.sections)) {
-        setSelectedSourceSummary({
-          title: typeof data?.title === "string" ? data.title : "전체 내용 요약",
-          overview: typeof data?.overview === "string" ? data.overview : "",
-          sections: data.sections,
-        });
-      } else if (typeof data?.detail === "string") {
-        setSelectedSourceSummary({
-          title: "요약을 불러오지 못했습니다",
-          overview: data.detail,
-          sections: [],
-        });
-      }
-    } finally {
-      setSelectedSourceSummaryLoading(false);
-    }
   };
 
   return (
@@ -624,7 +566,7 @@ export default function StudentWorkspacePage() {
 
           if (selectedSource) {
             const srcExt = selectedSource.filename.toLowerCase().split(".").pop() ?? selectedSource.file_type;
-            const isPpt = PREVIEWABLE_OFFICE_EXTS.has(srcExt) && !selectedSource.storage_path?.startsWith("http");
+            const isPpt = (srcExt === "pptx" || srcExt === "ppt") && !selectedSource.storage_path?.startsWith("http");
             const isPdf = srcExt === "pdf";
             return (
               /* 소스 문서: 뷰어 + 우측 채팅 (Resizable) */
@@ -637,18 +579,13 @@ export default function StudentWorkspacePage() {
                     loading={isSourceLoading}
                     error={selectedSourceError}
                     transcriptText={selectedSourceTranscript}
-                    mediaSummaryData={selectedSourceSummary}
-                    mediaSummaryLoading={selectedSourceSummaryLoading}
-                    showMediaSummaryToggle
-                    onRequestMediaSummary={() => {
-                      void requestSelectedSourceSummary();
-                    }}
                     seekRequest={selectedSourceSeekRequest}
                     onMediaInfoChange={({ kind, duration }) => {
                       setSelectedSourceMediaType(kind);
                       setSelectedSourceMediaDuration(duration);
                     }}
                     highlightRange={highlightRange ?? undefined}
+                    scrollToText={citationScrollText}
                     onClose={closeSource}
                     customViewer={isPpt ? (
                       <PptSlideViewer
