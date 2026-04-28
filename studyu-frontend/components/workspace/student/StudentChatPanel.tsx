@@ -30,11 +30,25 @@ interface StudentChatPanelProps {
   activeSourceId?: string;
   activeSourceMediaType?: "audio" | "video" | null;
   activeSourceMediaDuration?: number;
+  activeSourceSummary?: MediaSummary | null;
   onSeekToTimestamp?: (seconds: number) => void;
   onClose?: () => void;
   onCitationClick?: (chunk: SourceChunk) => void;
   onSlideClick?: (slideNum: number) => void;
   onPageClick?: (pageNum: number) => void;
+}
+
+interface MediaSummarySection {
+  title: string;
+  summary: string;
+  start_sec?: number | null;
+  end_sec?: number | null;
+}
+
+interface MediaSummary {
+  title?: string;
+  overview?: string;
+  sections?: MediaSummarySection[];
 }
 
 interface ChatReference {
@@ -134,6 +148,18 @@ function formatTimestamp(totalSeconds: number) {
   const seconds = safeSeconds % 60;
   if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function formatTimestampRange(startSec?: number | null, endSec?: number | null) {
+  const hasStart = typeof startSec === "number" && Number.isFinite(startSec);
+  const hasEnd = typeof endSec === "number" && Number.isFinite(endSec);
+  if (hasStart && hasEnd && endSec! > startSec!) {
+    return `${formatTimestamp(startSec!)} - ${formatTimestamp(endSec!)}`;
+  }
+  if (hasStart) {
+    return formatTimestamp(startSec!);
+  }
+  return "";
 }
 
 function getReferenceSeconds(reference: ChatReference, duration: number) {
@@ -346,6 +372,7 @@ export function StudentChatPanel({
   activeSourceId,
   activeSourceMediaType,
   activeSourceMediaDuration,
+  activeSourceSummary,
   onSeekToTimestamp,
   onClose,
   onCitationClick,
@@ -356,6 +383,7 @@ export function StudentChatPanel({
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   interface Suggestion { text: string; category: "이해" | "분석" | "적용"; isOld?: boolean; }
 
   // 자료별 채팅 키: 선택된 doc ID 기반 (없으면 노트북 전체)
@@ -388,6 +416,52 @@ export function StudentChatPanel({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatKeyRef = useRef(chatKey);
+  const mediaSummarySections = activeSourceSummary?.sections ?? [];
+  const hasMediaSummary = Boolean(
+    activeSourceSummary && (
+      (activeSourceSummary.overview && activeSourceSummary.overview.trim()) ||
+      mediaSummarySections.some((section) => section?.summary?.trim())
+    )
+  );
+  const mediaSummaryMarkdown = hasMediaSummary
+    ? [
+        activeSourceSummary?.title?.trim() ? `# ${activeSourceSummary.title.trim()}` : "# 자료 요약",
+        activeSourceSummary?.overview?.trim() || "",
+        ...mediaSummarySections.flatMap((section, index) => ([
+          `## ${section.title?.trim() || `요약 ${index + 1}`}`,
+          section.summary?.trim() || "",
+        ])),
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+    : "";
+  const summaryReportMarkdown = hasMediaSummary
+    ? [
+        activeSourceSummary?.title?.trim() ? `# ${activeSourceSummary.title.trim()}` : "# 자료 요약",
+        "> 시간 흐름에 따라 정리된 학습용 요약 보고서",
+        "## 개요",
+        activeSourceSummary?.overview?.trim() || "요약 개요가 아직 준비되지 않았습니다.",
+        ...mediaSummarySections.flatMap((section, index) => {
+          const timeRange = formatTimestampRange(section.start_sec, section.end_sec);
+          return [
+            `## ${(section.title?.trim() || `요약 ${index + 1}`)}${timeRange ? ` · ${timeRange}` : ""}`,
+            section.summary?.trim() || "이 구간의 요약이 아직 준비되지 않았습니다.",
+          ];
+        }),
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+    : "";
+
+  useEffect(() => {
+    setIsSummaryOpen(false);
+  }, [activeSourceId]);
+
+  useEffect(() => {
+    if (!hasMediaSummary) {
+      setIsSummaryOpen(false);
+    }
+  }, [hasMediaSummary, activeSourceId]);
 
   // ── 음성 재생 상태 ────────────────────────────────────────
   const [voiceMode,        setVoiceMode]        = useState(false);
@@ -1067,6 +1141,15 @@ export function StudentChatPanel({
               )}
             </div>
           )}
+          {hasMediaSummary && (
+            <button
+              onClick={() => setIsSummaryOpen(true)}
+              className="px-2.5 py-1.5 rounded-md text-[12px] font-medium text-[#155dfc] bg-blue-50 hover:bg-blue-100 transition-colors"
+              title="요약 보기"
+            >
+              요약
+            </button>
+          )}
           <button
             onClick={toggleVoiceMode}
             className={`p-1.5 rounded-md transition-colors ${voiceMode ? 'text-[#155dfc] bg-blue-50 hover:bg-blue-100' : 'text-[#99a1af] hover:text-gray-600 hover:bg-gray-100'}`}
@@ -1114,7 +1197,99 @@ export function StudentChatPanel({
       </div>
 
       {/* 메시지 리스트 영역 */}
+      {isSummaryOpen && hasMediaSummary && (
+        <div className="absolute inset-0 z-20 bg-white/95 backdrop-blur-[1px] flex flex-col">
+          <div className="shrink-0 px-4 py-3 border-b border-[#e7e9ed] flex items-center justify-between bg-white">
+            <div className="min-w-0">
+              <p className="text-[14px] font-semibold text-[#1a1d26] truncate">
+                {activeSourceSummary?.title?.trim() || "자료 요약"}
+              </p>
+              <p className="text-[11px] text-[#99a1af]">Markdown 형식으로 볼 수 있어요.</p>
+            </div>
+            <button
+              onClick={() => setIsSummaryOpen(false)}
+              className="p-1.5 text-[#99a1af] hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
+              title="닫기"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 bg-[#f8f9fb]">
+            <div className="rounded-2xl border border-[#d9e0ea] bg-white p-6 shadow-sm">
+              <MarkdownPreview
+                content={summaryReportMarkdown}
+                className="text-[#1f2937] leading-7 [&_h1]:mb-4 [&_h1]:text-[28px] [&_h1]:font-bold [&_h1]:tracking-[-0.02em] [&_h2]:mt-8 [&_h2]:mb-3 [&_h2]:text-[19px] [&_h2]:font-semibold [&_h2]:text-[#111827] [&_p]:text-[14px] [&_p]:leading-7 [&_blockquote]:border-blue-100 [&_blockquote]:bg-blue-50 [&_blockquote]:text-[12px] [&_blockquote]:not-italic [&_blockquote]:text-[#4b5563]"
+                transformText={(text) =>
+                  renderMessageContent(
+                    text,
+                    Boolean(activeSourceMediaType && onSeekToTimestamp),
+                    []
+                  )
+                }
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
+        {false && hasMediaSummary && (
+          <div className="rounded-2xl border border-[#dbe7ff] bg-[#f7faff] p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-white text-[#155dfc] shadow-sm">
+                <BotMessageSquare className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-[13px] font-semibold text-[#155dfc]">
+                  {activeSourceSummary?.title?.trim() || "자료 요약"}
+                </p>
+                <p className="text-[11px] text-[#6b7280]">채팅하면서 바로 참고할 수 있는 요약이에요.</p>
+              </div>
+            </div>
+
+            {activeSourceSummary?.overview?.trim() ? (
+              <div className="rounded-xl bg-white/80 px-3 py-2 text-[13px] leading-6 text-[#374151] border border-white">
+                <MarkdownPreview content={activeSourceSummary?.overview ?? ""} className="text-[#374151]" />
+              </div>
+            ) : null}
+
+            {mediaSummarySections.length > 0 ? (
+              <div className="mt-3 space-y-2">
+                {mediaSummarySections.map((section, index) => {
+                  const sectionStart =
+                    typeof section.start_sec === "number" && Number.isFinite(section.start_sec)
+                      ? Math.max(0, section.start_sec)
+                      : null;
+
+                  return (
+                    <div key={`${section.title}-${index}`} className="rounded-xl bg-white px-3 py-3 border border-[#e5edff]">
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="text-[13px] font-semibold text-[#1f2937]">
+                          {section.title?.trim() || `요약 ${index + 1}`}
+                        </p>
+                        {sectionStart !== null && activeSourceMediaType && onSeekToTimestamp ? (
+                          <button
+                            type="button"
+                            onClick={() => onSeekToTimestamp(sectionStart)}
+                            className="shrink-0 rounded-full bg-[#eef4ff] px-2.5 py-1 text-[11px] font-medium text-[#155dfc] hover:bg-[#dbe7ff]"
+                          >
+                            {formatTimestamp(sectionStart)}
+                          </button>
+                        ) : null}
+                      </div>
+                      {section.summary?.trim() ? (
+                        <div className="mt-2 text-[13px] leading-6 text-[#4b5563]">
+                          <MarkdownPreview content={section.summary} className="text-[#4b5563]" />
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        )}
+
         {messages.length === 0 && (
           <div className="flex flex-col h-full">
             {/* 인트로 */}

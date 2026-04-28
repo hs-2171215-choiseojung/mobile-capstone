@@ -3,6 +3,7 @@
 import {
   Children,
   cloneElement,
+  createElement,
   isValidElement,
   type AnchorHTMLAttributes,
   type HTMLAttributes,
@@ -81,6 +82,16 @@ function TextAwareTableHeader(
   return <th {...rest}>{Children.map(children, (child) => transformNode(child, transformText))}</th>;
 }
 
+function TextAwareHeading(
+  props: HTMLAttributes<HTMLHeadingElement> & {
+    as: "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+    transformText?: (text: string) => ReactNode;
+  }
+) {
+  const { as, children, transformText, ...rest } = props;
+  return createElement(as, rest, Children.map(children, (child) => transformNode(child, transformText)));
+}
+
 export default function MarkdownPreview({ content, className, transformText }: MarkdownPreviewProps) {
   const TextAwareParagraph = (props: HTMLAttributes<HTMLParagraphElement>) => (
     <Paragraph {...props}>{Children.map(props.children, (child) => transformNode(child, transformText))}</Paragraph>
@@ -113,6 +124,12 @@ export default function MarkdownPreview({ content, className, transformText }: M
         skipHtml
         components={{
           p: TextAwareParagraph,
+          h1: (props) => <TextAwareHeading {...props} as="h1" transformText={transformText} />,
+          h2: (props) => <TextAwareHeading {...props} as="h2" transformText={transformText} />,
+          h3: (props) => <TextAwareHeading {...props} as="h3" transformText={transformText} />,
+          h4: (props) => <TextAwareHeading {...props} as="h4" transformText={transformText} />,
+          h5: (props) => <TextAwareHeading {...props} as="h5" transformText={transformText} />,
+          h6: (props) => <TextAwareHeading {...props} as="h6" transformText={transformText} />,
           li: (props) => <TextAwareListItem {...props} transformText={transformText} />,
           blockquote: (props) => <TextAwareBlockquote {...props} transformText={transformText} />,
           td: (props) => <TextAwareTableCell {...props} transformText={transformText} />,

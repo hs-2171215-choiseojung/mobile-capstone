@@ -44,6 +44,19 @@ interface MediaTimelineEntry {
   text: string;
 }
 
+interface MediaSummarySection {
+  title: string;
+  summary: string;
+  start_sec?: number | null;
+  end_sec?: number | null;
+}
+
+interface MediaSummary {
+  title?: string;
+  overview?: string;
+  sections?: MediaSummarySection[];
+}
+
 const PREVIEWABLE_OFFICE_EXTS = new Set(["docx", "pptx", "ppt"]);
 
 function getOfficeEmbedUrl(url: string): string {
@@ -83,6 +96,7 @@ export default function StudentWorkspacePage() {
   const [isSourceLoading, setIsSourceLoading] = useState(false);
   const [selectedSourceTranscript, setSelectedSourceTranscript] = useState<string | undefined>(undefined);
   const [selectedSourceTimeline, setSelectedSourceTimeline] = useState<MediaTimelineEntry[]>([]);
+  const [selectedSourceSummary, setSelectedSourceSummary] = useState<MediaSummary | null>(null);
   const [selectedSourceMediaDuration, setSelectedSourceMediaDuration] = useState(0);
   const [selectedSourceMediaType, setSelectedSourceMediaType] = useState<"audio" | "video" | null>(null);
   const [selectedSourceSeekRequest, setSelectedSourceSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
@@ -368,6 +382,7 @@ export default function StudentWorkspacePage() {
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
     setSelectedSourceTimeline([]);
+    setSelectedSourceSummary(null);
     setSelectedSourceMediaDuration(0);
     setSelectedSourceMediaType(null);
     setSelectedSourceSeekRequest(null);
@@ -382,6 +397,7 @@ export default function StudentWorkspacePage() {
       const rawTypeIsUrl = doc.file_type === "url" || doc.file_type === "link";
       const isYoutubeSource = isYoutubeUrl(doc.storage_path);
       const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
+      const isMediaSummarySource = rawTypeIsUrl || isYoutubeSource || AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext);
       const needsAccessUrl = rawTypeIsUrl || !TEXT_ONLY_EXTS.has(ext) || PREVIEWABLE_OFFICE_EXTS.has(ext) || !ext;
       const needsText = rawTypeIsUrl || isYoutubeSource || AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext) || TEXT_ONLY_EXTS.has(ext);
       const needsPreviewPdf = PREVIEWABLE_OFFICE_EXTS.has(ext);
@@ -404,6 +420,22 @@ export default function StudentWorkspacePage() {
               } else if (data?.text) {
                 setSelectedSourceTranscript(data.text);
               }
+            })
+        : Promise.resolve();
+      const mediaSummaryPromise = isMediaSummarySource
+        ? fetch(`${API}/api/documents/${doc.id}/media-summary`, {
+            headers: { Authorization: `Bearer ${token}` },
+          })
+            .then(async (response) => {
+              const data = await response.json().catch(() => null);
+              if (!response.ok || !data) {
+                setSelectedSourceSummary(null);
+                return;
+              }
+              setSelectedSourceSummary(data);
+            })
+            .catch(() => {
+              setSelectedSourceSummary(null);
             })
         : Promise.resolve();
 
@@ -447,6 +479,7 @@ export default function StudentWorkspacePage() {
           setSelectedSourceTranscript(detail);
           setSelectedSourceTimeline([]);
         }
+        await mediaSummaryPromise;
         return;
       }
 
@@ -481,7 +514,7 @@ export default function StudentWorkspacePage() {
         }
       }
 
-      await nextSourceTextPromise;
+      await Promise.all([nextSourceTextPromise, mediaSummaryPromise]);
     } catch {
       setSelectedSourceError("문서를 여는 중 오류가 발생했습니다.");
     } finally {
@@ -546,6 +579,7 @@ export default function StudentWorkspacePage() {
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
     setSelectedSourceTimeline([]);
+    setSelectedSourceSummary(null);
     setSelectedSourceMediaDuration(0);
     setSelectedSourceMediaType(null);
     setSelectedSourceSeekRequest(null);
@@ -615,6 +649,7 @@ export default function StudentWorkspacePage() {
                     activeSourceId={selectedSource.id}
                     activeSourceMediaType={selectedSourceMediaType}
                     activeSourceMediaDuration={selectedSourceMediaDuration}
+                    activeSourceSummary={selectedSourceSummary}
                     onSeekToTimestamp={(seconds) => setSelectedSourceSeekRequest({ seconds, nonce: Date.now() })}
                     onCitationClick={handleCitationClick}
                     onSlideClick={isPpt ? (n) => setChatRequestedSlide(n) : undefined}
