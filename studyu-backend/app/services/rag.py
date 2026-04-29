@@ -1872,7 +1872,7 @@ VIDEO_AUDIO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
 
 
-def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vision: dict | None = None, pdf_vision: dict | None = None) -> tuple[int, int]:
+def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vision: dict | None = None, pdf_vision: dict | None = None, hwpx_page_count: int = 0, hwpx_pdf_bytes: bytes | None = None) -> tuple[int, int]:
     """파일을 청크로 분할하고 임베딩을 포함하여 Supabase에 저장.
 
     Returns:
@@ -1889,7 +1889,25 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vis
     elif ext in ("pptx", "ppt"):
         text, page_count = _extract_text_from_pptx(file_bytes, vision_descriptions=pptx_vision or {})
     elif ext == "hwpx":
-        text, page_count = _extract_text_from_hwpx(file_bytes)
+        if hwpx_pdf_bytes:
+            # pyhwpx로 생성된 PDF에서 정확한 페이지별 텍스트 추출
+            text, page_count = _extract_text_from_pdf(hwpx_pdf_bytes)
+        else:
+            text, page_count = _extract_text_from_hwpx(file_bytes)
+            # PDF 없을 때: 단락을 페이지 수로 균등 분배해 [페이지 N] 마커 삽입
+            if hwpx_page_count > 0 and text:
+                raw_lines = [l for l in text.split('\n') if l.strip()]
+                total = len(raw_lines)
+                paras_per_page = max(1, total // hwpx_page_count)
+                paged: list[str] = []
+                for p in range(1, hwpx_page_count + 1):
+                    start = (p - 1) * paras_per_page
+                    end = start + paras_per_page if p < hwpx_page_count else total
+                    block = raw_lines[start:end]
+                    if block:
+                        paged.append(f"[페이지 {p}]\n" + "\n".join(block))
+                text = "\n\n".join(paged)
+                page_count = hwpx_page_count
     elif ext == "hwp":
         text, page_count = _extract_text_from_hwp(file_bytes)
     elif ext in IMAGE_EXTENSIONS:
@@ -1946,8 +1964,8 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vis
                     sub = _hard_sanitize(_sanitize(header + body[i: i + CHUNK_SIZE]))
                     if sub.strip():
                         chunks.append(sub)
-    elif ext == "docx":
-        # DOCX: [페이지 N] 마커 기준으로 페이지별 청킹 (PDF와 동일 방식)
+    elif ext in ("docx", "hwpx"):
+        # DOCX/HWPX: [페이지 N] 마커 기준으로 페이지별 청킹 (PDF와 동일 방식)
         page_parts = re.split(r'(?=\[페이지\s*\d+\])', text)
         for part in page_parts:
             part = _hard_sanitize(_sanitize(part)).strip()
@@ -3158,14 +3176,23 @@ def chat_with_docs(
         str(doc_meta_map.get(d, {}).get("filename", "")).lower().rsplit(".", 1)[-1] == "pdf"
         for d in doc_ids
     )
-    # 전체 문서 조회 의도 감지 (PPT / PDF 공통)
+    is_docx_doc = (not is_url_doc) and (not is_ppt_doc) and (not is_pdf_doc) and any(
+        str(doc_meta_map.get(d, {}).get("filename", "")).lower().rsplit(".", 1)[-1] == "docx"
+        for d in doc_ids
+    )
+    is_hwpx_doc = (not is_url_doc) and (not is_ppt_doc) and (not is_pdf_doc) and (not is_docx_doc) and any(
+        str(doc_meta_map.get(d, {}).get("filename", "")).lower().rsplit(".", 1)[-1] in ("hwpx", "hwp")
+        for d in doc_ids
+    )
+    # 전체 문서 조회 의도 감지 (PPT / PDF / DOCX / HWPX 공통)
     _FULL_DOC_RE = re.compile(
         r"(전체|모든\s*슬라이드|슬라이드\s*별|슬라이드별|처음부터|이어서|다음\s*슬라이드|전부|순서대로|차례로|전체적으로\s*설명|모두\s*설명"
         r"|핵심\s*개념|주요\s*개념|핵심\s*내용|주요\s*내용|요약|정리|개요|전반적|전반|내용\s*설명|설명해\s*줘|설명해줘"
-        r"|무엇|무슨\s*내용|어떤\s*내용|다루|소개|강의\s*내용|자료\s*내용|ppt\s*내용|pdf\s*내용|전반적\s*내용)",
+        r"|무엇|무슨\s*내용|어떤\s*내용|다루|소개|강의\s*내용|자료\s*내용|ppt\s*내용|pdf\s*내용|전반적\s*내용"
+        r"|페이지\s*별|페이지별|모든\s*페이지|각\s*페이지|docx\s*내용|hwpx\s*내용|hwp\s*내용)",
         re.IGNORECASE,
     )
-    is_full_doc_query = (is_ppt_doc or is_pdf_doc) and bool(_FULL_DOC_RE.search(question))
+    is_full_doc_query = (is_ppt_doc or is_pdf_doc or is_docx_doc or is_hwpx_doc) and bool(_FULL_DOC_RE.search(question))
 
     media_doc_ids = _get_media_doc_ids(doc_ids)
     youtube_doc_ids = _get_youtube_doc_ids(doc_ids)
@@ -3214,8 +3241,19 @@ def chat_with_docs(
             # PDF 전체 페이지 요청: 페이지별 균등 샘플링
             semantic_context = _get_pdf_full_context(semantic_context_ids)
             source_chunks = []
+        elif is_full_doc_query and is_docx_doc:
+            # DOCX 전체 페이지 요청: 페이지별 균등 샘플링 (PDF와 동일 방식)
+            semantic_context = _get_pdf_full_context(semantic_context_ids)
+            source_chunks = []
+        elif is_full_doc_query and is_hwpx_doc:
+            # HWPX 전체 페이지 요청: 페이지별 균등 샘플링 (PDF와 동일 방식)
+            semantic_context = _get_pdf_full_context(semantic_context_ids)
+            source_chunks = []
         else:
             semantic_context, source_chunks = _get_context_semantic(semantic_context_ids, question, top_k=TOP_K, labeled=is_multi)
+            # DOCX/HWPX는 [페이지 N] 마커 기반 인용 → chunk [1][2] 인용 제거
+            if is_docx_doc or is_hwpx_doc:
+                source_chunks = []
             # 현재 슬라이드 청크를 컨텍스트 앞에 보강
             if is_ppt_doc and current_slide:
                 try:
@@ -3433,6 +3471,74 @@ def chat_with_docs(
 - 문서에 없는 내용은 "이 내용은 문서에 없지만," 이라고 먼저 밝힌 뒤 일반 지식으로 보완하세요.
 - 설명이 길어질 경우 절대 중간에 끊지 마세요. 시작한 설명은 반드시 완결하세요.
 - "이어서", "계속", "다음" 등의 요청이 오면 이미 설명한 내용은 반복하지 말고 아직 다루지 않은 부분부터 이어서 설명하세요.
+
+【추천 질문 — 필수 출력】
+답변 본문 작성 후, 반드시 아래 형식을 답변 맨 끝에 추가하세요. 생략하면 안 됩니다.
+[SUGGESTED_QUESTIONS]
+- (방금 답변한 내용과 직접 이어지는 심화 질문 1)
+- (방금 답변한 내용과 직접 이어지는 심화 질문 2)
+- (방금 답변한 내용과 직접 이어지는 심화 질문 3, 선택)
+[/SUGGESTED_QUESTIONS]
+
+답변 시 {level_hint}
+
+<context>
+{context}
+</context>"""
+
+    elif is_hwpx_doc:
+        # HWPX 전용 프롬프트 — DOCX와 동일한 [페이지 N] 인용 형식
+        hwpx_name = doc_filenames[0] if doc_filenames else "한글 문서"
+        system_msg = f"""당신은 '{hwpx_name}' 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
+
+【페이지 인용 규칙】
+- 내용을 설명할 때는 반드시 해당 페이지 번호를 [페이지 N] 형식으로 명시하세요.
+  예: "[페이지 3]에 따르면 ~", "이 내용은 [페이지 5]에서 확인할 수 있습니다."
+- 여러 페이지에 걸친 내용이면 관련 페이지를 모두 명시하세요.
+  예: "[페이지 2]와 [페이지 4]를 종합하면 ~"
+- 페이지 번호는 반드시 [페이지 N] 형식을 정확히 지켜주세요 (클릭 가능한 링크로 변환됩니다).
+- [1], [2] 같은 각주 번호는 절대 사용하지 마세요.
+
+【답변 원칙】
+- 문서 전체 흐름에서 질문이 어느 위치에 해당하는지 간단히 짚고 답변하세요.
+- 문서에 없는 내용은 "이 내용은 문서에 없지만," 이라고 먼저 밝힌 뒤 일반 지식으로 보완하세요.
+- 설명이 길어질 경우 절대 중간에 끊지 마세요. 시작한 설명은 반드시 완결하세요.
+- "이어서", "계속", "다음" 등의 요청이 오면 이미 설명한 내용은 반복하지 말고 아직 다루지 않은 부분부터 이어서 설명하세요.
+- 전체 요약·정리를 요청받은 경우, 앞 페이지에만 치우치지 말고 처음부터 끝 페이지까지 균형 있게 커버하세요.
+
+【추천 질문 — 필수 출력】
+답변 본문 작성 후, 반드시 아래 형식을 답변 맨 끝에 추가하세요. 생략하면 안 됩니다.
+[SUGGESTED_QUESTIONS]
+- (방금 답변한 내용과 직접 이어지는 심화 질문 1)
+- (방금 답변한 내용과 직접 이어지는 심화 질문 2)
+- (방금 답변한 내용과 직접 이어지는 심화 질문 3, 선택)
+[/SUGGESTED_QUESTIONS]
+
+답변 시 {level_hint}
+
+<context>
+{context}
+</context>"""
+
+    elif is_docx_doc:
+        # DOCX 전용 프롬프트 — PDF와 동일한 [페이지 N] 인용 형식
+        docx_name = doc_filenames[0] if doc_filenames else "Word 문서"
+        system_msg = f"""당신은 '{docx_name}' 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
+
+【페이지 인용 규칙】
+- 내용을 설명할 때는 반드시 해당 페이지 번호를 [페이지 N] 형식으로 명시하세요.
+  예: "[페이지 3]에 따르면 ~", "이 내용은 [페이지 5]에서 확인할 수 있습니다."
+- 여러 페이지에 걸친 내용이면 관련 페이지를 모두 명시하세요.
+  예: "[페이지 2]와 [페이지 4]를 종합하면 ~"
+- 페이지 번호는 반드시 [페이지 N] 형식을 정확히 지켜주세요 (클릭 가능한 링크로 변환됩니다).
+- [1], [2] 같은 각주 번호는 절대 사용하지 마세요.
+
+【답변 원칙】
+- 문서 전체 흐름에서 질문이 어느 위치에 해당하는지 간단히 짚고 답변하세요.
+- 문서에 없는 내용은 "이 내용은 문서에 없지만," 이라고 먼저 밝힌 뒤 일반 지식으로 보완하세요.
+- 설명이 길어질 경우 절대 중간에 끊지 마세요. 시작한 설명은 반드시 완결하세요.
+- "이어서", "계속", "다음" 등의 요청이 오면 이미 설명한 내용은 반복하지 말고 아직 다루지 않은 부분부터 이어서 설명하세요.
+- 전체 요약·정리를 요청받은 경우, 앞 페이지에만 치우치지 말고 처음부터 끝 페이지까지 균형 있게 커버하세요.
 
 【추천 질문 — 필수 출력】
 답변 본문 작성 후, 반드시 아래 형식을 답변 맨 끝에 추가하세요. 생략하면 안 됩니다.
