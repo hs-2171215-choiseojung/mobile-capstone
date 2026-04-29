@@ -36,6 +36,7 @@ interface StudentChatPanelProps {
   onCitationClick?: (chunk: SourceChunk) => void;
   onSlideClick?: (slideNum: number) => void;
   onPageClick?: (pageNum: number) => void;
+  currentSlide?: number | null;
 }
 
 interface MediaSummarySection {
@@ -378,6 +379,7 @@ export function StudentChatPanel({
   onCitationClick,
   onSlideClick,
   onPageClick,
+  currentSlide,
 }: StudentChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
@@ -843,6 +845,7 @@ export function StudentChatPanel({
           model: selectedLLM || "gpt-4o-mini",
           level: selectedDifficulty || "intermediate",
           session_id: notebookId,
+          current_slide: currentSlide ?? null,
         }),
       });
 
@@ -1097,6 +1100,11 @@ export function StudentChatPanel({
         <div className="flex items-center gap-3">
           <BotMessageSquare className="w-5 h-5 text-[#155dfc]" />
           <h2 className="text-[14px] font-semibold text-[#1a1d26]">Ask AI</h2>
+          {currentSlide != null && (
+            <span className="text-[11px] text-[#155dfc] font-medium bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full">
+              슬라이드 {currentSlide}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1">
           {voiceMode && (

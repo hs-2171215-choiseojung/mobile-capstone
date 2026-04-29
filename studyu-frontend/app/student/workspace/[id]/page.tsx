@@ -107,6 +107,11 @@ export default function StudentWorkspacePage() {
   const [currentSlide, setCurrentSlide] = useState<number | null>(null);
   const [chatRequestedSlide, setChatRequestedSlide] = useState<number | null>(null);
 
+  // 챗 링크로 슬라이드 이동 시 currentSlide도 동기화
+  useEffect(() => {
+    if (chatRequestedSlide !== null) setCurrentSlide(chatRequestedSlide);
+  }, [chatRequestedSlide]);
+
   const [selectedLLM, setSelectedLLM] = useState('gpt-4o');
   const [selectedDifficulty, setSelectedDifficulty] = useState('intermediate');
   const [expandedCenterWeeks, setExpandedCenterWeeks] = useState<number[]>([]);
@@ -659,6 +664,7 @@ export default function StudentWorkspacePage() {
                         return `${base}#page=${n}`;
                       });
                     } : undefined}
+                    currentSlide={isPpt ? currentSlide : undefined}
                   />
                 </Resizable>
               </div>
