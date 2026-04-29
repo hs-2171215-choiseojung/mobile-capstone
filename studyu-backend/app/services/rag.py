@@ -2741,12 +2741,26 @@ def _extract_evidence_passages(
                 pass
 
 
+def _get_slide_image_b64(doc_id: str, slide_num: int) -> str | None:
+    """Supabase Storage에서 슬라이드 이미지를 다운로드해 base64로 반환."""
+    import base64 as _b64
+    path = f"slide-assets/{doc_id}/{slide_num}.webp"
+    try:
+        raw = supabase_admin.storage.from_("documents").download(path)
+        if raw:
+            return _b64.b64encode(raw).decode("utf-8")
+    except Exception:
+        pass
+    return None
+
+
 def chat_with_docs(
     doc_ids: list[str],
     question: str,
     model: str = "gpt-4o-mini",
     level: str = "intermediate",
     chat_history: list | None = None,
+    current_slide: int | None = None,
 ) -> tuple[str, list[str], list[dict[str, Any]]]:
     """문서 기반 RAG 질의응답. (answer, sources, references) 반환."""
     import base64
@@ -2832,6 +2846,24 @@ def chat_with_docs(
             source_chunks = []
         else:
             semantic_context, source_chunks = _get_context_semantic(semantic_context_ids, question, top_k=TOP_K, labeled=is_multi)
+            # 현재 슬라이드 청크를 컨텍스트 앞에 보강
+            if is_ppt_doc and current_slide:
+                try:
+                    slide_marker = f"[슬라이드 {current_slide}]"
+                    slide_rows = (
+                        supabase_admin.table("document_chunks")
+                        .select("chunk_index, text")
+                        .in_("doc_id", semantic_context_ids)
+                        .ilike("text", f"%{slide_marker}%")
+                        .limit(3)
+                        .execute()
+                    )
+                    slide_texts = [r["text"] for r in (slide_rows.data or []) if r.get("text")]
+                    if slide_texts:
+                        slide_context = f"【현재 슬라이드 {current_slide} 내용】\n" + "\n---\n".join(slide_texts)
+                        semantic_context = slide_context + "\n\n" + semantic_context if semantic_context else slide_context
+                except Exception:
+                    pass
         if semantic_context:
             context_parts.append(semantic_context)
 
@@ -2962,7 +2994,12 @@ def chat_with_docs(
     elif is_ppt_doc:
         # PPT 전용 프롬프트
         ppt_name = doc_filenames[0] if doc_filenames else "슬라이드 자료"
+        current_slide_hint = (
+            f"\n【현재 슬라이드】\n학생이 현재 [슬라이드 {current_slide}]를 보고 있습니다. "
+            f"질문이 특정 슬라이드를 명시하지 않는 경우, [슬라이드 {current_slide}]의 내용을 우선적으로 참조하여 답변하세요.\n"
+        ) if current_slide else ""
         system_msg = f"""당신은 '{ppt_name}' PPT 자료를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
+{current_slide_hint}
 
 【슬라이드 인용 규칙】
 - 내용을 설명할 때는 반드시 해당 슬라이드 번호를 [슬라이드 N] 형식으로 명시하세요.
@@ -2984,6 +3021,7 @@ def chat_with_docs(
 - 슬라이드 내용에만 그치지 말고, 개념의 의미와 실제 활용까지 연결해서 설명하세요.
 - 설명이 길어질 경우 절대 중간에 끊지 마세요. 시작한 설명은 반드시 완결하세요.
 - "이어서", "계속", "다음" 등의 요청이 오면 이전 대화에서 이미 설명한 내용은 반복하지 말고, 아직 다루지 않은 슬라이드나 개념부터 이어서 설명하세요.
+- 전체 요약·정리를 요청받은 경우, 앞 슬라이드에만 치우치지 말고 처음부터 끝 슬라이드까지 균형 있게 커버하세요. 슬라이드별로 핵심 키워드 위주로 간결하게 정리하여 전체를 빠짐없이 다루는 것을 우선하세요.
 
 【추천 질문】
 - 답변을 마친 후, 이 대화의 흐름에서 학생이 자연스럽게 궁금해할 만한 질문 2~3개를 제안하세요.
@@ -3100,6 +3138,20 @@ def chat_with_docs(
             else:
                 messages.append(msg)
 
+    # PPT 현재 슬라이드 이미지 추가 (detail: low = 85 토큰)
+    if is_ppt_doc and current_slide and not image_parts:
+        ppt_doc_id = next(
+            (d for d in doc_ids if str(doc_meta_map.get(d, {}).get("filename", "")).lower().rsplit(".", 1)[-1] in ("pptx", "ppt")),
+            None,
+        )
+        if ppt_doc_id:
+            slide_b64 = _get_slide_image_b64(ppt_doc_id, current_slide)
+            if slide_b64:
+                image_parts = [{
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/webp;base64,{slide_b64}", "detail": "low"},
+                }]
+
     # 이미지가 있으면 multimodal user message
     if image_parts:
         user_content: list[dict] = [{"type": "text", "text": question}] + image_parts
@@ -3119,7 +3171,7 @@ def chat_with_docs(
         model=safe_model,
         messages=messages,  # type: ignore
         temperature=0.3,
-        max_tokens=4000,
+        max_tokens=8000 if is_full_doc_query else 4000,
     )
     answer = response.choices[0].message.content or ""
 

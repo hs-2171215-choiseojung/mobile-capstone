@@ -30,6 +30,8 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
   // 줌/패닝 상태
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [editingSlide, setEditingSlide] = useState(false);
+  const [slideInput, setSlideInput] = useState("");
   const isPanning = useRef(false);
   const panStart = useRef({ x: 0, y: 0 });
   const panOrigin = useRef({ x: 0, y: 0 });
@@ -68,6 +70,7 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
         setSlides(data2.slides ?? []);
         setTotal(data2.total ?? 0);
         setActiveSlide(1);
+        onSlideChange?.(1);
       } catch {
         setError("슬라이드 로드 중 오류가 발생했습니다.");
       } finally {
@@ -80,6 +83,7 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
   useEffect(() => {
     if (currentSlide && currentSlide >= 1 && currentSlide <= total) {
       setActiveSlide(currentSlide);
+      onSlideChange?.(currentSlide);
     }
   }, [currentSlide, total]);
 
@@ -246,10 +250,39 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
           ))}
         </div>
 
-        {/* 페이지 표시 */}
-        <span className="shrink-0 text-[13px] text-gray-500 font-medium whitespace-nowrap">
-          {activeSlide} / {total}
-        </span>
+        {/* 페이지 표시 — 클릭하면 직접 입력 */}
+        {editingSlide ? (
+          <input
+            autoFocus
+            type="number"
+            min={1}
+            max={total}
+            value={slideInput}
+            onChange={e => setSlideInput(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") {
+                const n = parseInt(slideInput, 10);
+                if (!isNaN(n)) goTo(n);
+                setEditingSlide(false);
+              }
+              if (e.key === "Escape") setEditingSlide(false);
+            }}
+            onBlur={() => {
+              const n = parseInt(slideInput, 10);
+              if (!isNaN(n)) goTo(n);
+              setEditingSlide(false);
+            }}
+            className="shrink-0 w-16 text-center text-[13px] font-medium border border-[#155dfc] rounded px-1 py-0.5 outline-none"
+          />
+        ) : (
+          <button
+            onClick={() => { setSlideInput(String(activeSlide)); setEditingSlide(true); }}
+            className="shrink-0 text-[13px] text-gray-500 font-medium whitespace-nowrap hover:text-[#155dfc] hover:underline transition-colors"
+            title="클릭해서 슬라이드 번호 입력"
+          >
+            {activeSlide} / {total}
+          </button>
+        )}
       </div>
     </div>
   );
