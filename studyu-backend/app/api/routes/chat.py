@@ -7,6 +7,7 @@ RAG 질의응답 (채팅) 라우터.
 
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.core.auth import get_current_user
 from app.services.rag import chat_with_docs, generate_suggestions
@@ -26,6 +27,7 @@ class ChatRequest(BaseModel):
     model: Optional[str] = "gpt-4o-mini"
     level: Optional[str] = "intermediate"
     current_slide: Optional[int] = None
+    asked_questions: Optional[list[str]] = []
 
 
 class ChatResponse(BaseModel):
@@ -70,6 +72,39 @@ async def chat(
         session_id=req.session_id or "default",
         suggested_questions=suggested_questions,
     )
+
+
+@router.post("/chat/stream")
+async def chat_stream(
+    req: ChatRequest,
+    user: dict = Depends(get_current_user),
+):
+    """스트리밍 RAG 질의응답 — SSE(text/event-stream)로 토큰을 즉시 전송."""
+    doc_ids = req.doc_ids if req.doc_ids else ([req.doc_id] if req.doc_id else [])
+    if not doc_ids:
+        raise HTTPException(status_code=400, detail="doc_id 또는 doc_ids가 필요합니다.")
+
+    session_key = f"{user['id']}:{','.join(sorted(doc_ids))}:{req.session_id or 'default'}"
+    if session_key not in _history_cache:
+        _history_cache[session_key] = []
+    chat_history = _history_cache[session_key]
+
+    generator, _, _ = chat_with_docs(
+        doc_ids=doc_ids,
+        question=req.question,
+        model=req.model or "gpt-4o-mini",
+        level=req.level or "intermediate",
+        chat_history=chat_history,
+        current_slide=req.current_slide,
+        stream=True,
+        asked_questions=req.asked_questions or [],
+    )
+
+    # 히스토리는 스트리밍이 끝난 뒤 프론트에서 완성된 텍스트로 업데이트하므로
+    # 여기서는 user 메시지만 미리 추가
+    chat_history.append({"role": "user", "content": req.question})
+
+    return StreamingResponse(generator, media_type="text/event-stream")
 
 
 class SuggestionsRequest(BaseModel):
