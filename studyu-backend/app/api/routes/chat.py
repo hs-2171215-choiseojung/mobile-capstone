@@ -25,6 +25,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     model: Optional[str] = "gpt-4o-mini"
     level: Optional[str] = "intermediate"
+    current_slide: Optional[int] = None
 
 
 class ChatResponse(BaseModel):
@@ -56,6 +57,7 @@ async def chat(
         model=req.model or "gpt-4o-mini",
         level=req.level or "intermediate",
         chat_history=chat_history,
+        current_slide=req.current_slide,
     )
 
     chat_history.append({"role": "user", "content": req.question})
