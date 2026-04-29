@@ -2626,7 +2626,7 @@ def _check_image_relevance(question: str, subjects: list[str], visual_context: s
 
 def _get_image_metadata(doc_ids: list[str]) -> dict[str, dict]:
     """doc_ids에 해당하는 이미지 메타데이터를 청크에서 파싱해 반환.
-    반환: {doc_id: {"subjects": [...], "image_type": "...", "visual_context": "..."}}
+    반환: {doc_id: {"subjects": [...], "image_type": "...", "visual_context": "...", "extracted_text": "..."}}
     """
     if not doc_ids:
         return {}
@@ -2639,10 +2639,16 @@ def _get_image_metadata(doc_ids: list[str]) -> dict[str, dict]:
     for row in result.data:
         doc_id = row["doc_id"]
         content = row.get("content", "")
-        m = re.search(r"\[IMAGE_META\](.*?)\[/IMAGE_META\]", content, re.DOTALL)
+        m = re.search(r"\[IMAGE_META\](.*?)\[/IMAGE_META\](.*)", content, re.DOTALL)
         if m and doc_id not in meta:
             try:
-                meta[doc_id] = json.loads(m.group(1))
+                parsed = json.loads(m.group(1))
+                # [IMAGE_META] 태그 이후의 본문에서 첫 단락(extracted_text)을 추출
+                # 저장 형식: [IMAGE_META]...[/IMAGE_META]\n\n{extracted_text}\n\n{description}
+                body = m.group(2).strip()
+                extracted_text = body.split("\n\n")[0].strip() if body else ""
+                parsed["extracted_text"] = extracted_text
+                meta[doc_id] = parsed
             except Exception:
                 pass
     return meta
@@ -2761,8 +2767,11 @@ def chat_with_docs(
     level: str = "intermediate",
     chat_history: list | None = None,
     current_slide: int | None = None,
+    stream: bool = False,
+    asked_questions: list[str] | None = None,
 ) -> tuple[str, list[str], list[dict[str, Any]]]:
-    """문서 기반 RAG 질의응답. (answer, sources, references) 반환."""
+    """문서 기반 RAG 질의응답. (answer, sources, references) 반환.
+    stream=True 이면 (generator, [], []) 를 반환하며 generator가 SSE 문자열을 yield."""
     import base64
 
     is_multi = len(doc_ids) > 1
@@ -2948,6 +2957,14 @@ def chat_with_docs(
                 break
         is_related = _check_image_relevance(question, all_subjects, visual_context)
 
+        # 이미지 속 OCR 텍스트만 보조로 제공 (description은 모델이 이미지 직접 보므로 제외)
+        ocr_parts: list[str] = []
+        for img in image_docs:
+            ocr = img_meta_map.get(img["doc_id"], {}).get("extracted_text", "").strip()
+            if ocr:
+                ocr_parts.append(ocr)
+        ocr_text = "\n\n".join(ocr_parts)
+
         system_msg = f"""당신은 이미지를 깊이 분석하는 전문 비주얼 학습 튜터입니다.
 첨부된 이미지({image_names})를 직접 보고 질문에 성실히 답변하세요.
 
@@ -2960,8 +2977,8 @@ def chat_with_docs(
 불명확한 부분은 "이미지에서 명확히 확인되지 않습니다"라고 솔직히 말하세요.
 
 답변 시 {level_hint}"""
-        if context:
-            system_msg += f"\n\n【보조 참고 — 이미지 사전 추출 내용】\n<context>\n{context}\n</context>"
+        if ocr_text:
+            system_msg += f"\n\n【이미지 내 텍스트(OCR)】\n{ocr_text}"
         if not is_related:
             system_msg += '\n\n【출력 형식】답변 맨 앞에 반드시 이 문장을 먼저 쓰세요: "📌 이 질문은 업로드된 이미지와 직접적인 관련은 없지만, 알고 계시면 도움이 될 것 같아 답변드립니다."'
 
@@ -2977,7 +2994,11 @@ def chat_with_docs(
 {context}
 </context>"""
 
-    if is_multi:
+    # 이미지 전용 케이스는 위에서 이미 system_msg 설정 완료 — 아래 블록 건너뜀
+    if has_images and not has_non_image:
+        pass
+
+    elif is_multi:
         doc_names = doc_filenames
         names_str = ", ".join(f"'{n}'" for n in doc_names)
         system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
@@ -3116,8 +3137,8 @@ def chat_with_docs(
 {context}
 </context>"""
 
-    # 텍스트 출처가 있을 때 인용 번호 지시 추가
-    if source_chunks:
+    # 텍스트 출처가 있을 때만 인용 번호 지시 추가 (이미지 전용은 제외)
+    if source_chunks and not (has_images and not has_non_image):
         system_msg += (
             "\n\n답변 시 문서 내용을 인용하는 부분에 [1], [2] 형식으로 출처 번호를 자연스럽게 붙이세요. "
             "예: '...JPA는 1차 캐시를 활용합니다 [1].' "
@@ -3167,11 +3188,67 @@ def chat_with_docs(
         safe_model = "gpt-4o"
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
+
+    if stream:
+        _stream_meta = {
+            "source_chunks": source_chunks,
+            "references": references,
+            "doc_ids": doc_ids,
+            "question": question,
+            "asked_questions": asked_questions or [],
+        }
+
+        def _token_generator():
+            import json as _json
+            import threading
+
+            # 스트리밍과 동시에 추천 질문 생성 (별도 스레드)
+            _sugg_result: list = []
+            def _gen_sugg():
+                try:
+                    _sugg_result.extend(generate_suggestions(
+                        doc_ids=_stream_meta["doc_ids"],
+                        asked_questions=_stream_meta["asked_questions"],
+                    ))
+                except Exception:
+                    pass
+
+            sugg_thread = threading.Thread(target=_gen_sugg, daemon=True)
+            sugg_thread.start()
+
+            try:
+                stream_response = client.chat.completions.create(
+                    model=safe_model,
+                    messages=messages,  # type: ignore
+                    temperature=0.3,
+                    max_tokens=1500 if not is_full_doc_query else 3000,
+                    stream=True,
+                )
+                for chunk in stream_response:
+                    text = (chunk.choices[0].delta.content
+                            if chunk.choices and chunk.choices[0].delta else None)
+                    if text:
+                        yield f"data: {_json.dumps({'token': text})}\n\n"
+            except Exception as e:
+                yield f"data: {_json.dumps({'error': str(e)})}\n\n"
+                return
+
+            # 추천 질문 스레드 대기 (스트리밍 중 이미 완료됐을 가능성 높음)
+            sugg_thread.join(timeout=5)
+
+            sc = _stream_meta["source_chunks"]
+            for c in sc:
+                c.pop("full_text", None)
+            srcs: list[Any] = sc if sc else _get_filenames(_stream_meta["doc_ids"])
+            yield f"data: {_json.dumps({'done': True, 'sources': srcs, 'references': _stream_meta['references'], 'suggestions': _sugg_result})}\n\n"
+
+        return _token_generator(), [], []  # type: ignore
+
     response = client.chat.completions.create(
         model=safe_model,
         messages=messages,  # type: ignore
         temperature=0.3,
-        max_tokens=8000 if is_full_doc_query else 4000,
+        max_tokens=1500 if not is_full_doc_query else 3000,
     )
     answer = response.choices[0].message.content or ""
 
@@ -4352,21 +4429,55 @@ JSON 형식으로만 응답:
             user_content = [{"type": "text", "text": prompt_text}]
 
     try:
-        safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-        client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model=safe_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "당신은 학습 내용을 깊이 이해하도록 돕는 전문 교육 튜터입니다. 자료의 실제 내용에 기반한 구체적이고 통찰력 있는 질문을 생성합니다.",
-                },
-                {"role": "user", "content": user_content},  # type: ignore
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.75,
-        )
-        result = json.loads(response.choices[0].message.content or "{}")
+        _CLAUDE_MODELS = ("claude-opus", "claude-sonnet", "claude-haiku")
+        is_claude = any(model.startswith(m) for m in _CLAUDE_MODELS)
+
+        if is_claude and settings.ANTHROPIC_API_KEY:
+            # Claude 모델: 이미지는 base64 형식 그대로 전달, JSON 출력 유도
+            import anthropic
+            claude_client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+            # Anthropic 이미지 블록으로 변환
+            anthropic_content: list[dict] = []
+            for part in user_content if isinstance(user_content, list) else [{"type": "text", "text": user_content}]:
+                if part.get("type") == "image_url":
+                    url: str = part["image_url"]["url"]
+                    if url.startswith("data:"):
+                        mime, b64data = url[5:].split(";base64,", 1)
+                        anthropic_content.append({
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": mime, "data": b64data},
+                        })
+                else:
+                    anthropic_content.append({"type": "text", "text": part.get("text", "")})
+
+            claude_resp = claude_client.messages.create(
+                model=model,
+                max_tokens=512,
+                system="당신은 학습 내용을 깊이 이해하도록 돕는 전문 교육 튜터입니다. 자료의 실제 내용에 기반한 구체적이고 통찰력 있는 질문을 생성합니다. 반드시 JSON 형식으로만 응답하세요.",
+                messages=[{"role": "user", "content": anthropic_content}],
+            )
+            raw = claude_resp.content[0].text if claude_resp.content else "{}"
+            # JSON 블록 추출 (```json ... ``` 감싸진 경우 대비)
+            json_match = re.search(r'\{[\s\S]*\}', raw)
+            result = json.loads(json_match.group(0) if json_match else raw)
+        else:
+            safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
+            client = OpenAI(api_key=settings.OPENAI_API_KEY)
+            response = client.chat.completions.create(
+                model=safe_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "당신은 학습 내용을 깊이 이해하도록 돕는 전문 교육 튜터입니다. 자료의 실제 내용에 기반한 구체적이고 통찰력 있는 질문을 생성합니다.",
+                    },
+                    {"role": "user", "content": user_content},  # type: ignore
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.75,
+            )
+            result = json.loads(response.choices[0].message.content or "{}")
+
         questions = result.get("questions", [])
         if isinstance(questions, list):
             return [q for q in questions if isinstance(q, dict) and "text" in q][:3]
