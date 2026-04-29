@@ -387,9 +387,10 @@ export default function StudentWorkspacePage() {
       const rawTypeIsUrl = doc.file_type === "url" || doc.file_type === "link";
       const isYoutubeSource = isYoutubeUrl(doc.storage_path);
       const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
+      const HWPX_EXTS = new Set(["hwpx", "hwp"]);
       const needsAccessUrl = rawTypeIsUrl || !TEXT_ONLY_EXTS.has(ext) || PREVIEWABLE_OFFICE_EXTS.has(ext) || !ext;
       const needsText = rawTypeIsUrl || isYoutubeSource || AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext) || TEXT_ONLY_EXTS.has(ext);
-      const needsPreviewPdf = PREVIEWABLE_OFFICE_EXTS.has(ext);
+      const needsPreviewPdf = PREVIEWABLE_OFFICE_EXTS.has(ext) && !HWPX_EXTS.has(ext);
       const isKnownFileExt =
         AUDIO_EXTS.has(ext) ||
         VIDEO_EXTS.has(ext) ||
@@ -574,6 +575,7 @@ export default function StudentWorkspacePage() {
             const isPpt = (srcExt === "pptx" || srcExt === "ppt") && !selectedSource.storage_path?.startsWith("http");
             const isPdf = srcExt === "pdf";
             const isDocx = srcExt === "docx";
+            const isHwpx = srcExt === "hwpx" || srcExt === "hwp";
             return (
               /* 소스 문서: 뷰어 + 우측 채팅 (Resizable) */
               <div className="flex flex-1 overflow-hidden">
@@ -593,7 +595,7 @@ export default function StudentWorkspacePage() {
                     highlightRange={highlightRange ?? undefined}
                     scrollToText={citationScrollText}
                     onClose={closeSource}
-                    customViewer={isPpt ? (
+                    customViewer={(isPpt || isDocx || isHwpx) ? (
                       <PptSlideViewer
                         docId={selectedSource.id}
                         currentSlide={chatRequestedSlide}
@@ -624,18 +626,18 @@ export default function StudentWorkspacePage() {
                     onSeekToTimestamp={(seconds) => setSelectedSourceSeekRequest({ seconds, nonce: Date.now() })}
                     onCitationClick={handleCitationClick}
                     onSlideClick={isPpt ? (n) => setChatRequestedSlide(n) : undefined}
-                    onPageClick={(isPdf || isDocx) ? (n) => {
+                    onPageClick={(isPdf || isDocx || isHwpx) ? (n) => {
                       if (isPdf) {
                         setSelectedSourceUrl((prev) => {
                           const base = prev.split("#")[0];
                           return `${base}#page=${n}`;
                         });
-                      } else if (isDocx) {
-                        setCitationScrollText(undefined);
-                        setTimeout(() => setCitationScrollText(`[페이지 ${n}]`), 0);
+                      } else {
+                        // DOCX/HWPX: PptSlideViewer의 페이지로 이동
+                        setChatRequestedSlide(n);
                       }
                     } : undefined}
-                    currentSlide={isPpt ? currentSlide : undefined}
+                    currentSlide={(isPpt || isDocx || isHwpx) ? currentSlide : undefined}
                   />
                 </Resizable>
               </div>
