@@ -144,9 +144,14 @@ def _generate_and_upload_slides(file_bytes: bytes, doc_id: str) -> tuple[int, di
             print(f"[slides] PPTX 영상 추출 오류: {e}")
 
         # 2) LibreOffice로 PDF 변환
+        import sys
+        if sys.platform == "win32":
+            soffice_path = r"C:\Program Files\LibreOffice\program\soffice.exe"
+        else:
+            soffice_path = "soffice"
         try:
             result = subprocess.run(
-                ["soffice", "--headless", "--convert-to", "pdf", "--outdir", tmpdir, ppt_path],
+                [soffice_path, "--headless", "--convert-to", "pdf", "--outdir", tmpdir, ppt_path],
                 capture_output=True, timeout=120
             )
             if result.returncode != 0:

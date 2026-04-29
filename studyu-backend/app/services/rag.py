@@ -641,17 +641,46 @@ def _extract_text_from_pdf(file_bytes: bytes, vision_descriptions: dict | None =
 
 
 def _extract_text_from_docx(file_bytes: bytes) -> tuple[str, int]:
-    """DOCX에서 텍스트 추출. (text, 0) 반환."""
+    """DOCX에서 텍스트 추출. [페이지 N] 마커 포함. (text, page_count) 반환."""
     from docx import Document
+    from docx.oxml.ns import qn
     doc = Document(io.BytesIO(file_bytes))
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    # 표 내용도 추출
+
+    W_BR    = qn("w:br")
+    W_TYPE  = qn("w:type")
+    W_LRPB  = qn("w:lastRenderedPageBreak")
+
+    lines: list[str] = []
+    page_num = 1
+    lines.append(f"[페이지 {page_num}]")
+
+    def _has_page_break(para) -> bool:
+        """단락 XML 안에 페이지 나누기(명시적/렌더링) 요소가 있으면 True."""
+        for elem in para._p.iter():
+            tag = elem.tag
+            if tag == W_BR and elem.get(W_TYPE) == "page":
+                return True
+            if tag == W_LRPB:
+                return True
+        return False
+
+    for para in doc.paragraphs:
+        if _has_page_break(para):
+            page_num += 1
+            lines.append(f"[페이지 {page_num}]")
+        text = para.text.strip()
+        if text:
+            lines.append(text)
+
+    # 표 내용 — 표는 페이지 순서 유지를 위해 body element 순회로 재처리
+    # (doc.paragraphs 는 표 안 단락을 포함하지 않으므로 별도 추가)
     for table in doc.tables:
         for row in table.rows:
             row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
             if row_text:
-                paragraphs.append(row_text)
-    return "\n".join(paragraphs), 0
+                lines.append(row_text)
+
+    return "\n".join(lines), page_num
 
 
 def _extract_text_from_pptx(file_bytes: bytes, vision_descriptions: dict | None = None) -> tuple[str, int]:
@@ -1070,10 +1099,29 @@ def _extract_markdown_from_docx(file_bytes: bytes) -> str:
                 rows_md.append("| " + " | ".join(["---"] * len(cell_texts)) + " |")
         return rows_md
 
+    W_BR_MD   = qn("w:br")
+    W_TYPE_MD = qn("w:type")
+    W_LRPB_MD = qn("w:lastRenderedPageBreak")
+
+    def _p_has_page_break(p_elem) -> bool:
+        for elem in p_elem.iter():
+            tag = elem.tag
+            if tag == W_BR_MD and elem.get(W_TYPE_MD) == "page":
+                return True
+            if tag == W_LRPB_MD:
+                return True
+        return False
+
     lines: list[str] = []
+    page_num = 1
+    lines.append(f"**[페이지 {page_num}]**")
+
     for child in doc.element.body:
         tag = child.tag
         if tag == W_P:
+            if _p_has_page_break(child):
+                page_num += 1
+                lines.append(f"\n**[페이지 {page_num}]**")
             lines.append(_para_to_md(child))
         elif tag == W_TBL:
             lines.append("")
@@ -1575,6 +1623,24 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vis
                 chunks.append(part)
             else:
                 header_match = re.match(r'(\[슬라이드\s*\d+\])', part)
+                header = header_match.group(1) + "\n" if header_match else ""
+                body = part[len(header):]
+                step = CHUNK_SIZE - CHUNK_OVERLAP
+                for i in range(0, len(body), step):
+                    sub = _hard_sanitize(_sanitize(header + body[i: i + CHUNK_SIZE]))
+                    if sub.strip():
+                        chunks.append(sub)
+    elif ext == "docx":
+        # DOCX: [페이지 N] 마커 기준으로 페이지별 청킹 (PDF와 동일 방식)
+        page_parts = re.split(r'(?=\[페이지\s*\d+\])', text)
+        for part in page_parts:
+            part = _hard_sanitize(_sanitize(part)).strip()
+            if not part:
+                continue
+            if len(part) <= CHUNK_SIZE * 2:
+                chunks.append(part)
+            else:
+                header_match = re.match(r'(\[페이지\s*\d+\])', part)
                 header = header_match.group(1) + "\n" if header_match else ""
                 body = part[len(header):]
                 step = CHUNK_SIZE - CHUNK_OVERLAP
