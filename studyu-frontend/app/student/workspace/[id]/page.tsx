@@ -648,6 +648,7 @@ export default function StudentWorkspacePage() {
             const srcExt = selectedSource.filename.toLowerCase().split(".").pop() ?? selectedSource.file_type;
             const isPpt = (srcExt === "pptx" || srcExt === "ppt") && !selectedSource.storage_path?.startsWith("http");
             const isPdf = srcExt === "pdf";
+            const isDocx = srcExt === "docx";
             return (
               /* 소스 문서: 뷰어 + 우측 채팅 (Resizable) */
               <div className="flex flex-1 overflow-hidden">
@@ -709,11 +710,16 @@ export default function StudentWorkspacePage() {
                     onSeekToTimestamp={(seconds) => setSelectedSourceSeekRequest({ seconds, nonce: Date.now() })}
                     onCitationClick={handleCitationClick}
                     onSlideClick={isPpt ? (n) => setChatRequestedSlide(n) : undefined}
-                    onPageClick={isPdf ? (n) => {
-                      setSelectedSourceUrl((prev) => {
-                        const base = prev.split("#")[0];
-                        return `${base}#page=${n}`;
-                      });
+                    onPageClick={(isPdf || isDocx) ? (n) => {
+                      if (isPdf) {
+                        setSelectedSourceUrl((prev) => {
+                          const base = prev.split("#")[0];
+                          return `${base}#page=${n}`;
+                        });
+                      } else if (isDocx) {
+                        setCitationScrollText(undefined);
+                        setTimeout(() => setCitationScrollText(`[페이지 ${n}]`), 0);
+                      }
                     } : undefined}
                     currentSlide={isPpt ? currentSlide : undefined}
                   />
