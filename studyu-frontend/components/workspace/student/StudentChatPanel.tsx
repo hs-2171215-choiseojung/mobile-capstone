@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2, X, Volume2, VolumeX } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import MarkdownPreview from '@/components/workspace/MarkdownPreview';
+import { useSTT } from '@/hooks/useSTT';
 
 interface Doc {
   id: string;
@@ -542,10 +543,18 @@ export function StudentChatPanel({
   // in-flight TTS fetch가 도착했을 때 대상이 바뀌었으면 버리기 위한 토큰
   const speakTargetRef   = useRef<number | null>(null);
 
-  // ── STT 상태 ─────────────────────────────────────────────
-  const [isRecording, setIsRecording] = useState(false);
-  const [sttError,    setSttError]    = useState<string | null>(null);
-  const recognitionRef = useRef<any>(null);
+  // ── STT ─────────────────────────────────────────────────
+  const {
+    isRecording,
+    interimText,
+    sttError,
+    start: startSTT,
+    stop: stopSTT,
+    clearError: clearSttError,
+  } = useSTT({
+    onResult: (text) => setInputValue(text),
+    onError: () => {},
+  });
 
   // 항상 최신 값을 ref에 동기화 (stale closure 방지)
   podcastModeRef.current = podcastMode;
@@ -556,7 +565,7 @@ export function StudentChatPanel({
     return () => {
       stopSpeaking();
       audioCacheRef.current.clear();
-      recognitionRef.current?.stop();
+      stopSTT();
     };
   }, []);
 
@@ -710,6 +719,7 @@ export function StudentChatPanel({
     wordsRef.current = [];
     setSpeakingMsgIdx(null);
     setLoadingAudioIdx(null);
+    setAudioProgress(0);
   };
 
   const createAndPlayAudio = (audioBase64: string, words: WordSegment[], msgIdx: number) => {
@@ -725,9 +735,11 @@ export function StudentChatPanel({
     setAudioProgress(0);
 
     audio.ontimeupdate = () => {
+      if (audioRef.current !== audio) return;
       if (audio.duration > 0) setAudioProgress(audio.currentTime / audio.duration);
     };
     const cleanup = () => {
+      if (audioRef.current !== audio) return;
       setSpeakingMsgIdx(null);
       setAudioProgress(0);
       wordsRef.current = [];
@@ -799,7 +811,8 @@ export function StudentChatPanel({
     } catch {
       if (speakTargetRef.current === msgIdx) {
         setLoadingAudioIdx(null);
-        setSttError("음성 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+        // TTS 오류는 별도 상태 없이 콘솔 출력 (STT 에러 UI 재사용 불가)
+        console.error("음성 생성에 실패했습니다.");
       }
     }
   };
@@ -824,47 +837,8 @@ export function StudentChatPanel({
 
   // ── STT (음성 입력, Web Speech API) ──────────────────────
   const handleMicClick = () => {
-    setSttError(null);
-
-    if (isRecording) {
-      recognitionRef.current?.stop();
-      return;
-    }
-
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setSttError("이 브라우저는 음성 인식을 지원하지 않습니다. Chrome 또는 Edge를 사용해주세요.");
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'ko-KR';
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
-    recognition.onstart  = () => setIsRecording(true);
-    recognition.onend    = () => setIsRecording(false);
-
-    recognition.onresult = (e: any) => {
-      const text = e.results[0]?.[0]?.transcript?.trim();
-      if (text) {
-        setInputValue(text);
-      } else {
-        setSttError("인식된 내용이 없어요. 다시 시도해 보세요.");
-      }
-    };
-
-    recognition.onerror = (e: any) => {
-      if (e.error === 'not-allowed') {
-        setSttError("마이크 접근 권한이 필요합니다.");
-      } else if (e.error !== 'no-speech') {
-        setSttError("음성 인식 중 오류가 발생했습니다.");
-      }
-    };
-
-    recognitionRef.current = recognition;
-    recognition.start();
+    clearSttError();
+    startSTT(inputValue);
   };
 
   // ── 채팅 전송 ─────────────────────────────────────────────
@@ -876,6 +850,25 @@ export function StudentChatPanel({
     if (!textOverride) setInputValue('');
     setIsLoading(true);
 
+    // 스트리밍 AI 메시지 플레이스홀더 추가
+    const aiMsgIndex = -1; // setMessages 후 계산
+    let streamingContent = '';
+
+    const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
+    const applyNewSuggestions = (newQuestions: string[]) => {
+      const newChips = newQuestions.slice(0, 3).map((text, i) => ({
+        text,
+        category: CATS[i % 3],
+        isOld: false,
+      })) as Suggestion[];
+      const nextSuggestions = [...suggestionsRef.current, ...newChips];
+      setSuggestions(nextSuggestions);
+      try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(nextSuggestions)); } catch {}
+      if (newChips.length > 0) {
+        setMessages(prev => [...prev, { type: 'suggestions', items: newChips } as any]);
+      }
+    };
+
     try {
       const token        = await getToken();
       const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
@@ -883,7 +876,10 @@ export function StudentChatPanel({
       if (targetDocIds.length === 0)
         throw new Error("학습할 소스(문서)가 없습니다. 강사님께 자료 업로드를 요청해 주세요.");
 
-      const res = await fetch(`${API}/api/chat`, {
+      // 스트리밍 AI 메시지 자리 잡기
+      setMessages(prev => [...prev, { type: 'ai', content: '', references: [], sources: [] }]);
+
+      const res = await fetch(`${API}/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -901,51 +897,103 @@ export function StudentChatPanel({
         throw new Error(errData.detail || "AI 응답을 가져오는데 실패했습니다.");
       }
 
-      const data = await res.json();
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let finalSources: any[] = [];
+      let finalReferences: any[] = [];
+      let finalSuggestions: string[] = [];
+      let sseBuffer = '';
+      let streamError = '';
+
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // 청크가 SSE 경계에서 쪼개질 수 있으므로 버퍼링 처리
+        sseBuffer += decoder.decode(value, { stream: true });
+        const lines = sseBuffer.split('\n');
+        sseBuffer = lines.pop() ?? ''; // 마지막 불완전 줄은 버퍼에 보관
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const jsonStr = line.slice(6).trim();
+          if (!jsonStr) continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            if (parsed.token) {
+              streamingContent += parsed.token;
+              setMessages(prev => {
+                const next = [...prev];
+                const lastIdx = next.length - 1;
+                if (next[lastIdx]?.type === 'ai') {
+                  next[lastIdx] = { ...next[lastIdx], content: streamingContent };
+                }
+                return next;
+              });
+            } else if (parsed.error) {
+              streamError = parsed.error;
+              break outer;
+            } else if (parsed.done) {
+              finalSources = parsed.sources ?? [];
+              finalReferences = parsed.references ?? [];
+              finalSuggestions = (parsed.suggestions ?? []).map((q: any) =>
+                typeof q === 'string' ? q : q?.text ?? ''
+              ).filter(Boolean);
+              break outer;
+            }
+          } catch {}
+        }
+      }
+
+      // 스트리밍 실패 시 일반 엔드포인트로 폴백
+      if (streamError || !streamingContent) {
+        const fallbackRes = await fetch(`${API}/api/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            doc_ids: targetDocIds,
+            question: userMessage,
+            model: selectedLLM || "gpt-4o-mini",
+            level: selectedDifficulty || "intermediate",
+            session_id: notebookId,
+            current_slide: currentSlide ?? null,
+          }),
+        });
+        if (!fallbackRes.ok) throw new Error("AI 응답을 가져오는데 실패했습니다.");
+        const fallbackData = await fallbackRes.json();
+        streamingContent = fallbackData.answer ?? '';
+        finalSources = fallbackData.sources ?? [];
+        finalReferences = fallbackData.references ?? [];
+      }
+
       const normalizedAnswer = normalizeInlineListMarkers(
         normalizeDetachedPageRefs(
-          collapseNearbyTimestampLists(data.answer ?? "")
+          collapseNearbyTimestampLists(streamingContent)
         )
       );
 
+      // 스트리밍 완료 후 메타데이터(sources, references) 반영
+      setMessages(prev => {
+        const next = [...prev];
+        const lastIdx = next.length - 1;
+        if (next[lastIdx]?.type === 'ai') {
+          next[lastIdx] = {
+            ...next[lastIdx],
+            content: normalizedAnswer,
+            references: finalReferences,
+            sources: finalSources,
+          };
+        }
+        return next;
+      });
+
       if (voiceMode || podcastMode) autoSpeakRef.current = normalizedAnswer;
-
-      setMessages(prev => [
-        ...prev,
-        {
-          type: 'ai',
-          content: normalizedAnswer,
-          references: Array.isArray(data.references) ? data.references : [],
-          sources: Array.isArray(data.sources) ? data.sources : [],
-        },
-      ]);
-
-      lastAnswerRef.current = data.answer ?? "";
+      lastAnswerRef.current = normalizedAnswer;
       askedQuestionsRef.current = [...askedQuestionsRef.current, userMessage].slice(-6);
 
-      const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
-      const pptSuggestions: string[] = Array.isArray(data.suggested_questions) ? data.suggested_questions : [];
-
-      const applyNewSuggestions = (newQuestions: string[]) => {
-        const newChips = newQuestions.slice(0, 3).map((text, i) => ({
-          text,
-          category: CATS[i % 3],
-          isOld: false,
-        })) as Suggestion[];
-        const nextSuggestions = [...suggestionsRef.current, ...newChips];
-        setSuggestions(nextSuggestions);
-        try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(nextSuggestions)); } catch {}
-        // 스레드에 추천 질문 칩 추가
-        if (newChips.length > 0) {
-          setMessages(prev => [...prev, { type: 'suggestions', items: newChips } as any]);
-        }
-      };
-
-      if (pptSuggestions.length > 0) {
-        suggestionFetchAbortRef.current?.abort();
-        suggestionFromChatRef.current = true;
-        setSuggestionsLoading(false);
-        applyNewSuggestions(pptSuggestions);
+      // 추천 질문: done 이벤트에 포함된 경우 즉시 적용, 없으면 별도 fetch
+      if (finalSuggestions.length > 0) {
+        applyNewSuggestions(finalSuggestions);
       } else {
         const currentTexts = suggestionsRef.current.map((s) => s.text);
         getToken().then((t) =>
@@ -971,7 +1019,17 @@ export function StudentChatPanel({
         );
       }
     } catch (error: any) {
-      setMessages(prev => [...prev, { type: 'system', content: `[오류] ${error.message}` }]);
+      // 스트리밍 중 오류 시 플레이스홀더를 오류 메시지로 교체
+      setMessages(prev => {
+        const next = [...prev];
+        const lastIdx = next.length - 1;
+        if (next[lastIdx]?.type === 'ai' && !next[lastIdx].content) {
+          next[lastIdx] = { type: 'system', content: `[오류] ${error.message}` };
+        } else {
+          next.push({ type: 'system', content: `[오류] ${error.message}` });
+        }
+        return next;
+      });
     } finally {
       setIsLoading(false);
     }
@@ -1452,7 +1510,14 @@ export function StudentChatPanel({
                     ? 'bg-red-50 text-red-600 border border-red-100 whitespace-pre-wrap'
                     : `bg-[#f8f9fb] text-[#1a1d26] border rounded-tl-sm transition-colors ${isPlaying ? 'border-[#155dfc]/30 ring-1 ring-[#155dfc]/15' : 'border-[#e7e9ed]'}`
                 }`}>
-                  {msg.type === 'ai'
+                  {msg.type === 'ai' && !msg.content
+                    ? (
+                      <div className="flex items-center gap-2 py-0.5">
+                        <Loader2 className="w-4 h-4 animate-spin text-[#155dfc]" />
+                        <span className="text-[13px] text-[#99a1af] font-medium">AI가 답변을 작성 중입니다...</span>
+                      </div>
+                    )
+                    : msg.type === 'ai'
                     ? <MarkdownPreview
                         content={msg.content}
                         className="text-[#1a1d26]"
@@ -1530,14 +1595,6 @@ export function StudentChatPanel({
           );
         })}
 
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="max-w-[80%] px-4 py-3 bg-[#f8f9fb] text-[#1a1d26] border border-[#e7e9ed] rounded-2xl rounded-tl-sm flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin text-[#155dfc]" />
-              <span className="text-[13px] text-[#99a1af] font-medium">AI가 답변을 작성 중입니다...</span>
-            </div>
-          </div>
-        )}
         <div ref={messagesEndRef} />
       </div>
 
@@ -1550,7 +1607,7 @@ export function StudentChatPanel({
               <path d="M12 8v4m0 4h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
             </svg>
             <span className="text-[11px] text-red-600 flex-1">{sttError}</span>
-            <button onClick={() => setSttError(null)} className="text-red-400 hover:text-red-600">
+            <button onClick={clearSttError} className="text-red-400 hover:text-red-600">
               <X className="w-3 h-3" />
             </button>
           </div>
@@ -1564,12 +1621,15 @@ export function StudentChatPanel({
             <Paperclip className="w-4 h-4" />
           </button>
           <textarea
-            value={inputValue}
-            onChange={e => setInputValue(e.target.value)}
+            value={isRecording && interimText ? interimText : inputValue}
+            onChange={e => { if (!isRecording) setInputValue(e.target.value); }}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
             rows={1}
-            className="flex-1 max-h-[100px] min-h-[40px] py-2 bg-transparent text-[#1a1d26] text-[13px] placeholder-[#99a1af] focus:outline-none resize-none self-center"
-            placeholder={isRecording ? "듣고 있어요... (다시 클릭하면 완료)" : "학습 내용에 대해 무엇이든 물어보세요..."}
+            className={`flex-1 max-h-[100px] min-h-[40px] py-2 bg-transparent text-[13px] placeholder-[#99a1af] focus:outline-none resize-none self-center ${
+              isRecording && interimText ? 'text-red-500 italic' : 'text-[#1a1d26]'
+            }`}
+            placeholder={isRecording ? "말씀해 주세요..." : "학습 내용에 대해 무엇이든 물어보세요..."}
+            readOnly={isRecording}
           />
           <div className="flex items-center gap-1 shrink-0">
             <button
