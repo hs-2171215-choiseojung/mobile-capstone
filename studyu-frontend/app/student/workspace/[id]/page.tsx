@@ -78,6 +78,21 @@ function isHttpUrl(url?: string): boolean {
   return typeof url === "string" && /^https?:\/\//i.test(url);
 }
 
+function canGenerateMediaSummary(doc: DocumentInfo | null, resolvedUrl?: string): boolean {
+  if (!doc) return false;
+  const normalizedFileType = (doc.file_type || "").toLowerCase();
+  const ext = doc.filename.toLowerCase().split(".").pop() ?? normalizedFileType;
+  const youtubeCandidates = [doc.storage_path, doc.filename, resolvedUrl].filter(Boolean) as string[];
+  const isYoutubeSource = youtubeCandidates.some((value) => isYoutubeUrl(value));
+  return (
+    normalizedFileType === "url" ||
+    normalizedFileType === "link" ||
+    normalizedFileType === "youtube" ||
+    isYoutubeSource ||
+    ["mp4", "mov", "avi", "mkv", "webm", "video", "mp3", "m4a", "wav", "audio"].includes(ext)
+  );
+}
+
 export default function StudentWorkspacePage() {
   const params = useParams();
   const notebookId = params.id as string;
@@ -97,6 +112,7 @@ export default function StudentWorkspacePage() {
   const [selectedSourceTranscript, setSelectedSourceTranscript] = useState<string | undefined>(undefined);
   const [selectedSourceTimeline, setSelectedSourceTimeline] = useState<MediaTimelineEntry[]>([]);
   const [selectedSourceSummary, setSelectedSourceSummary] = useState<MediaSummary | null>(null);
+  const [selectedSourceSummaryLoading, setSelectedSourceSummaryLoading] = useState(false);
   const [selectedSourceMediaDuration, setSelectedSourceMediaDuration] = useState(0);
   const [selectedSourceMediaType, setSelectedSourceMediaType] = useState<"audio" | "video" | null>(null);
   const [selectedSourceSeekRequest, setSelectedSourceSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
@@ -375,6 +391,48 @@ export default function StudentWorkspacePage() {
   const PDF_EXTS = new Set(["pdf"]);
   const TEXT_ONLY_EXTS = new Set(["docx", "pptx", "ppt", "hwp", "hwpx"]);
 
+  const loadMediaSummary = async (docId: string) => {
+    if (!docId || selectedSourceSummaryLoading) return;
+    if (selectedSourceSummary?.sections?.length) return;
+
+    setSelectedSourceSummaryLoading(true);
+    try {
+      const supabase = createClient();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) return;
+
+      const response = await fetch(`${API}/api/documents/${docId}/media-summary`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data) {
+        setSelectedSourceSummary(null);
+        return;
+      }
+      setSelectedSourceSummary(data);
+    } catch {
+      setSelectedSourceSummary(null);
+    } finally {
+      setSelectedSourceSummaryLoading(false);
+    }
+  };
+
+  const deleteMediaSummary = async (docId: string) => {
+    if (!docId) return;
+    const supabase = createClient();
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) return;
+
+    await fetch(`${API}/api/documents/${docId}/media-summary`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setSelectedSourceSummary(null);
+    setSelectedSourceSummaryLoading(false);
+  };
+
   const openSourceDocument = async (doc: DocumentInfo) => {
     if (selectedSourceUrl.startsWith("blob:")) {
       URL.revokeObjectURL(selectedSourceUrl);
@@ -388,6 +446,7 @@ export default function StudentWorkspacePage() {
     setSelectedSourceTranscript(undefined);
     setSelectedSourceTimeline([]);
     setSelectedSourceSummary(null);
+    setSelectedSourceSummaryLoading(false);
     setSelectedSourceMediaDuration(0);
     setSelectedSourceMediaType(null);
     setSelectedSourceSeekRequest(null);
@@ -402,7 +461,6 @@ export default function StudentWorkspacePage() {
       const rawTypeIsUrl = doc.file_type === "url" || doc.file_type === "link";
       const isYoutubeSource = isYoutubeUrl(doc.storage_path);
       const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
-      const isMediaSummarySource = rawTypeIsUrl || isYoutubeSource || AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext);
       const needsAccessUrl = rawTypeIsUrl || !TEXT_ONLY_EXTS.has(ext) || PREVIEWABLE_OFFICE_EXTS.has(ext) || !ext;
       const needsText = rawTypeIsUrl || isYoutubeSource || AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext) || TEXT_ONLY_EXTS.has(ext);
       const needsPreviewPdf = PREVIEWABLE_OFFICE_EXTS.has(ext);
@@ -427,23 +485,6 @@ export default function StudentWorkspacePage() {
               }
             })
         : Promise.resolve();
-      const mediaSummaryPromise = isMediaSummarySource
-        ? fetch(`${API}/api/documents/${doc.id}/media-summary`, {
-            headers: { Authorization: `Bearer ${token}` },
-          })
-            .then(async (response) => {
-              const data = await response.json().catch(() => null);
-              if (!response.ok || !data) {
-                setSelectedSourceSummary(null);
-                return;
-              }
-              setSelectedSourceSummary(data);
-            })
-            .catch(() => {
-              setSelectedSourceSummary(null);
-            })
-        : Promise.resolve();
-
       if (needsAccessUrl) {
         const accessResponse = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
           headers: { Authorization: `Bearer ${token}` },
@@ -484,7 +525,6 @@ export default function StudentWorkspacePage() {
           setSelectedSourceTranscript(detail);
           setSelectedSourceTimeline([]);
         }
-        await mediaSummaryPromise;
         return;
       }
 
@@ -519,7 +559,7 @@ export default function StudentWorkspacePage() {
         }
       }
 
-      await Promise.all([nextSourceTextPromise, mediaSummaryPromise]);
+      await nextSourceTextPromise;
     } catch {
       setSelectedSourceError("문서를 여는 중 오류가 발생했습니다.");
     } finally {
@@ -585,6 +625,7 @@ export default function StudentWorkspacePage() {
     setSelectedSourceTranscript(undefined);
     setSelectedSourceTimeline([]);
     setSelectedSourceSummary(null);
+    setSelectedSourceSummaryLoading(false);
     setSelectedSourceMediaDuration(0);
     setSelectedSourceMediaType(null);
     setSelectedSourceSeekRequest(null);
@@ -655,6 +696,16 @@ export default function StudentWorkspacePage() {
                     activeSourceMediaType={selectedSourceMediaType}
                     activeSourceMediaDuration={selectedSourceMediaDuration}
                     activeSourceSummary={selectedSourceSummary}
+                    activeSourceSummaryLoading={selectedSourceSummaryLoading}
+                    canOpenSummary={canGenerateMediaSummary(
+                      selectedSource,
+                      selectedSourceDownloadUrl || selectedSourceUrl
+                    )}
+                    onOpenSummary={() => {
+                      if (selectedSourceSummary || selectedSourceSummaryLoading) return;
+                      void loadMediaSummary(selectedSource.id);
+                    }}
+                    onDeleteSummary={() => deleteMediaSummary(selectedSource.id)}
                     onSeekToTimestamp={(seconds) => setSelectedSourceSeekRequest({ seconds, nonce: Date.now() })}
                     onCitationClick={handleCitationClick}
                     onSlideClick={isPpt ? (n) => setChatRequestedSlide(n) : undefined}

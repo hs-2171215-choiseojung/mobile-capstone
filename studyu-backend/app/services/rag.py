@@ -438,6 +438,11 @@ def align_media_summary_to_timeline(
     timeline_tokens = [_tokenize_media_alignment_text(text) for text in timeline_texts]
     timeline_bigrams = [_build_media_alignment_bigrams(tokens) for tokens in timeline_tokens]
 
+    def _normalize_alignment_text(value: str) -> str:
+        normalized = re.sub(r"\s+", " ", (value or "").strip().lower())
+        normalized = re.sub(r"[^\w\s가-힣]", "", normalized)
+        return normalized
+
     query_texts: list[str] = []
     for section in sections:
         if not isinstance(section, dict):
@@ -445,7 +450,8 @@ def align_media_summary_to_timeline(
             continue
         title = str(section.get("title", "")).strip()
         section_summary = str(section.get("summary", "")).strip()
-        lead_query_text = _extract_media_lead_query(title, section_summary)
+        anchor_text = str(section.get("anchor_text", "")).strip()
+        lead_query_text = anchor_text or _extract_media_lead_query(title, section_summary)
         query_texts.append(lead_query_text or f"{title}\n{section_summary}".strip() or "요약 섹션")
 
     query_embeddings: list[list[float]] | None = None
@@ -464,6 +470,7 @@ def align_media_summary_to_timeline(
 
         title = str(section.get("title", "")).strip()
         section_summary = str(section.get("summary", "")).strip()
+        anchor_text = str(section.get("anchor_text", "")).strip()
         lead_query_text = query_texts[index]
         section_tokens = _tokenize_media_alignment_text(lead_query_text)
         section_bigrams = _build_media_alignment_bigrams(section_tokens)
@@ -501,6 +508,15 @@ def align_media_summary_to_timeline(
         ):
             embedding_scores = _cosine_similarity(query_embeddings[index], timeline_embeddings)
 
+        exact_anchor_idx: int | None = None
+        normalized_anchor = _normalize_alignment_text(anchor_text)
+        if len(normalized_anchor) >= 8:
+            for chunk_idx in range(search_start, search_end):
+                normalized_timeline = _normalize_alignment_text(timeline_texts[chunk_idx])
+                if normalized_anchor and normalized_anchor in normalized_timeline:
+                    exact_anchor_idx = chunk_idx
+                    break
+
         for chunk_idx in range(search_start, search_end):
             score = _score_media_alignment(
                 section_tokens,
@@ -508,6 +524,12 @@ def align_media_summary_to_timeline(
                 timeline_tokens[chunk_idx],
                 timeline_bigrams[chunk_idx],
             ) * 0.45
+
+            if exact_anchor_idx is not None:
+                if chunk_idx == exact_anchor_idx:
+                    score += 1.5
+                else:
+                    score -= 0.4
 
             if embedding_scores is not None and chunk_idx < len(embedding_scores):
                 score += float(embedding_scores[chunk_idx]) * 0.55
@@ -547,6 +569,10 @@ def align_media_summary_to_timeline(
             ]
             if top_candidates:
                 best_idx = min(top_candidates, key=lambda idx: int(timeline[idx].get("time_sec", 0) or 0))
+
+        if exact_anchor_idx is not None:
+            best_idx = exact_anchor_idx
+            best_score = max(best_score, 1.5)
 
         resolved_start = original_start_sec if original_start_sec is not None else 0
         if best_idx is not None:
@@ -1834,12 +1860,6 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vis
     chunks: list[str] = []
     if ext in VIDEO_AUDIO_EXTENSIONS:
         chunks = media_chunks or []
-        summary = build_media_summary_from_chunks(
-            [{"content": chunk} for chunk in chunks],
-            filename,
-        )
-        if summary:
-            chunks = _inject_media_summary(chunks, summary)
     elif ext == "pdf":
         # PDF: [페이지 N] 마커 기준으로 페이지별 청킹
         page_parts = re.split(r'(?=\[페이지\s*\d+\])', text)
@@ -2213,12 +2233,6 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
             raise ValueError("유튜브 영상에서 충분한 자막을 찾지 못했습니다.")
 
         chunks = _build_media_chunks(segments, f"{video_id}.youtube")
-        summary = build_media_summary_from_chunks(
-            [{"content": chunk} for chunk in chunks],
-            f"YouTube-{video_id}",
-        )
-        if summary:
-            chunks = _inject_media_summary(chunks, summary)
 
         try:
             embeddings = _embed_batch(chunks)
@@ -2262,12 +2276,6 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
             raise ValueError("비디오/오디오 URL에서 전사할 수 있는 음성 내용을 찾지 못했습니다.")
 
         chunks = _build_media_chunks(segments, filename)
-        summary = build_media_summary_from_chunks(
-            [{"content": chunk} for chunk in chunks],
-            filename,
-        )
-        if summary:
-            chunks = _inject_media_summary(chunks, summary)
 
         try:
             embeddings = _embed_batch(chunks)

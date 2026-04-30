@@ -31,6 +31,10 @@ interface StudentChatPanelProps {
   activeSourceMediaType?: "audio" | "video" | null;
   activeSourceMediaDuration?: number;
   activeSourceSummary?: MediaSummary | null;
+  activeSourceSummaryLoading?: boolean;
+  canOpenSummary?: boolean;
+  onOpenSummary?: () => void;
+  onDeleteSummary?: () => Promise<void> | void;
   onSeekToTimestamp?: (seconds: number) => void;
   onClose?: () => void;
   onCitationClick?: (chunk: SourceChunk) => void;
@@ -161,6 +165,41 @@ function formatTimestampRange(startSec?: number | null, endSec?: number | null) 
     return formatTimestamp(startSec!);
   }
   return "";
+}
+
+function stripSummaryEvidenceBlocks(markdown: string) {
+  const lines = (markdown || "").split("\n");
+  const cleaned: string[] = [];
+  let currentHeading = "";
+  let skippingEvidence = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("## ")) {
+      currentHeading = trimmed.slice(3).trim();
+      skippingEvidence = false;
+      cleaned.push(line);
+      continue;
+    }
+
+    if (trimmed.startsWith(">")) {
+      const isOverviewBlock = currentHeading === "개요" || currentHeading.toLowerCase() === "overview";
+      if (!isOverviewBlock) {
+        skippingEvidence = true;
+        continue;
+      }
+    }
+
+    if (skippingEvidence && !trimmed) {
+      continue;
+    }
+
+    skippingEvidence = false;
+    cleaned.push(line);
+  }
+
+  return cleaned.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function getReferenceSeconds(reference: ChatReference, duration: number) {
@@ -374,6 +413,10 @@ export function StudentChatPanel({
   activeSourceMediaType,
   activeSourceMediaDuration,
   activeSourceSummary,
+  activeSourceSummaryLoading = false,
+  canOpenSummary = false,
+  onOpenSummary,
+  onDeleteSummary,
   onSeekToTimestamp,
   onClose,
   onCitationClick,
@@ -386,6 +429,7 @@ export function StudentChatPanel({
   const [isLoading, setIsLoading] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSummaryOpen, setIsSummaryOpen] = useState(false);
+  const [isDeletingSummary, setIsDeletingSummary] = useState(false);
   interface Suggestion { text: string; category: "이해" | "분석" | "적용"; isOld?: boolean; }
 
   // 자료별 채팅 키: 선택된 doc ID 기반 (없으면 노트북 전체)
@@ -437,6 +481,9 @@ export function StudentChatPanel({
         .filter(Boolean)
         .join("\n\n")
     : "";
+  const showSummaryButton = canOpenSummary || hasMediaSummary || activeSourceSummaryLoading;
+  const summaryButtonLabel = activeSourceSummaryLoading && !hasMediaSummary ? "요약 준비 중" : "요약";
+  const summaryButtonTitle = activeSourceSummaryLoading && !hasMediaSummary ? "요약을 준비하고 있어요" : "요약 보기";
   const summaryReportMarkdown = hasMediaSummary
     ? [
         activeSourceSummary?.title?.trim() ? `# ${activeSourceSummary.title.trim()}` : "# 자료 요약",
@@ -460,10 +507,10 @@ export function StudentChatPanel({
   }, [activeSourceId]);
 
   useEffect(() => {
-    if (!hasMediaSummary) {
+    if (!hasMediaSummary && !activeSourceSummaryLoading) {
       setIsSummaryOpen(false);
     }
-  }, [hasMediaSummary, activeSourceId]);
+  }, [hasMediaSummary, activeSourceId, activeSourceSummaryLoading]);
 
   // ── 음성 재생 상태 ────────────────────────────────────────
   const [voiceMode,        setVoiceMode]        = useState(false);
@@ -1107,6 +1154,18 @@ export function StudentChatPanel({
           )}
         </div>
         <div className="flex items-center gap-1">
+          {showSummaryButton && voiceMode && (
+            <button
+              onClick={() => {
+                onOpenSummary?.();
+                setIsSummaryOpen(true);
+              }}
+              className="px-2.5 py-1.5 rounded-md text-[12px] font-medium text-[#155dfc] bg-blue-50 hover:bg-blue-100 transition-colors"
+              title={summaryButtonTitle}
+            >
+              {summaryButtonLabel}
+            </button>
+          )}
           {voiceMode && (
             <div className="relative" ref={voiceDropdownRef}>
               <button
@@ -1149,13 +1208,16 @@ export function StudentChatPanel({
               )}
             </div>
           )}
-          {hasMediaSummary && (
+          {showSummaryButton && !voiceMode && (
             <button
-              onClick={() => setIsSummaryOpen(true)}
+              onClick={() => {
+                onOpenSummary?.();
+                setIsSummaryOpen(true);
+              }}
               className="px-2.5 py-1.5 rounded-md text-[12px] font-medium text-[#155dfc] bg-blue-50 hover:bg-blue-100 transition-colors"
-              title="요약 보기"
+              title={summaryButtonTitle}
             >
-              요약
+              {summaryButtonLabel}
             </button>
           )}
           <button
@@ -1205,7 +1267,7 @@ export function StudentChatPanel({
       </div>
 
       {/* 메시지 리스트 영역 */}
-      {isSummaryOpen && hasMediaSummary && (
+      {isSummaryOpen && (canOpenSummary || hasMediaSummary || activeSourceSummaryLoading) && (
         <div className="absolute inset-0 z-20 bg-white/95 backdrop-blur-[1px] flex flex-col">
           <div className="shrink-0 px-4 py-3 border-b border-[#e7e9ed] flex items-center justify-between bg-white">
             <div className="min-w-0">
@@ -1214,6 +1276,24 @@ export function StudentChatPanel({
               </p>
               <p className="text-[11px] text-[#99a1af]">Markdown 형식으로 볼 수 있어요.</p>
             </div>
+            
+              <button
+                onClick={async () => {
+                  if (isDeletingSummary) return;
+                  setIsDeletingSummary(true);
+                  try {
+                    await onDeleteSummary?.();
+                    setIsSummaryOpen(false);
+                  } finally {
+                    setIsDeletingSummary(false);
+                  }
+                }}
+                className="hidden"
+                disabled={isDeletingSummary}
+              >
+                {isDeletingSummary ? "삭제 중" : "요약 삭제"}
+              </button>
+            
             <button
               onClick={() => setIsSummaryOpen(false)}
               className="p-1.5 text-[#99a1af] hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
@@ -1223,19 +1303,31 @@ export function StudentChatPanel({
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-4 bg-[#f8f9fb]">
-            <div className="rounded-2xl border border-[#d9e0ea] bg-white p-6 shadow-sm">
-              <MarkdownPreview
-                content={summaryReportMarkdown}
-                className="text-[#1f2937] leading-7 [&_h1]:mb-4 [&_h1]:text-[28px] [&_h1]:font-bold [&_h1]:tracking-[-0.02em] [&_h2]:mt-8 [&_h2]:mb-3 [&_h2]:text-[19px] [&_h2]:font-semibold [&_h2]:text-[#111827] [&_p]:text-[14px] [&_p]:leading-7 [&_blockquote]:border-blue-100 [&_blockquote]:bg-blue-50 [&_blockquote]:text-[12px] [&_blockquote]:not-italic [&_blockquote]:text-[#4b5563]"
-                transformText={(text) =>
-                  renderMessageContent(
-                    text,
-                    Boolean(activeSourceMediaType && onSeekToTimestamp),
-                    []
-                  )
-                }
-              />
-            </div>
+            {activeSourceSummaryLoading && !hasMediaSummary ? (
+              <div className="rounded-2xl border border-[#d9e0ea] bg-white p-6 shadow-sm">
+                <div className="flex items-center gap-3 text-[#4b5563]">
+                  <Loader2 className="w-4 h-4 animate-spin text-[#155dfc]" />
+                  <p className="text-[14px]">요약을 준비하고 있어요.</p>
+                </div>
+                <p className="mt-3 text-[12px] text-[#99a1af]">
+                  요약을 생성하고 있더라도 소스 확인과 AI 채팅은 계속 할 수 있어요.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-[#d9e0ea] bg-white p-6 shadow-sm">
+                <MarkdownPreview
+                  content={stripSummaryEvidenceBlocks(summaryReportMarkdown)}
+                  className="text-[#1f2937] leading-7 [&_h1]:mb-4 [&_h1]:text-[28px] [&_h1]:font-bold [&_h1]:tracking-[-0.02em] [&_h2]:mt-8 [&_h2]:mb-3 [&_h2]:text-[19px] [&_h2]:font-semibold [&_h2]:text-[#111827] [&_p]:text-[14px] [&_p]:leading-7 [&_blockquote]:border-blue-100 [&_blockquote]:bg-blue-50 [&_blockquote]:text-[12px] [&_blockquote]:not-italic [&_blockquote]:text-[#4b5563]"
+                  transformText={(text) =>
+                    renderMessageContent(
+                      text,
+                      Boolean(activeSourceMediaType && onSeekToTimestamp),
+                      []
+                    )
+                  }
+                />
+              </div>
+            )}
           </div>
         </div>
       )}
