@@ -361,6 +361,334 @@ def _build_media_timeline_from_chunks_v2(rows: list[dict[str, Any]]) -> list[dic
     return timeline
 
 
+_MEDIA_ALIGNMENT_TOKEN_RE = re.compile(r"[\uac00-\ud7a3]+|[a-z0-9]{2,}")
+
+
+def _tokenize_media_alignment_text(text: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", (text or "").lower()).strip()
+    if not normalized:
+        return []
+    return _MEDIA_ALIGNMENT_TOKEN_RE.findall(normalized)
+
+
+def _build_media_alignment_bigrams(tokens: list[str]) -> set[str]:
+    if len(tokens) < 2:
+        return set()
+    return {f"{tokens[idx]} {tokens[idx + 1]}" for idx in range(len(tokens) - 1)}
+
+
+def _extract_media_lead_query(title: str, summary: str) -> str:
+    cleaned_summary = re.sub(r"\r\n?", "\n", summary or "").strip()
+    summary_lines = [line.strip() for line in cleaned_summary.split("\n") if line.strip()]
+
+    lead_part = ""
+    if summary_lines:
+        first_line = re.sub(r"^\s*(?:[-*+]|\d+\.)\s*", "", summary_lines[0]).strip()
+        sentence_parts = re.split(r"(?<=[.!?])\s+|(?<=다)\s+|(?<=요)\s+", first_line)
+        lead_part = next((part.strip() for part in sentence_parts if part.strip()), first_line)
+
+    query_parts = [part for part in [title.strip(), lead_part] if part]
+    return "\n".join(query_parts).strip()
+
+
+def _score_media_alignment(
+    section_tokens: list[str],
+    section_bigrams: set[str],
+    candidate_tokens: list[str],
+    candidate_bigrams: set[str],
+) -> float:
+    if not section_tokens or not candidate_tokens:
+        return 0.0
+
+    section_counts: dict[str, int] = {}
+    for token in section_tokens:
+        section_counts[token] = section_counts.get(token, 0) + 1
+
+    candidate_counts: dict[str, int] = {}
+    for token in candidate_tokens:
+        candidate_counts[token] = candidate_counts.get(token, 0) + 1
+
+    overlap = 0
+    for token, count in section_counts.items():
+        overlap += min(count, candidate_counts.get(token, 0))
+
+    token_recall = overlap / max(len(section_tokens), 1)
+    token_precision = overlap / max(len(candidate_tokens), 1)
+    bigram_overlap = len(section_bigrams & candidate_bigrams)
+    bigram_recall = bigram_overlap / max(len(section_bigrams), 1) if section_bigrams else 0.0
+
+    return (token_recall * 0.72) + (token_precision * 0.18) + (bigram_recall * 0.35)
+
+
+def align_media_summary_to_timeline(
+    summary: dict[str, Any],
+    timeline: list[dict[str, Any]],
+) -> dict[str, Any]:
+    sections = summary.get("sections")
+    if not isinstance(sections, list) or not sections or not timeline:
+        return summary
+
+    aligned_sections: list[dict[str, Any]] = []
+    cursor = 0
+    total_sections = len(sections)
+    min_gap_seconds = 3
+    top_k_candidates = 4
+
+    timeline_texts = [str(item.get("text", "")).strip() for item in timeline]
+    timeline_tokens = [_tokenize_media_alignment_text(text) for text in timeline_texts]
+    timeline_bigrams = [_build_media_alignment_bigrams(tokens) for tokens in timeline_tokens]
+
+    def _normalize_alignment_text(value: str) -> str:
+        normalized = re.sub(r"\s+", " ", (value or "").strip().lower())
+        normalized = re.sub(r"[^\w\s가-힣]", "", normalized)
+        return normalized
+
+    query_texts: list[str] = []
+    for section in sections:
+        if not isinstance(section, dict):
+            query_texts.append("요약 섹션")
+            continue
+        title = str(section.get("title", "")).strip()
+        section_summary = str(section.get("summary", "")).strip()
+        anchor_text = str(section.get("anchor_text", "")).strip()
+        lead_query_text = anchor_text or _extract_media_lead_query(title, section_summary)
+        query_texts.append(lead_query_text or f"{title}\n{section_summary}".strip() or "요약 섹션")
+
+    query_embeddings: list[list[float]] | None = None
+    timeline_embeddings: list[list[float]] | None = None
+    try:
+        if query_texts and timeline_texts:
+            query_embeddings = _embed_batch(query_texts)
+            timeline_embeddings = _embed_batch([text or "전사 청크" for text in timeline_texts])
+    except Exception:
+        query_embeddings = None
+        timeline_embeddings = None
+
+    for index, section in enumerate(sections):
+        if not isinstance(section, dict):
+            continue
+
+        title = str(section.get("title", "")).strip()
+        section_summary = str(section.get("summary", "")).strip()
+        anchor_text = str(section.get("anchor_text", "")).strip()
+        lead_query_text = query_texts[index]
+        section_tokens = _tokenize_media_alignment_text(lead_query_text)
+        section_bigrams = _build_media_alignment_bigrams(section_tokens)
+
+        original_start = section.get("start_sec")
+        try:
+            original_start_sec = max(0, int(float(original_start)))
+        except Exception:
+            original_start_sec = None
+
+        best_idx: int | None = None
+        best_score = -1.0
+        remaining_sections = total_sections - index - 1
+        latest_start_idx = max(cursor, len(timeline) - remaining_sections - 1)
+        min_window_idx = int((len(timeline) * index) / max(total_sections, 1))
+        max_window_idx = int((len(timeline) * (index + 1)) / max(total_sections, 1))
+        window_padding = max(2, len(timeline) // max(total_sections * 2, 1))
+        search_start = max(cursor, min_window_idx - window_padding)
+        search_end = min(latest_start_idx + 1, max_window_idx + window_padding + 1)
+        if search_start >= search_end:
+            search_start = cursor
+            search_end = latest_start_idx + 1
+
+        previous_start_sec = None
+        if aligned_sections:
+            previous_start_sec = int(aligned_sections[-1].get("start_sec", 0) or 0)
+
+        candidate_scores: list[tuple[int, float]] = []
+        embedding_scores: np.ndarray | None = None
+        if (
+            query_embeddings is not None
+            and timeline_embeddings is not None
+            and index < len(query_embeddings)
+            and len(timeline_embeddings) == len(timeline)
+        ):
+            embedding_scores = _cosine_similarity(query_embeddings[index], timeline_embeddings)
+
+        exact_anchor_idx: int | None = None
+        normalized_anchor = _normalize_alignment_text(anchor_text)
+        if len(normalized_anchor) >= 8:
+            for chunk_idx in range(search_start, search_end):
+                normalized_timeline = _normalize_alignment_text(timeline_texts[chunk_idx])
+                if normalized_anchor and normalized_anchor in normalized_timeline:
+                    exact_anchor_idx = chunk_idx
+                    break
+
+        for chunk_idx in range(search_start, search_end):
+            score = _score_media_alignment(
+                section_tokens,
+                section_bigrams,
+                timeline_tokens[chunk_idx],
+                timeline_bigrams[chunk_idx],
+            ) * 0.45
+
+            if exact_anchor_idx is not None:
+                if chunk_idx == exact_anchor_idx:
+                    score += 1.5
+                else:
+                    score -= 0.4
+
+            if embedding_scores is not None and chunk_idx < len(embedding_scores):
+                score += float(embedding_scores[chunk_idx]) * 0.55
+
+            candidate_time = int(timeline[chunk_idx].get("time_sec", 0) or 0)
+            if original_start_sec is not None:
+                drift = abs(candidate_time - original_start_sec)
+                score += max(0.0, 1.0 - (drift / 90.0)) * 0.05
+
+            expected_center_idx = int(((index + 0.5) / max(total_sections, 1)) * len(timeline))
+            index_distance = abs(chunk_idx - expected_center_idx)
+            section_span = max(len(timeline) / max(total_sections, 1), 1)
+            score += max(0.0, 1.0 - (index_distance / section_span)) * 0.06
+
+            if previous_start_sec is not None:
+                if candidate_time < previous_start_sec:
+                    score -= 1.1
+                elif candidate_time - previous_start_sec < min_gap_seconds:
+                    score -= 0.35
+
+            if chunk_idx < min_window_idx:
+                score -= min(0.35, (min_window_idx - chunk_idx) * 0.03)
+            elif chunk_idx > max_window_idx:
+                score -= min(0.35, (chunk_idx - max_window_idx) * 0.03)
+
+            candidate_scores.append((chunk_idx, score))
+            if score > best_score:
+                best_score = score
+                best_idx = chunk_idx
+
+        if candidate_scores:
+            candidate_scores.sort(key=lambda item: item[1], reverse=True)
+            score_threshold = best_score - 0.08
+            top_candidates = [
+                idx for idx, score in candidate_scores[:top_k_candidates]
+                if score >= score_threshold
+            ]
+            if top_candidates:
+                best_idx = min(top_candidates, key=lambda idx: int(timeline[idx].get("time_sec", 0) or 0))
+
+        if exact_anchor_idx is not None:
+            best_idx = exact_anchor_idx
+            best_score = max(best_score, 1.5)
+
+        resolved_start = original_start_sec if original_start_sec is not None else 0
+        if best_idx is not None:
+            matched_start = int(timeline[best_idx].get("time_sec", resolved_start) or resolved_start)
+            if best_score >= 0.16 or original_start_sec is None:
+                resolved_start = matched_start
+
+        if aligned_sections:
+            previous_start = int(aligned_sections[-1].get("start_sec", 0) or 0)
+            if resolved_start <= previous_start:
+                resolved_start = previous_start + min_gap_seconds
+            elif resolved_start - previous_start < min_gap_seconds:
+                resolved_start = previous_start + min_gap_seconds
+
+        aligned_sections.append({
+            **section,
+            "title": title,
+            "summary": section_summary,
+            "start_sec": resolved_start,
+        })
+
+        if best_idx is not None:
+            cursor = min(best_idx + 1, len(timeline) - 1)
+
+    return {
+        "title": str(summary.get("title", "")).strip() or "전체 내용 요약",
+        "overview": str(summary.get("overview", "")).strip(),
+        "sections": aligned_sections,
+    }
+
+
+def _build_balanced_media_transcript_excerpt(
+    timeline: list[dict[str, Any]],
+    *,
+    max_chars: int = 12000,
+) -> str:
+    transcript_lines = [
+        f"{_format_media_timestamp(item['time_sec'])} {item['text']}"
+        for item in timeline
+        if item.get("text")
+    ]
+    if not transcript_lines:
+        return ""
+
+    full_transcript = "\n".join(transcript_lines)
+    if len(full_transcript) <= max_chars:
+        return full_transcript
+
+    avg_len = max(1, sum(len(line) for line in transcript_lines) // len(transcript_lines))
+    target_count = max(8, min(len(transcript_lines), max_chars // max(avg_len, 40)))
+    if target_count >= len(transcript_lines):
+        return full_transcript[:max_chars]
+
+    selected_indices = {0, len(transcript_lines) - 1}
+    for idx in range(target_count):
+        sampled_idx = round(idx * (len(transcript_lines) - 1) / max(target_count - 1, 1))
+        selected_indices.add(sampled_idx)
+
+    ordered_lines = [transcript_lines[idx] for idx in sorted(selected_indices)]
+    excerpt = "\n".join(ordered_lines)
+    if len(excerpt) <= max_chars:
+        return excerpt
+
+    trimmed_lines: list[str] = []
+    current_len = 0
+    for line in ordered_lines:
+        next_len = current_len + (1 if trimmed_lines else 0) + len(line)
+        if next_len > max_chars:
+            break
+        trimmed_lines.append(line)
+        current_len = next_len
+    return "\n".join(trimmed_lines)
+
+
+def _normalize_media_fallback_text(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", (text or "")).strip()
+    normalized = normalized.strip(" .,-")
+    return normalized
+
+
+def _truncate_media_fallback_text(text: str, max_len: int) -> str:
+    normalized = _normalize_media_fallback_text(text)
+    if len(normalized) <= max_len:
+        return normalized
+
+    cut = normalized[:max_len].rstrip()
+    for delimiter in (". ", "! ", "? ", ", ", " "):
+        idx = cut.rfind(delimiter)
+        if idx >= max_len // 2:
+            cut = cut[:idx].rstrip(" .,!?")
+            break
+    return cut.rstrip(" .,!?") + "..."
+
+
+def _build_media_fallback_section_title(text: str, index: int) -> str:
+    normalized = _normalize_media_fallback_text(text)
+    if not normalized:
+        return f"주요 내용 {index}"
+
+    title = _truncate_media_fallback_text(normalized, 28)
+    if title.endswith("..."):
+        title = title[:-3].rstrip()
+    return title or f"주요 내용 {index}"
+
+
+def _build_media_fallback_section_summary(text: str) -> str:
+    normalized = _normalize_media_fallback_text(text)
+    if not normalized:
+        return "이 구간의 주요 내용을 요약했습니다."
+
+    summary = _truncate_media_fallback_text(normalized, 180)
+    if not re.search(r"[.!?]$", summary):
+        summary += "."
+    return summary
+
+
 def _extract_media_transcript(file_bytes: bytes, filename: str) -> tuple[list[dict[str, Any]], int]:
     import os
     import tempfile
@@ -439,13 +767,7 @@ def build_media_summary_from_chunks(rows: list[dict[str, Any]], filename: str) -
     if not timeline:
         return {"title": "전체 내용 요약", "overview": "", "sections": []}
 
-    transcript_lines = [
-        f"{_format_media_timestamp(item['time_sec'])} {item['text']}"
-        for item in timeline
-        if item.get("text")
-    ]
-    transcript = "\n".join(transcript_lines)
-    transcript = transcript[:12000]
+    transcript = _build_balanced_media_transcript_excerpt(timeline, max_chars=12000)
 
     prompt = f"""다음은 업로드된 비디오/오디오 '{filename}'의 시간별 전사입니다.
 전체 시간 흐름을 읽고, 짧은 메모가 아니라 README나 요약 보고서처럼 읽히는 문서형 요약을 만들어주세요.
@@ -458,9 +780,9 @@ def build_media_summary_from_chunks(rows: list[dict[str, Any]], filename: str) -
 - sections는 시간 순서대로 정리하고, 각 section은 하나의 주제나 흐름 전환을 대표해야 합니다.
 - 각 section의 title은 소제목처럼 자연스럽고 구체적으로 작성하세요. '주제 1', '핵심 내용 2' 같은 generic 이름은 쓰지 마세요.
 - 각 section의 summary는 한 줄 메모가 아니라, 해당 구간에서 무엇을 설명하고 왜 중요한지 드러나는 2~5문장짜리 본문처럼 작성하세요.
-- overview와 각 section의 summary는 Markdown 형식으로 작성하세요.
-- 핵심 개념, 중요한 결론, 주의할 부분은 **굵게** 표시하세요.
-- 설명이 여러 포인트로 나뉘면 불릿 목록(-)이나 번호 목록을 사용해 읽기 쉽게 정리하세요.
+- overview와 각 section의 summary는 기본적으로 자연스러운 본문 형태로 작성하되, 필요하면 Markdown 형식의 강조나 목록을 사용할 수 있습니다.
+- 핵심 개념, 중요한 결론, 주의할 부분은 필요하면 **굵게** 표시해도 됩니다.
+- 설명이 여러 포인트로 나뉘면 불릿 목록(-)이나 번호 목록을 사용해 읽기 쉽게 정리해도 됩니다.
 - 화면에서는 소제목 오른쪽에 시간만 따로 붙여 보여줄 예정이므로, summary 안에 시간을 다시 반복해서 쓰지 마세요.
 - 각 section에는 그 주제가 본격적으로 시작되는 대표 시작 시간만 start_sec에 넣으세요.
 - Markdown 형식은 허용하지만, 불필요한 구분선은 넣지 말고 문서 본문처럼 매끄럽게 읽히는 내용을 작성하세요.
@@ -528,13 +850,13 @@ def build_media_summary_from_chunks(rows: list[dict[str, Any]], filename: str) -
     sample_points = timeline[: min(4, len(timeline))]
     for idx, item in enumerate(sample_points, start=1):
         fallback.append({
-            "title": item["text"][:18].strip() or f"핵심 내용 {idx}",
+            "title": _build_media_fallback_section_title(str(item.get("text", "")), idx),
             "start_sec": item["time_sec"],
-            "summary": item["text"][:180].strip(),
+            "summary": _build_media_fallback_section_summary(str(item.get("text", ""))),
         })
     return {
         "title": "전체 내용 요약",
-        "overview": f"{filename}의 핵심 내용을 시간 흐름에 따라 정리한 요약입니다.",
+        "overview": f"{filename}의 핵심 내용을 시간 흐름에 따라 자연스럽게 정리한 요약입니다.",
         "sections": fallback,
     }
 
@@ -1604,12 +1926,6 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vis
     chunks: list[str] = []
     if ext in VIDEO_AUDIO_EXTENSIONS:
         chunks = media_chunks or []
-        summary = build_media_summary_from_chunks(
-            [{"content": chunk} for chunk in chunks],
-            filename,
-        )
-        if summary:
-            chunks = _inject_media_summary(chunks, summary)
     elif ext == "pdf":
         # PDF: [페이지 N] 마커 기준으로 페이지별 청킹
         page_parts = re.split(r'(?=\[페이지\s*\d+\])', text)
@@ -2001,12 +2317,6 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
             raise ValueError("유튜브 영상에서 충분한 자막을 찾지 못했습니다.")
 
         chunks = _build_media_chunks(segments, f"{video_id}.youtube")
-        summary = build_media_summary_from_chunks(
-            [{"content": chunk} for chunk in chunks],
-            f"YouTube-{video_id}",
-        )
-        if summary:
-            chunks = _inject_media_summary(chunks, summary)
 
         try:
             embeddings = _embed_batch(chunks)
@@ -2050,12 +2360,6 @@ def ingest_url(url: str, doc_id: str) -> tuple[int, int]:
             raise ValueError("비디오/오디오 URL에서 전사할 수 있는 음성 내용을 찾지 못했습니다.")
 
         chunks = _build_media_chunks(segments, filename)
-        summary = build_media_summary_from_chunks(
-            [{"content": chunk} for chunk in chunks],
-            filename,
-        )
-        if summary:
-            chunks = _inject_media_summary(chunks, summary)
 
         try:
             embeddings = _embed_batch(chunks)

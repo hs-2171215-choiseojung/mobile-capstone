@@ -18,8 +18,9 @@
 
 import base64
 import io
+import re
 import uuid
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse, quote as url_quote
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
@@ -40,15 +41,115 @@ from app.services.rag import (
     _extract_youtube_video_id,
     _strip_media_metadata,
     _build_media_timeline_from_chunks_v2,
-    build_media_summary_from_chunks,
     _parse_media_summary,
     _inject_media_summary,
+    align_media_summary_to_timeline,
+    chat_with_docs,
 )
 
 router = APIRouter()
 
 STORAGE_BUCKET = "documents"
 SLIDE_ASSETS_PREFIX = "slide-assets"
+
+_MEDIA_SUMMARY_BLOCK_RE = re.compile(r"\[MEDIA_SUMMARY\].*?\[/MEDIA_SUMMARY\]\s*", re.DOTALL)
+
+
+def _markdown_summary_to_media_payload(answer: str) -> dict[str, Any]:
+    cleaned = (answer or "").strip()
+    if not cleaned:
+        return {"title": "전체 내용 요약", "overview": "", "sections": []}
+
+    cleaned = re.sub(r"\[SUGGESTED_QUESTIONS\].*?\[/SUGGESTED_QUESTIONS\]", "", cleaned, flags=re.DOTALL).strip()
+    lines = cleaned.splitlines()
+
+    title = "전체 내용 요약"
+    overview_lines: list[str] = []
+    sections: list[dict[str, Any]] = []
+    current_section: dict[str, Any] | None = None
+    seen_section = False
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            if current_section is not None:
+                current_section.setdefault("_lines", []).append("")
+            elif not seen_section:
+                overview_lines.append("")
+            continue
+
+        h1_match = re.match(r"^#\s+(.+)$", line)
+        if h1_match and title == "전체 내용 요약":
+            title = h1_match.group(1).strip()
+            continue
+
+        h2_match = re.match(r"^##\s+(.+)$", line)
+        if h2_match:
+            seen_section = True
+            section_title = h2_match.group(1).strip()
+            if section_title.lower() in {"개요", "overview"}:
+                current_section = None
+                continue
+            current_section = {"title": section_title, "_lines": []}
+            sections.append(current_section)
+            continue
+
+        evidence_match = re.match(r"^>\s*근거\s*:\s*(.+)$", line)
+        if current_section is not None and evidence_match:
+            current_section["anchor_text"] = evidence_match.group(1).strip()
+            continue
+
+        if current_section is not None and raw_line.lstrip().startswith(">"):
+            current_section.setdefault("anchor_text", raw_line.lstrip()[1:].strip().strip('"'))
+            continue
+
+        if current_section is not None:
+            current_section.setdefault("_lines", []).append(raw_line.rstrip())
+        else:
+            overview_lines.append(raw_line.rstrip())
+
+    normalized_sections: list[dict[str, Any]] = []
+    for section in sections:
+        summary_text = "\n".join(section.get("_lines", [])).strip()
+        if not summary_text:
+            continue
+        normalized_sections.append({
+            "title": str(section.get("title", "")).strip() or "요약 섹션",
+            "summary": summary_text,
+            "anchor_text": str(section.get("anchor_text", "")).strip(),
+        })
+
+    return {
+        "title": title or "전체 내용 요약",
+        "overview": "\n".join(overview_lines).strip(),
+        "sections": normalized_sections,
+    }
+
+
+def _generate_media_summary_via_chat(document_id: str) -> dict[str, Any]:
+    answer, _, _, _ = chat_with_docs(
+        doc_ids=[document_id],
+        question=(
+            "이 내용을 요약해줘.\n"
+            "Markdown 형식으로 작성하고, 제목(H1), 개요(H2: 개요), 주제별 섹션(H2)을 포함한 보고서처럼 정리해줘.\n"
+            "각 주제별 섹션은 반드시 아래 형식을 따라줘:\n"
+            "## 섹션 제목\n"
+            "> 근거: 전사 원문에서 그대로 가져온 대표 문장 1개\n"
+            "그 아래에 자연스러운 본문 2~5문장\n"
+            "근거 문장은 전사 텍스트를 요약하거나 바꾸지 말고 최대한 그대로 써줘.\n"
+            "각 섹션의 근거 문장은 서로 다른 구간을 대표하게 골라줘.\n"
+            "시간 표시는 쓰지 말아줘.\n"
+            "추천 질문은 넣지 말아줘."
+        ),
+        model="gpt-4o-mini",
+        level="intermediate",
+        chat_history=[],
+    )
+    return _markdown_summary_to_media_payload(answer)
+
+
+def _clear_media_summary_from_content(content: str) -> str:
+    return _MEDIA_SUMMARY_BLOCK_RE.sub("", content or "").strip()
 
 
 def _generate_and_upload_slides(file_bytes: bytes, doc_id: str) -> tuple[int, dict]:
@@ -1257,20 +1358,79 @@ async def get_document_media_summary(
     if not rows and is_youtube_doc:
         raise HTTPException(
             status_code=500,
-            detail="??? ??? ???? ?????. ??? youtube-transcript-api? ???? ??? ??????.",
+            detail="유튜브 자막을 불러오지 못했습니다. 서버에 youtube-transcript-api가 설치되어 있는지 확인해주세요.",
         )
     summary = _parse_media_summary(rows[0]["content"]) if rows else {"title": "전체 내용 요약", "overview": "", "sections": []}
+    timeline = _build_media_timeline_from_chunks_v2(rows)
+    summary_was_updated = False
+
+    if summary.get("sections"):
+        aligned_summary = align_media_summary_to_timeline(summary, timeline)
+        summary_was_updated = aligned_summary != summary
+        summary = aligned_summary
+
     if not summary.get("sections"):
-        summary = build_media_summary_from_chunks(rows, filename)
-        if summary.get("sections") and rows:
-            updated_chunks = _inject_media_summary([row["content"] for row in rows], summary)
-            try:
-                supabase_admin.table("document_chunks").update({
-                    "content": updated_chunks[0],
-                }).eq("doc_id", document_id).eq("chunk_index", 0).execute()
-            except Exception:
-                pass
+        generated_summary = _generate_media_summary_via_chat(document_id)
+        aligned_summary = align_media_summary_to_timeline(generated_summary, timeline)
+        summary_was_updated = aligned_summary != summary
+        summary = aligned_summary
+
+    if summary.get("sections") and rows and summary_was_updated:
+        updated_chunks = _inject_media_summary([row["content"] for row in rows], summary)
+        try:
+            supabase_admin.table("document_chunks").update({
+                "content": updated_chunks[0],
+            }).eq("doc_id", document_id).eq("chunk_index", 0).execute()
+        except Exception:
+            pass
     return summary
+
+
+@router.delete("/documents/{document_id}/media-summary")
+async def delete_document_media_summary(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    doc_res = (
+        supabase_admin.table("documents")
+        .select("user_id, notebook_id, filename, storage_path")
+        .eq("id", document_id)
+        .single()
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    if doc_res.data["user_id"] != user["id"]:
+        enrolled = (
+            supabase_admin.table("notebook_enrollments")
+            .select("id")
+            .eq("notebook_id", doc_res.data["notebook_id"])
+            .eq("student_id", user["id"])
+            .execute()
+            .data
+        )
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    chunks_res = (
+        supabase_admin.table("document_chunks")
+        .select("content")
+        .eq("doc_id", document_id)
+        .eq("chunk_index", 0)
+        .limit(1)
+        .execute()
+    )
+    rows = chunks_res.data or []
+    if not rows:
+        return {"ok": True}
+
+    cleaned_content = _clear_media_summary_from_content(str(rows[0].get("content", "")))
+    supabase_admin.table("document_chunks").update({
+        "content": cleaned_content,
+    }).eq("doc_id", document_id).eq("chunk_index", 0).execute()
+
+    return {"ok": True}
 
     # 청크는 CHUNK_OVERLAP(100자) 슬라이딩 윈도우로 생성되므로
     # 두 번째 청크부터는 앞 CHUNK_OVERLAP 글자가 이전 청크 끝과 중복됨.

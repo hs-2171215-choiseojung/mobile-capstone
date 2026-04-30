@@ -44,6 +44,19 @@ interface MediaTimelineEntry {
   text: string;
 }
 
+interface MediaSummarySection {
+  title: string;
+  summary: string;
+  start_sec?: number | null;
+  end_sec?: number | null;
+}
+
+interface MediaSummary {
+  title?: string;
+  overview?: string;
+  sections?: MediaSummarySection[];
+}
+
 const PREVIEWABLE_OFFICE_EXTS = new Set(["docx", "pptx", "ppt"]);
 
 function getOfficeEmbedUrl(url: string): string {
@@ -65,6 +78,21 @@ function isHttpUrl(url?: string): boolean {
   return typeof url === "string" && /^https?:\/\//i.test(url);
 }
 
+function canGenerateMediaSummary(doc: DocumentInfo | null, resolvedUrl?: string): boolean {
+  if (!doc) return false;
+  const normalizedFileType = (doc.file_type || "").toLowerCase();
+  const ext = doc.filename.toLowerCase().split(".").pop() ?? normalizedFileType;
+  const youtubeCandidates = [doc.storage_path, doc.filename, resolvedUrl].filter(Boolean) as string[];
+  const isYoutubeSource = youtubeCandidates.some((value) => isYoutubeUrl(value));
+  return (
+    normalizedFileType === "url" ||
+    normalizedFileType === "link" ||
+    normalizedFileType === "youtube" ||
+    isYoutubeSource ||
+    ["mp4", "mov", "avi", "mkv", "webm", "video", "mp3", "m4a", "wav", "audio"].includes(ext)
+  );
+}
+
 export default function StudentWorkspacePage() {
   const params = useParams();
   const notebookId = params.id as string;
@@ -83,6 +111,8 @@ export default function StudentWorkspacePage() {
   const [isSourceLoading, setIsSourceLoading] = useState(false);
   const [selectedSourceTranscript, setSelectedSourceTranscript] = useState<string | undefined>(undefined);
   const [selectedSourceTimeline, setSelectedSourceTimeline] = useState<MediaTimelineEntry[]>([]);
+  const [selectedSourceSummary, setSelectedSourceSummary] = useState<MediaSummary | null>(null);
+  const [selectedSourceSummaryLoading, setSelectedSourceSummaryLoading] = useState(false);
   const [selectedSourceMediaDuration, setSelectedSourceMediaDuration] = useState(0);
   const [selectedSourceMediaType, setSelectedSourceMediaType] = useState<"audio" | "video" | null>(null);
   const [selectedSourceSeekRequest, setSelectedSourceSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
@@ -361,6 +391,48 @@ export default function StudentWorkspacePage() {
   const PDF_EXTS = new Set(["pdf"]);
   const TEXT_ONLY_EXTS = new Set(["docx", "pptx", "ppt", "hwp", "hwpx"]);
 
+  const loadMediaSummary = async (docId: string) => {
+    if (!docId || selectedSourceSummaryLoading) return;
+    if (selectedSourceSummary?.sections?.length) return;
+
+    setSelectedSourceSummaryLoading(true);
+    try {
+      const supabase = createClient();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) return;
+
+      const response = await fetch(`${API}/api/documents/${docId}/media-summary`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data) {
+        setSelectedSourceSummary(null);
+        return;
+      }
+      setSelectedSourceSummary(data);
+    } catch {
+      setSelectedSourceSummary(null);
+    } finally {
+      setSelectedSourceSummaryLoading(false);
+    }
+  };
+
+  const deleteMediaSummary = async (docId: string) => {
+    if (!docId) return;
+    const supabase = createClient();
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) return;
+
+    await fetch(`${API}/api/documents/${docId}/media-summary`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setSelectedSourceSummary(null);
+    setSelectedSourceSummaryLoading(false);
+  };
+
   const openSourceDocument = async (doc: DocumentInfo) => {
     if (selectedSourceUrl.startsWith("blob:")) {
       URL.revokeObjectURL(selectedSourceUrl);
@@ -373,6 +445,8 @@ export default function StudentWorkspacePage() {
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
     setSelectedSourceTimeline([]);
+    setSelectedSourceSummary(null);
+    setSelectedSourceSummaryLoading(false);
     setSelectedSourceMediaDuration(0);
     setSelectedSourceMediaType(null);
     setSelectedSourceSeekRequest(null);
@@ -412,7 +486,6 @@ export default function StudentWorkspacePage() {
               }
             })
         : Promise.resolve();
-
       if (needsAccessUrl) {
         const accessResponse = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
           headers: { Authorization: `Bearer ${token}` },
@@ -552,6 +625,8 @@ export default function StudentWorkspacePage() {
     setSelectedSourceError("");
     setSelectedSourceTranscript(undefined);
     setSelectedSourceTimeline([]);
+    setSelectedSourceSummary(null);
+    setSelectedSourceSummaryLoading(false);
     setSelectedSourceMediaDuration(0);
     setSelectedSourceMediaType(null);
     setSelectedSourceSeekRequest(null);
@@ -623,6 +698,17 @@ export default function StudentWorkspacePage() {
                     activeSourceId={selectedSource.id}
                     activeSourceMediaType={selectedSourceMediaType}
                     activeSourceMediaDuration={selectedSourceMediaDuration}
+                    activeSourceSummary={selectedSourceSummary}
+                    activeSourceSummaryLoading={selectedSourceSummaryLoading}
+                    canOpenSummary={canGenerateMediaSummary(
+                      selectedSource,
+                      selectedSourceDownloadUrl || selectedSourceUrl
+                    )}
+                    onOpenSummary={() => {
+                      if (selectedSourceSummary || selectedSourceSummaryLoading) return;
+                      void loadMediaSummary(selectedSource.id);
+                    }}
+                    onDeleteSummary={() => deleteMediaSummary(selectedSource.id)}
                     onSeekToTimestamp={(seconds) => setSelectedSourceSeekRequest({ seconds, nonce: Date.now() })}
                     onCitationClick={handleCitationClick}
                     onSlideClick={isPpt ? (n) => setChatRequestedSlide(n) : undefined}
