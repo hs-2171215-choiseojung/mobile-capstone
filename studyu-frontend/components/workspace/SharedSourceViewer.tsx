@@ -423,7 +423,7 @@ export function SharedSourceViewer({
 
   // DOCX/HWP/HWPX: sourceUrl + transcriptText 둘 다 있고, 이미지/비디오/오디오/유튜브가 아닌 경우 탭 표시
   const hasBothViews = Boolean(
-    sourceUrl && transcriptText !== undefined && !isImage && !isVideo && !isAudio && !isEmbeddableYoutube && !isUrlSource
+    (sourceUrl || customViewer) && transcriptText !== undefined && !isImage && !isVideo && !isAudio && !isEmbeddableYoutube && !isUrlSource
   );
 
   // 탭바: 하이라이트 점 표시 여부 (DOCX/HWP/HWPX)
@@ -492,7 +492,7 @@ export function SharedSourceViewer({
                 : "border-transparent text-gray-500 hover:text-gray-700"
             }`}
           >
-            {fileExt === "docx" ? "마크다운 보기" : "텍스트 보기"}
+            {(fileExt === "docx" || fileExt === "hwpx") ? "마크다운 보기" : "텍스트 보기"}
             {hasHighlight && activeTab !== "text" && (
               <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-[#155dfc] inline-block align-middle" />
             )}
@@ -511,7 +511,7 @@ export function SharedSourceViewer({
           <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 gap-3">
             <p className="text-sm">{error}</p>
           </div>
-        ) : !mediaUrl && transcriptText !== undefined ? (
+        ) : !customViewer && !mediaUrl && transcriptText !== undefined ? (
           <div ref={(el) => { textScrollRef.current = el; }} className="h-full p-4 overflow-y-auto">
             <div className="bg-white rounded-xl p-4 text-sm leading-relaxed border border-gray-200">
               {fileExt === "hwpx" && markdownText ? (
@@ -525,7 +525,7 @@ export function SharedSourceViewer({
               )}
             </div>
           </div>
-        ) : !mediaUrl ? (
+        ) : !customViewer && !mediaUrl ? (
           <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 gap-3">
             <p className="text-sm">표시할 문서 URL이 없습니다.</p>
           </div>
@@ -533,9 +533,9 @@ export function SharedSourceViewer({
           /* 마크다운/텍스트 탭 (DOCX 등) */
           <div ref={(el) => { textScrollRef.current = el; }} className="h-full p-4 overflow-y-auto">
             <div className="bg-white rounded-xl p-4 text-sm leading-relaxed border border-gray-200">
-              {fileExt === "docx" && markdownText ? (
+              {(fileExt === "docx" || fileExt === "hwpx") && markdownText ? (
                 <MarkdownViewer content={markdownText} />
-              ) : fileExt === "docx" && markdownLoading ? (
+              ) : (fileExt === "docx" || fileExt === "hwpx") && markdownLoading ? (
                 <span className="text-gray-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />마크다운 변환 중...</span>
               ) : transcriptText ? (
                 <span className="text-gray-700 whitespace-pre-wrap">{renderTranscript(transcriptText, highlightRange)}</span>
