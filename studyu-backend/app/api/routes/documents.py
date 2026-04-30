@@ -144,9 +144,14 @@ def _generate_and_upload_slides(file_bytes: bytes, doc_id: str) -> tuple[int, di
             print(f"[slides] PPTX 영상 추출 오류: {e}")
 
         # 2) LibreOffice로 PDF 변환
+        import sys
+        if sys.platform == "win32":
+            soffice_path = r"C:\Program Files\LibreOffice\program\soffice.exe"
+        else:
+            soffice_path = "soffice"
         try:
             result = subprocess.run(
-                ["soffice", "--headless", "--convert-to", "pdf", "--outdir", tmpdir, ppt_path],
+                [soffice_path, "--headless", "--convert-to", "pdf", "--outdir", tmpdir, ppt_path],
                 capture_output=True, timeout=120
             )
             if result.returncode != 0:
@@ -320,11 +325,151 @@ def _analyze_pdf_images(file_bytes: bytes) -> dict:
     return vision_descriptions
 
 
+def _generate_and_upload_hwpx_pages(file_bytes: bytes, doc_id: str) -> tuple[int, bytes | None]:
+    """HWPX → pyhwpx(한/글 COM) → PDF → WebP 페이지 이미지 생성 + Supabase 업로드.
+
+    Returns:
+        (total_pages, pdf_bytes) — 성공 시 (페이지 수, PDF bytes), 실패 시 (0, None)
+    """
+    import tempfile, os
+    import fitz  # PyMuPDF
+    from PIL import Image
+    import io as _io
+
+    prefix = f"{SLIDE_ASSETS_PREFIX}/{doc_id}"
+
+    try:
+        import pyhwpx
+    except ImportError:
+        print("[hwpx_pages] pyhwpx 미설치")
+        return 0
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        hwpx_path = os.path.join(tmpdir, "input.hwpx")
+        pdf_path = os.path.join(tmpdir, "output.pdf")
+        with open(hwpx_path, "wb") as f:
+            f.write(file_bytes)
+
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+            hwp = pyhwpx.Hwp(visible=False)
+            hwp.open(hwpx_path)
+            hwp.save_as(pdf_path, "PDF")
+            hwp.quit()
+        except Exception as e:
+            print(f"[hwpx_pages] pyhwpx PDF 변환 실패: {e}")
+            import traceback; traceback.print_exc()
+            return 0, None
+        finally:
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+        if not os.path.exists(pdf_path):
+            print("[hwpx_pages] PDF 생성 안 됨")
+            return 0, None
+
+        try:
+            with open(pdf_path, "rb") as pf:
+                pdf_bytes = pf.read()
+            doc = fitz.open(pdf_path)
+            total = len(doc)
+            for i, page in enumerate(doc, start=1):
+                mat = fitz.Matrix(1.5, 1.5)
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                img = Image.open(_io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                buf = _io.BytesIO()
+                img.save(buf, format="WEBP", quality=85)
+                webp_bytes = buf.getvalue()
+                supabase_admin.storage.from_(STORAGE_BUCKET).upload(
+                    f"{prefix}/{i}.webp",
+                    webp_bytes,
+                    {"content-type": "image/webp", "upsert": "true"},
+                )
+            doc.close()
+            print(f"[hwpx_pages] 페이지 {total}장 처리 완료: {prefix}")
+            return total, pdf_bytes
+        except Exception as e:
+            print(f"[hwpx_pages] 이미지 업로드 오류: {e}")
+            import traceback; traceback.print_exc()
+            return 0, None
+
+
+def _generate_and_upload_docx_pages(file_bytes: bytes, doc_id: str, ext: str = "docx") -> int:
+    """DOCX → LibreOffice PDF → WebP 페이지 이미지 생성 + Supabase 업로드.
+
+    Returns:
+        total_pages (int) — 성공 시 페이지 수, 실패 시 0
+    """
+    import subprocess, tempfile, os
+    import fitz  # PyMuPDF
+    from PIL import Image
+    import io as _io
+    import sys
+
+    prefix = f"{SLIDE_ASSETS_PREFIX}/{doc_id}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = os.path.join(tmpdir, f"input.{ext}")
+        with open(input_path, "wb") as f:
+            f.write(file_bytes)
+
+        # 1) LibreOffice로 DOCX → PDF 변환
+        if sys.platform == "win32":
+            soffice_path = r"C:\Program Files\LibreOffice\program\soffice.exe"
+        else:
+            soffice_path = "soffice"
+        try:
+            result = subprocess.run(
+                [soffice_path, "--headless", "--convert-to", "pdf", "--outdir", tmpdir, input_path],
+                capture_output=True, timeout=120
+            )
+            if result.returncode != 0:
+                print(f"[docx_pages] soffice 변환 실패: {result.stderr.decode()}")
+                return 0
+        except Exception as e:
+            print(f"[docx_pages] soffice 실행 오류: {e}")
+            return 0
+
+        pdf_path = os.path.join(tmpdir, "input.pdf")
+        if not os.path.exists(pdf_path):
+            print("[docx_pages] PDF 파일이 생성되지 않았습니다.")
+            return 0
+
+        # 2) PDF → WebP 페이지 이미지 (PyMuPDF → Pillow)
+        try:
+            doc = fitz.open(pdf_path)
+            total = len(doc)
+            for i, page in enumerate(doc, start=1):
+                mat = fitz.Matrix(1.5, 1.5)
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                img = Image.open(_io.BytesIO(pix.tobytes("png")))
+                buf = _io.BytesIO()
+                img.save(buf, format="WEBP", quality=85)
+                webp_bytes = buf.getvalue()
+                supabase_admin.storage.from_(STORAGE_BUCKET).upload(
+                    f"{prefix}/{i}.webp",
+                    webp_bytes,
+                    {"content-type": "image/webp", "upsert": "true"},
+                )
+            doc.close()
+            print(f"[docx_pages] 페이지 {total}장 처리 완료: {prefix}")
+            return total
+        except Exception as e:
+            print(f"[docx_pages] 이미지 생성/업로드 오류: {e}")
+            import traceback; traceback.print_exc()
+            return 0
+
+
 STORAGE_CONTENT_TYPES = {
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "ppt": "application/vnd.ms-powerpoint",
+
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",
     "png": "image/png",
@@ -406,10 +551,7 @@ async def upload_document(
             traceback.print_exc()
 
     # 1. Supabase Storage에 업로드
-    if ext == "hwpx":
-        # HWPX는 Supabase Storage MIME 타입 미지원 → Storage 저장 없이 마크다운만 DB 보관
-        storage_path = ""
-    elif ext in STORABLE_EXTENSIONS:
+    if ext in STORABLE_EXTENSIONS:
         storage_bytes = file_bytes
         storage_ext = ext
         content_type = STORAGE_CONTENT_TYPES[ext]
@@ -460,6 +602,15 @@ async def upload_document(
     if ext in ("pptx", "ppt"):
         _, pptx_vision = _generate_and_upload_slides(file_bytes, doc_id)
 
+    # 3-A2. DOCX: 페이지 이미지 생성 (LibreOffice PDF 변환 → WebP)
+    if ext == "docx":
+        _generate_and_upload_docx_pages(file_bytes, doc_id)
+    # 3-A3. HWPX: pyhwpx → PDF → WebP 페이지 이미지
+    hwpx_page_count: int = 0
+    hwpx_pdf_bytes: bytes | None = None
+    if ext == "hwpx":
+        hwpx_page_count, hwpx_pdf_bytes = _generate_and_upload_hwpx_pages(file_bytes, doc_id)
+
     # 3-B. PDF: 이미지 페이지 Vision AI 분석 (RAG보다 먼저)
     pdf_vision: dict = {}
     if ext == "pdf":
@@ -470,6 +621,8 @@ async def upload_document(
         chunk_count, page_count = ingest_document(
             file_bytes, doc_id, filename=file.filename,
             pptx_vision=pptx_vision, pdf_vision=pdf_vision,
+            hwpx_page_count=hwpx_page_count,
+            hwpx_pdf_bytes=hwpx_pdf_bytes,
         )
     except Exception as e:
         import traceback
@@ -489,11 +642,12 @@ async def upload_document(
         except Exception as e:
             print(f"[HWPX] 마크다운 DB 저장 실패: {e}")
 
-    # 5. 상태 업데이트
+    # 5. 상태 업데이트 (HWPX는 실제 페이지 수 사용)
+    final_page_count = hwpx_page_count if (ext == "hwpx" and hwpx_page_count > 0) else page_count
     supabase_admin.table("documents").update({
         "status": "ready",
         "chunk_count": chunk_count,
-        "page_count": page_count,
+        "page_count": final_page_count,
     }).eq("id", doc_id).execute()
 
     return {
