@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # ── OpenAI ──
     OPENAI_API_KEY: str = ""  # 아직 없으면 빈 문자열로 시작 가능
 
+    # ── Anthropic ──
+    ANTHROPIC_API_KEY: str = ""
+
     # ── ElevenLabs ──
     ELEVENLABS_API_KEY: str = ""
 
