@@ -930,6 +930,16 @@ export function StudentChatPanel({
                 }
                 return next;
               });
+            } else if (parsed.rewrite) {
+              streamingContent = parsed.rewrite;
+              setMessages(prev => {
+                const next = [...prev];
+                const lastIdx = next.length - 1;
+                if (next[lastIdx]?.type === 'ai') {
+                  next[lastIdx] = { ...next[lastIdx], content: parsed.rewrite };
+                }
+                return next;
+              });
             } else if (parsed.error) {
               streamError = parsed.error;
               break outer;
@@ -1519,7 +1529,10 @@ export function StudentChatPanel({
                     )
                     : msg.type === 'ai'
                     ? <MarkdownPreview
-                        content={msg.content}
+                        content={msg.content
+                          .replace(/\[SUGGESTED_QUESTIONS\][\s\S]*?(\[\/SUGGESTED_QUESTIONS\]|$)/g, '')
+                          .trimEnd()
+                          .replace(/([^\n])\n(#{1,6} )/g, '$1\n\n$2')}
                         className="text-[#1a1d26]"
                         transformText={(text) =>
                           renderMessageContent(
