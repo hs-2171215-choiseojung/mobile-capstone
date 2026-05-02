@@ -102,10 +102,10 @@ function prepareTtsText(raw: string): string {
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')          // [링크](url)
     .replace(/^\s*[-*+]\s+/gm, '')                    // - 목록
     .replace(/^\s*\d+\.\s+/gm, '')                    // 1. 번호 목록
-    .replace(/\[슬라이드[^\]]*\]/g, '')               // [슬라이드 N] 참조
-    .replace(/\[출처[^\]]*\]/g, '')                   // [출처 N] 참조
-    .replace(/페이지\s*\d+/g, '')                     // 페이지 N
-    .replace(/\[\d+\]/g, '')                          // [1] 인용
+    .replace(/\[슬라이드\s*(\d+[^\]]*)\]/g, '슬라이드 $1') // [슬라이드 3] → "슬라이드 3"
+    .replace(/\[페이지\s*(\d+[^\]]*)\]/g, '페이지 $1')     // [페이지 5] → "페이지 5"
+    .replace(/\[출처[^\]]*\]/g, '')                   // [출처 N] — 출처 레이블은 제거
+    .replace(/\[\d+\]/g, '')                          // [1] 인용번호 제거
     .replace(/\n{3,}/g, '\n\n')                       // 연속 빈 줄
     .trim()
     .slice(0, MAX_TTS_CHARS);
@@ -927,6 +927,16 @@ export function StudentChatPanel({
                 const lastIdx = next.length - 1;
                 if (next[lastIdx]?.type === 'ai') {
                   next[lastIdx] = { ...next[lastIdx], content: streamingContent };
+                }
+                return next;
+              });
+            } else if (parsed.rewrite) {
+              streamingContent = parsed.rewrite;
+              setMessages(prev => {
+                const next = [...prev];
+                const lastIdx = next.length - 1;
+                if (next[lastIdx]?.type === 'ai') {
+                  next[lastIdx] = { ...next[lastIdx], content: parsed.rewrite };
                 }
                 return next;
               });
