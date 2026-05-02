@@ -47,6 +47,41 @@ _MEDIA_TRANSCRIPT_HEADER_RE = re.compile(r"^\[(?:음성 전사 내용 - .*?|MEDI
 
 
 # ─────────────────────────────────────────────
+# 멀티 LLM 헬퍼
+# ─────────────────────────────────────────────
+
+def _is_claude(model: str) -> bool:
+    return model.startswith("claude-")
+
+def _convert_messages_for_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
+    """OpenAI 형식 messages → Anthropic 형식 (system 분리, 이미지 포맷 변환)"""
+    system = ""
+    anthropic_msgs: list[dict] = []
+    for msg in messages:
+        if msg["role"] == "system":
+            system = msg["content"] if isinstance(msg["content"], str) else ""
+            continue
+        content = msg["content"]
+        if isinstance(content, list):
+            new_parts: list[dict] = []
+            for part in content:
+                if part.get("type") == "text":
+                    new_parts.append({"type": "text", "text": part["text"]})
+                elif part.get("type") == "image_url":
+                    url = part["image_url"]["url"]
+                    if url.startswith("data:"):
+                        header, b64data = url.split(",", 1)
+                        media_type = header.split(":")[1].split(";")[0]
+                        new_parts.append({
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": media_type, "data": b64data},
+                        })
+            anthropic_msgs.append({"role": msg["role"], "content": new_parts})
+        else:
+            anthropic_msgs.append({"role": msg["role"], "content": content})
+    return system, anthropic_msgs
+
+# ─────────────────────────────────────────────
 # 텍스트 정제
 # ─────────────────────────────────────────────
 
@@ -3219,15 +3254,16 @@ def chat_with_docs(
     has_images = len(image_docs) > 0
     has_non_image = len(non_image_ids) > 0
 
-    # 이미지 base64 수집
+    # 이미지 base64 수집 (최대 1568px 리사이즈 + JPEG 압축 후 전송)
+    # OpenAI detail:high는 512px 타일 단위 과금이므로 원본 고해상도는 토큰 낭비
     image_parts: list[dict] = []
     for img in image_docs:
         raw = _download_image_b64(img["storage_path"])
         if raw:
-            b64 = base64.b64encode(raw).decode("utf-8")
+            b64, mime = _compress_image_to_base64(raw, max_width=1568, quality=85)
             image_parts.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:{img['mime_type']};base64,{b64}", "detail": "high"},
+                "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
             })
 
     # ── 컨텍스트 구성 ─────────────────────────────
@@ -3656,13 +3692,18 @@ def chat_with_docs(
     else:
         messages.append({"role": "user", "content": question})
 
-    # 이미지가 있으면 Vision 지원 모델 강제
-    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-    if image_parts and safe_model == "gpt-4o-mini":
-        safe_model = "gpt-4o-mini"  # gpt-4o-mini도 vision 지원
-    elif image_parts and "gpt-4o" not in safe_model:
-        safe_model = "gpt-4o"
+    # 허용 모델 결정
+    if _is_claude(model):
+        safe_model = model  # Claude 계열은 그대로 허용 (vision 지원)
+    elif model.startswith("gpt"):
+        safe_model = model
+        if image_parts and "gpt-4o" not in safe_model:
+            safe_model = "gpt-4o"
+    else:
+        safe_model = "gpt-4o-mini"
 
+    use_claude = _is_claude(safe_model)
+    # youtube_only 재작성 등 팀원 코드는 OpenAI 클라이언트 유지
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
     if stream:
@@ -3685,6 +3726,7 @@ def chat_with_docs(
                     _sugg_result.extend(generate_suggestions(
                         doc_ids=_stream_meta["doc_ids"],
                         asked_questions=_stream_meta["asked_questions"],
+                        model=safe_model,
                     ))
                 except Exception:
                     pass
@@ -3692,22 +3734,128 @@ def chat_with_docs(
             sugg_thread = threading.Thread(target=_gen_sugg, daemon=True)
             sugg_thread.start()
 
+            full_answer_parts: list[str] = []
+            _SUGG_MARKER = "[SUGGESTED_QUESTIONS]"
+            _sugg_tail = ""   # 마커 시작 감지용 슬라이딩 버퍼
+            _stop_stream = False
+
+            def _yield_token(text: str):
+                """[SUGGESTED_QUESTIONS] 마커 감지 시 스트리밍 중단."""
+                nonlocal _sugg_tail, _stop_stream
+                if _stop_stream:
+                    return
+                combined = _sugg_tail + text
+                idx = combined.find(_SUGG_MARKER)
+                if idx != -1:
+                    _stop_stream = True
+                    before = combined[:idx]
+                    if before:
+                        full_answer_parts.append(before)
+                        yield f"data: {_json.dumps({'token': before})}\n\n"
+                    return
+                # 마커가 걸쳐있을 수 있는 접미사만 버퍼에 유지
+                keep = len(_SUGG_MARKER) - 1
+                if len(combined) > keep:
+                    safe = combined[:-keep]
+                    full_answer_parts.append(safe)
+                    yield f"data: {_json.dumps({'token': safe})}\n\n"
+                    _sugg_tail = combined[-keep:]
+                else:
+                    _sugg_tail = combined
+
             try:
-                stream_response = client.chat.completions.create(
-                    model=safe_model,
-                    messages=messages,  # type: ignore
-                    temperature=0.3,
-                    max_tokens=1500 if not is_full_doc_query else 3000,
-                    stream=True,
-                )
-                for chunk in stream_response:
-                    text = (chunk.choices[0].delta.content
-                            if chunk.choices and chunk.choices[0].delta else None)
-                    if text:
-                        yield f"data: {_json.dumps({'token': text})}\n\n"
+                max_tok = 1500 if not is_full_doc_query else 3000
+                if use_claude:
+                    from anthropic import Anthropic as _Anthropic
+                    _claude = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+                    _sys, _msgs = _convert_messages_for_anthropic(messages)
+                    with _claude.messages.stream(
+                        model=safe_model,
+                        max_tokens=max_tok,
+                        system=_sys,
+                        messages=_msgs,  # type: ignore
+                        temperature=0.3,
+                    ) as stream:
+                        for text in stream.text_stream:
+                            yield from _yield_token(text)
+                            if _stop_stream:
+                                break
+                else:
+                    stream_response = client.chat.completions.create(
+                        model=safe_model,
+                        messages=messages,  # type: ignore
+                        temperature=0.3,
+                        max_tokens=max_tok,
+                        stream=True,
+                    )
+                    for chunk in stream_response:
+                        text = (chunk.choices[0].delta.content
+                                if chunk.choices and chunk.choices[0].delta else None)
+                        if text:
+                            yield from _yield_token(text)
+                            if _stop_stream:
+                                break
+                # 버퍼 잔량 flush
+                if _sugg_tail and not _stop_stream:
+                    full_answer_parts.append(_sugg_tail)
+                    yield f"data: {_json.dumps({'token': _sugg_tail})}\n\n"
             except Exception as e:
                 yield f"data: {_json.dumps({'error': str(e)})}\n\n"
                 return
+
+            # 유튜브 전용: 스트리밍 완료 후 타임스탬프 재작성
+            full_answer = "".join(full_answer_parts)
+            final_refs = _stream_meta["references"]
+            if youtube_only and full_answer.strip():
+                try:
+                    aligned_rows = _get_semantic_rows(youtube_doc_ids, full_answer, top_k=max(TOP_K, 6))
+                    aligned_references = _build_media_references(aligned_rows)
+                    aligned_ref_lines = _format_reference_lines(aligned_references)
+                    if aligned_ref_lines:
+                        rewrite_msgs = [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "너는 유튜브 자막을 근거로 답변을 다듬는 도우미다. "
+                                    "초안 답변의 의미와 구조는 유지하되, 아래 자막 근거를 다시 읽고 "
+                                    "질문과 직접 관련된 설명 부분의 시간만 답변 본문 안에 자연스럽게 붙여 다시 작성하라. "
+                                    "별도의 관련 시점 목록은 만들지 말고, 이어지는 설명이면 범위 표기를 우선하라."
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"질문:\n{_stream_meta['question']}\n\n"
+                                    f"초안 답변:\n{full_answer}\n\n"
+                                    f"자막 근거:\n{aligned_ref_lines}"
+                                ),
+                            },
+                        ]
+                        if use_claude:
+                            from anthropic import Anthropic as _Anthropic
+                            _claude_rw = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+                            _sys_rw, _msgs_rw = _convert_messages_for_anthropic(rewrite_msgs)
+                            _rw_resp = _claude_rw.messages.create(
+                                model=safe_model,
+                                max_tokens=2000,
+                                system=_sys_rw,
+                                messages=_msgs_rw,  # type: ignore
+                                temperature=0.2,
+                            )
+                            rewritten = (_rw_resp.content[0].text if _rw_resp.content else "").strip()
+                        else:
+                            rewrite_resp = client.chat.completions.create(
+                                model="gpt-4o-mini",
+                                messages=rewrite_msgs,
+                                temperature=0.2,
+                                max_tokens=2000,
+                            )
+                            rewritten = (rewrite_resp.choices[0].message.content or "").strip()
+                        if rewritten:
+                            final_refs = aligned_references
+                            yield f"data: {_json.dumps({'rewrite': rewritten})}\n\n"
+                except Exception:
+                    pass
 
             # 추천 질문 스레드 대기 (스트리밍 중 이미 완료됐을 가능성 높음)
             sugg_thread.join(timeout=5)
@@ -3716,17 +3864,31 @@ def chat_with_docs(
             for c in sc:
                 c.pop("full_text", None)
             srcs: list[Any] = sc if sc else _get_filenames(_stream_meta["doc_ids"])
-            yield f"data: {_json.dumps({'done': True, 'sources': srcs, 'references': _stream_meta['references'], 'suggestions': _sugg_result})}\n\n"
+            yield f"data: {_json.dumps({'done': True, 'sources': srcs, 'references': final_refs, 'suggestions': _sugg_result})}\n\n"
 
         return _token_generator(), [], []  # type: ignore
 
-    response = client.chat.completions.create(
-        model=safe_model,
-        messages=messages,  # type: ignore
-        temperature=0.3,
-        max_tokens=1500 if not is_full_doc_query else 3000,
-    )
-    answer = response.choices[0].message.content or ""
+    max_tok = 1500 if not is_full_doc_query else 3000
+    if use_claude:
+        from anthropic import Anthropic as _Anthropic
+        _claude = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        _sys, _msgs = _convert_messages_for_anthropic(messages)
+        _resp = _claude.messages.create(
+            model=safe_model,
+            max_tokens=max_tok,
+            system=_sys,
+            messages=_msgs,  # type: ignore
+            temperature=0.3,
+        )
+        answer = _resp.content[0].text if _resp.content else ""
+    else:
+        response = client.chat.completions.create(
+            model=safe_model,
+            messages=messages,  # type: ignore
+            temperature=0.3,
+            max_tokens=max_tok,
+        )
+        answer = response.choices[0].message.content or ""
 
     if youtube_only and answer.strip():
         aligned_rows = _get_semantic_rows(youtube_doc_ids, answer, top_k=max(TOP_K, 6))
@@ -4811,15 +4973,15 @@ def generate_suggestions(
     subjects_str = ", ".join(dict.fromkeys(all_subjects))
     primary_img_type = all_img_types[0] if all_img_types else "photo"
 
-    # 이미지 base64 수집
+    # 이미지 base64 수집 (최대 1568px 리사이즈 + JPEG 압축 후 전송)
     image_parts: list[dict] = []
     for img in image_docs:
         raw = _download_image_b64(img["storage_path"])
         if raw:
-            b64 = base64.b64encode(raw).decode("utf-8")
+            b64, mime = _compress_image_to_base64(raw, max_width=1568, quality=85)
             image_parts.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:{img['mime_type']};base64,{b64}", "detail": "high"},
+                "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
             })
 
     asked_block = ""
