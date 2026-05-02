@@ -47,6 +47,41 @@ _MEDIA_TRANSCRIPT_HEADER_RE = re.compile(r"^\[(?:음성 전사 내용 - .*?|MEDI
 
 
 # ─────────────────────────────────────────────
+# 멀티 LLM 헬퍼
+# ─────────────────────────────────────────────
+
+def _is_claude(model: str) -> bool:
+    return model.startswith("claude-")
+
+def _convert_messages_for_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
+    """OpenAI 형식 messages → Anthropic 형식 (system 분리, 이미지 포맷 변환)"""
+    system = ""
+    anthropic_msgs: list[dict] = []
+    for msg in messages:
+        if msg["role"] == "system":
+            system = msg["content"] if isinstance(msg["content"], str) else ""
+            continue
+        content = msg["content"]
+        if isinstance(content, list):
+            new_parts: list[dict] = []
+            for part in content:
+                if part.get("type") == "text":
+                    new_parts.append({"type": "text", "text": part["text"]})
+                elif part.get("type") == "image_url":
+                    url = part["image_url"]["url"]
+                    if url.startswith("data:"):
+                        header, b64data = url.split(",", 1)
+                        media_type = header.split(":")[1].split(";")[0]
+                        new_parts.append({
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": media_type, "data": b64data},
+                        })
+            anthropic_msgs.append({"role": msg["role"], "content": new_parts})
+        else:
+            anthropic_msgs.append({"role": msg["role"], "content": content})
+    return system, anthropic_msgs
+
+# ─────────────────────────────────────────────
 # 텍스트 정제
 # ─────────────────────────────────────────────
 
@@ -3657,13 +3692,18 @@ def chat_with_docs(
     else:
         messages.append({"role": "user", "content": question})
 
-    # 이미지가 있으면 Vision 지원 모델 강제
-    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-    if image_parts and safe_model == "gpt-4o-mini":
-        safe_model = "gpt-4o-mini"  # gpt-4o-mini도 vision 지원
-    elif image_parts and "gpt-4o" not in safe_model:
-        safe_model = "gpt-4o"
+    # 허용 모델 결정
+    if _is_claude(model):
+        safe_model = model  # Claude 계열은 그대로 허용 (vision 지원)
+    elif model.startswith("gpt"):
+        safe_model = model
+        if image_parts and "gpt-4o" not in safe_model:
+            safe_model = "gpt-4o"
+    else:
+        safe_model = "gpt-4o-mini"
 
+    use_claude = _is_claude(safe_model)
+    # youtube_only 재작성 등 팀원 코드는 OpenAI 클라이언트 유지
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
     if stream:
@@ -3694,18 +3734,33 @@ def chat_with_docs(
             sugg_thread.start()
 
             try:
-                stream_response = client.chat.completions.create(
-                    model=safe_model,
-                    messages=messages,  # type: ignore
-                    temperature=0.3,
-                    max_tokens=1500 if not is_full_doc_query else 3000,
-                    stream=True,
-                )
-                for chunk in stream_response:
-                    text = (chunk.choices[0].delta.content
-                            if chunk.choices and chunk.choices[0].delta else None)
-                    if text:
-                        yield f"data: {_json.dumps({'token': text})}\n\n"
+                max_tok = 1500 if not is_full_doc_query else 3000
+                if use_claude:
+                    from anthropic import Anthropic as _Anthropic
+                    _claude = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+                    _sys, _msgs = _convert_messages_for_anthropic(messages)
+                    with _claude.messages.stream(
+                        model=safe_model,
+                        max_tokens=max_tok,
+                        system=_sys,
+                        messages=_msgs,  # type: ignore
+                        temperature=0.3,
+                    ) as stream:
+                        for text in stream.text_stream:
+                            yield f"data: {_json.dumps({'token': text})}\n\n"
+                else:
+                    stream_response = client.chat.completions.create(
+                        model=safe_model,
+                        messages=messages,  # type: ignore
+                        temperature=0.3,
+                        max_tokens=max_tok,
+                        stream=True,
+                    )
+                    for chunk in stream_response:
+                        text = (chunk.choices[0].delta.content
+                                if chunk.choices and chunk.choices[0].delta else None)
+                        if text:
+                            yield f"data: {_json.dumps({'token': text})}\n\n"
             except Exception as e:
                 yield f"data: {_json.dumps({'error': str(e)})}\n\n"
                 return
@@ -3721,13 +3776,27 @@ def chat_with_docs(
 
         return _token_generator(), [], []  # type: ignore
 
-    response = client.chat.completions.create(
-        model=safe_model,
-        messages=messages,  # type: ignore
-        temperature=0.3,
-        max_tokens=1500 if not is_full_doc_query else 3000,
-    )
-    answer = response.choices[0].message.content or ""
+    max_tok = 1500 if not is_full_doc_query else 3000
+    if use_claude:
+        from anthropic import Anthropic as _Anthropic
+        _claude = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        _sys, _msgs = _convert_messages_for_anthropic(messages)
+        _resp = _claude.messages.create(
+            model=safe_model,
+            max_tokens=max_tok,
+            system=_sys,
+            messages=_msgs,  # type: ignore
+            temperature=0.3,
+        )
+        answer = _resp.content[0].text if _resp.content else ""
+    else:
+        response = client.chat.completions.create(
+            model=safe_model,
+            messages=messages,  # type: ignore
+            temperature=0.3,
+            max_tokens=max_tok,
+        )
+        answer = response.choices[0].message.content or ""
 
     if youtube_only and answer.strip():
         aligned_rows = _get_semantic_rows(youtube_doc_ids, answer, top_k=max(TOP_K, 6))
