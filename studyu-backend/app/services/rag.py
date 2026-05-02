@@ -3219,15 +3219,16 @@ def chat_with_docs(
     has_images = len(image_docs) > 0
     has_non_image = len(non_image_ids) > 0
 
-    # 이미지 base64 수집
+    # 이미지 base64 수집 (최대 1568px 리사이즈 + JPEG 압축 후 전송)
+    # OpenAI detail:high는 512px 타일 단위 과금이므로 원본 고해상도는 토큰 낭비
     image_parts: list[dict] = []
     for img in image_docs:
         raw = _download_image_b64(img["storage_path"])
         if raw:
-            b64 = base64.b64encode(raw).decode("utf-8")
+            b64, mime = _compress_image_to_base64(raw, max_width=1568, quality=85)
             image_parts.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:{img['mime_type']};base64,{b64}", "detail": "high"},
+                "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
             })
 
     # ── 컨텍스트 구성 ─────────────────────────────
@@ -3692,6 +3693,7 @@ def chat_with_docs(
             sugg_thread = threading.Thread(target=_gen_sugg, daemon=True)
             sugg_thread.start()
 
+            full_answer_parts: list[str] = []
             try:
                 stream_response = client.chat.completions.create(
                     model=safe_model,
@@ -3704,10 +3706,54 @@ def chat_with_docs(
                     text = (chunk.choices[0].delta.content
                             if chunk.choices and chunk.choices[0].delta else None)
                     if text:
+                        full_answer_parts.append(text)
                         yield f"data: {_json.dumps({'token': text})}\n\n"
             except Exception as e:
                 yield f"data: {_json.dumps({'error': str(e)})}\n\n"
                 return
+
+            # 유튜브 전용: 스트리밍 완료 후 타임스탬프 재작성 (비스트리밍 경로와 동일)
+            full_answer = "".join(full_answer_parts)
+            final_refs = _stream_meta["references"]
+            if youtube_only and full_answer.strip():
+                try:
+                    aligned_rows = _get_semantic_rows(youtube_doc_ids, full_answer, top_k=max(TOP_K, 6))
+                    aligned_references = _build_media_references(aligned_rows)
+                    aligned_ref_lines = _format_reference_lines(aligned_references)
+                    if aligned_ref_lines:
+                        rewrite_msgs = [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "너는 유튜브 자막을 근거로 답변을 다듬는 도우미다. "
+                                    "초안 답변의 의미와 구조는 유지하되, 아래 자막 근거를 다시 읽고 "
+                                    "질문과 직접 관련된 설명 부분의 시간만 답변 본문 안에 자연스럽게 붙여 다시 작성하라. "
+                                    "별도의 관련 시점 목록은 만들지 말고, 이어지는 설명이면 범위 표기를 우선하라."
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"질문:\n{_stream_meta['question']}\n\n"
+                                    f"초안 답변:\n{full_answer}\n\n"
+                                    f"자막 근거:\n{aligned_ref_lines}"
+                                ),
+                            },
+                        ]
+                        rewrite_resp = client.chat.completions.create(
+                            model=safe_model,
+                            messages=rewrite_msgs,
+                            temperature=0.2,
+                            max_tokens=2000,
+                        )
+                        rewritten = (rewrite_resp.choices[0].message.content or "").strip()
+                        if rewritten:
+                            full_answer = rewritten
+                            final_refs = aligned_references
+                            # 재작성된 전체 answer를 프론트에 전달
+                            yield f"data: {_json.dumps({'rewrite': rewritten})}\n\n"
+                except Exception:
+                    pass
 
             # 추천 질문 스레드 대기 (스트리밍 중 이미 완료됐을 가능성 높음)
             sugg_thread.join(timeout=5)
@@ -3716,7 +3762,7 @@ def chat_with_docs(
             for c in sc:
                 c.pop("full_text", None)
             srcs: list[Any] = sc if sc else _get_filenames(_stream_meta["doc_ids"])
-            yield f"data: {_json.dumps({'done': True, 'sources': srcs, 'references': _stream_meta['references'], 'suggestions': _sugg_result})}\n\n"
+            yield f"data: {_json.dumps({'done': True, 'sources': srcs, 'references': final_refs, 'suggestions': _sugg_result})}\n\n"
 
         return _token_generator(), [], []  # type: ignore
 
@@ -4811,15 +4857,15 @@ def generate_suggestions(
     subjects_str = ", ".join(dict.fromkeys(all_subjects))
     primary_img_type = all_img_types[0] if all_img_types else "photo"
 
-    # 이미지 base64 수집
+    # 이미지 base64 수집 (최대 1568px 리사이즈 + JPEG 압축 후 전송)
     image_parts: list[dict] = []
     for img in image_docs:
         raw = _download_image_b64(img["storage_path"])
         if raw:
-            b64 = base64.b64encode(raw).decode("utf-8")
+            b64, mime = _compress_image_to_base64(raw, max_width=1568, quality=85)
             image_parts.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:{img['mime_type']};base64,{b64}", "detail": "high"},
+                "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
             })
 
     asked_block = ""
