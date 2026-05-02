@@ -3726,12 +3726,42 @@ def chat_with_docs(
                     _sugg_result.extend(generate_suggestions(
                         doc_ids=_stream_meta["doc_ids"],
                         asked_questions=_stream_meta["asked_questions"],
+                        model=safe_model,
                     ))
                 except Exception:
                     pass
 
             sugg_thread = threading.Thread(target=_gen_sugg, daemon=True)
             sugg_thread.start()
+
+            full_answer_parts: list[str] = []
+            _SUGG_MARKER = "[SUGGESTED_QUESTIONS]"
+            _sugg_tail = ""   # 마커 시작 감지용 슬라이딩 버퍼
+            _stop_stream = False
+
+            def _yield_token(text: str):
+                """[SUGGESTED_QUESTIONS] 마커 감지 시 스트리밍 중단."""
+                nonlocal _sugg_tail, _stop_stream
+                if _stop_stream:
+                    return
+                combined = _sugg_tail + text
+                idx = combined.find(_SUGG_MARKER)
+                if idx != -1:
+                    _stop_stream = True
+                    before = combined[:idx]
+                    if before:
+                        full_answer_parts.append(before)
+                        yield f"data: {_json.dumps({'token': before})}\n\n"
+                    return
+                # 마커가 걸쳐있을 수 있는 접미사만 버퍼에 유지
+                keep = len(_SUGG_MARKER) - 1
+                if len(combined) > keep:
+                    safe = combined[:-keep]
+                    full_answer_parts.append(safe)
+                    yield f"data: {_json.dumps({'token': safe})}\n\n"
+                    _sugg_tail = combined[-keep:]
+                else:
+                    _sugg_tail = combined
 
             try:
                 max_tok = 1500 if not is_full_doc_query else 3000
@@ -3747,7 +3777,9 @@ def chat_with_docs(
                         temperature=0.3,
                     ) as stream:
                         for text in stream.text_stream:
-                            yield f"data: {_json.dumps({'token': text})}\n\n"
+                            yield from _yield_token(text)
+                            if _stop_stream:
+                                break
                 else:
                     stream_response = client.chat.completions.create(
                         model=safe_model,
@@ -3760,10 +3792,70 @@ def chat_with_docs(
                         text = (chunk.choices[0].delta.content
                                 if chunk.choices and chunk.choices[0].delta else None)
                         if text:
-                            yield f"data: {_json.dumps({'token': text})}\n\n"
+                            yield from _yield_token(text)
+                            if _stop_stream:
+                                break
+                # 버퍼 잔량 flush
+                if _sugg_tail and not _stop_stream:
+                    full_answer_parts.append(_sugg_tail)
+                    yield f"data: {_json.dumps({'token': _sugg_tail})}\n\n"
             except Exception as e:
                 yield f"data: {_json.dumps({'error': str(e)})}\n\n"
                 return
+
+            # 유튜브 전용: 스트리밍 완료 후 타임스탬프 재작성
+            full_answer = "".join(full_answer_parts)
+            final_refs = _stream_meta["references"]
+            if youtube_only and full_answer.strip():
+                try:
+                    aligned_rows = _get_semantic_rows(youtube_doc_ids, full_answer, top_k=max(TOP_K, 6))
+                    aligned_references = _build_media_references(aligned_rows)
+                    aligned_ref_lines = _format_reference_lines(aligned_references)
+                    if aligned_ref_lines:
+                        rewrite_msgs = [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "너는 유튜브 자막을 근거로 답변을 다듬는 도우미다. "
+                                    "초안 답변의 의미와 구조는 유지하되, 아래 자막 근거를 다시 읽고 "
+                                    "질문과 직접 관련된 설명 부분의 시간만 답변 본문 안에 자연스럽게 붙여 다시 작성하라. "
+                                    "별도의 관련 시점 목록은 만들지 말고, 이어지는 설명이면 범위 표기를 우선하라."
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"질문:\n{_stream_meta['question']}\n\n"
+                                    f"초안 답변:\n{full_answer}\n\n"
+                                    f"자막 근거:\n{aligned_ref_lines}"
+                                ),
+                            },
+                        ]
+                        if use_claude:
+                            from anthropic import Anthropic as _Anthropic
+                            _claude_rw = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+                            _sys_rw, _msgs_rw = _convert_messages_for_anthropic(rewrite_msgs)
+                            _rw_resp = _claude_rw.messages.create(
+                                model=safe_model,
+                                max_tokens=2000,
+                                system=_sys_rw,
+                                messages=_msgs_rw,  # type: ignore
+                                temperature=0.2,
+                            )
+                            rewritten = (_rw_resp.content[0].text if _rw_resp.content else "").strip()
+                        else:
+                            rewrite_resp = client.chat.completions.create(
+                                model="gpt-4o-mini",
+                                messages=rewrite_msgs,
+                                temperature=0.2,
+                                max_tokens=2000,
+                            )
+                            rewritten = (rewrite_resp.choices[0].message.content or "").strip()
+                        if rewritten:
+                            final_refs = aligned_references
+                            yield f"data: {_json.dumps({'rewrite': rewritten})}\n\n"
+                except Exception:
+                    pass
 
             # 추천 질문 스레드 대기 (스트리밍 중 이미 완료됐을 가능성 높음)
             sugg_thread.join(timeout=5)
@@ -3772,7 +3864,7 @@ def chat_with_docs(
             for c in sc:
                 c.pop("full_text", None)
             srcs: list[Any] = sc if sc else _get_filenames(_stream_meta["doc_ids"])
-            yield f"data: {_json.dumps({'done': True, 'sources': srcs, 'references': _stream_meta['references'], 'suggestions': _sugg_result})}\n\n"
+            yield f"data: {_json.dumps({'done': True, 'sources': srcs, 'references': final_refs, 'suggestions': _sugg_result})}\n\n"
 
         return _token_generator(), [], []  # type: ignore
 
