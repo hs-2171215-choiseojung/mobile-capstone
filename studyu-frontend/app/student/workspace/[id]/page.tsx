@@ -775,9 +775,10 @@ export default function StudentWorkspacePage() {
               <div className="flex items-center gap-2">
                 <div className="relative">
                   <select value={selectedLLM} onChange={(e) => setSelectedLLM(e.target.value)} className="appearance-none bg-[#f8f9fb] border border-[#e7e9ed] hover:bg-[#e7e9ed] text-[#414751] text-[12px] font-medium pl-4 pr-8 py-1.5 rounded-full focus:outline-none focus:ring-2 focus:ring-[#155dfc]/20 transition-colors cursor-pointer shadow-sm">
+                    <option value="gpt-4o-mini">GPT-4o mini</option>
                     <option value="gpt-4o">GPT-4o</option>
-                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                    <option value="claud-3-opus">Claude 3 Opus</option>
+                    <option value="claude-haiku-4-5-20251001">Claude Haiku</option>
+                    <option value="claude-sonnet-4-6">Claude Sonnet</option>
                   </select>
                   <ChevronDown className="w-3.5 h-3.5 text-[#99a1af] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 </div>
