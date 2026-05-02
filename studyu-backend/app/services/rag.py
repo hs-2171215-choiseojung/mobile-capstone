@@ -3914,13 +3914,26 @@ def chat_with_docs(
                     ),
                 },
             ]
-            rewrite_response = client.chat.completions.create(
-                model=safe_model,
-                messages=rewrite_messages,
-                temperature=0.2,
-                max_tokens=2000,
-            )
-            rewritten_answer = rewrite_response.choices[0].message.content or ""
+            if use_claude:
+                from anthropic import Anthropic as _Anthropic
+                _claude_rw = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+                _sys_rw, _msgs_rw = _convert_messages_for_anthropic(rewrite_messages)
+                _rw_resp = _claude_rw.messages.create(
+                    model=safe_model,
+                    max_tokens=2000,
+                    system=_sys_rw,
+                    messages=_msgs_rw,  # type: ignore
+                    temperature=0.2,
+                )
+                rewritten_answer = (_rw_resp.content[0].text if _rw_resp.content else "").strip()
+            else:
+                rewrite_response = client.chat.completions.create(
+                    model=safe_model,
+                    messages=rewrite_messages,
+                    temperature=0.2,
+                    max_tokens=2000,
+                )
+                rewritten_answer = rewrite_response.choices[0].message.content or ""
             if rewritten_answer.strip():
                 answer = rewritten_answer
                 references = aligned_references
