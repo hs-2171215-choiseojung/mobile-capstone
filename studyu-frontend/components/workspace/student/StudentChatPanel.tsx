@@ -930,16 +930,6 @@ export function StudentChatPanel({
                 }
                 return next;
               });
-            } else if (parsed.rewrite) {
-              streamingContent = parsed.rewrite;
-              setMessages(prev => {
-                const next = [...prev];
-                const lastIdx = next.length - 1;
-                if (next[lastIdx]?.type === 'ai') {
-                  next[lastIdx] = { ...next[lastIdx], content: parsed.rewrite };
-                }
-                return next;
-              });
             } else if (parsed.error) {
               streamError = parsed.error;
               break outer;
