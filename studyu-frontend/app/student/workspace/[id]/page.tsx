@@ -662,6 +662,7 @@ export default function StudentWorkspacePage() {
                     loading={isSourceLoading}
                     error={selectedSourceError}
                     transcriptText={selectedSourceTranscript}
+                    mediaTimeline={selectedSourceTimeline}
                     seekRequest={selectedSourceSeekRequest}
                     onMediaInfoChange={({ kind, duration }) => {
                       setSelectedSourceMediaType(kind);

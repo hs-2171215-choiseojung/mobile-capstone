@@ -140,6 +140,7 @@ export function SharedSourceViewer({
   const videoSectionRef = useRef<HTMLDivElement | null>(null);
   const [videoPaneHeight, setVideoPaneHeight] = useState(420);
   const [activeTab, setActiveTab] = useState<"document" | "text">("document");
+  const [showMediaTranscript, setShowMediaTranscript] = useState(false);
 
   // highlightRange 가 설정되면 자동으로 텍스트 탭으로 전환 (DOCX/HWP/HWPX)
   useEffect(() => {
@@ -245,6 +246,11 @@ export function SharedSourceViewer({
   const youtubeEmbedUrl = mediaUrl ? getYoutubeEmbedUrl(mediaUrl) : "";
   const isEmbeddableYoutube = Boolean(youtubeEmbedUrl);
   const isMediaLike = isVideo || isAudio || isEmbeddableYoutube;
+  const hasMediaTranscript = timelineEntries.length > 0 || typeof transcriptText === "string";
+
+  useEffect(() => {
+    setShowMediaTranscript(false);
+  }, [source.id]);
 
   const seekMedia = useCallback((seconds: number) => {
     if (isEmbeddableYoutube && iframeRef.current) {
@@ -385,19 +391,8 @@ export function SharedSourceViewer({
           {heading ? (
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{heading}</p>
           ) : null}
-          <div className="space-y-3">
-            {timelineEntries.map((entry, index) => (
-              <div key={`${entry.time_sec}-${index}`} className="rounded-xl border border-gray-200 bg-white p-4">
-                <button
-                  type="button"
-                  onClick={() => seekMedia(entry.time_sec)}
-                  className="text-sm font-semibold text-blue-600 hover:text-blue-700 hover:underline"
-                >
-                  {formatTimestamp(entry.time_sec)}
-                </button>
-                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-gray-700">{entry.text}</p>
-              </div>
-            ))}
+          <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm leading-relaxed text-gray-700 whitespace-pre-wrap">
+            {timelineEntries.map((entry) => entry.text.trim()).filter(Boolean).join("\n\n")}
           </div>
         </div>
       );
@@ -437,6 +432,15 @@ export function SharedSourceViewer({
           <h2 className="text-[17px] font-bold text-gray-900 truncate leading-tight">{source.filename}</h2>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-4">
+          {isMediaLike && hasMediaTranscript ? (
+            <button
+              type="button"
+              onClick={() => setShowMediaTranscript((prev) => !prev)}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200"
+            >
+              {showMediaTranscript ? "자막 숨기기" : "자막 보기"}
+            </button>
+          ) : null}
           {(sourceFileUrl && !isEmbeddableYoutube && lowerType !== "url") ? (
             <button onClick={() => downloadUrl(sourceFileUrl, source.filename)} title="다운로드"
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200">
@@ -551,7 +555,7 @@ export function SharedSourceViewer({
           </div>
         ) : isEmbeddableYoutube ? (
           <div ref={videoSectionRef} className="h-full flex flex-col p-4 overflow-hidden">
-            <div className="shrink-0" style={{ height: videoPaneHeight }}>
+            <div className="shrink-0" style={{ height: showMediaTranscript ? videoPaneHeight : "100%" }}>
               <div className="h-full w-full rounded-xl overflow-hidden bg-black shadow-sm">
                 <iframe
                   ref={iframeRef}
@@ -563,23 +567,26 @@ export function SharedSourceViewer({
                 />
               </div>
             </div>
-            <button
-              type="button"
-              aria-label="Resize video and transcript panels"
-              onPointerDown={(event) => {
-                event.preventDefault();
-                startVideoResize(event.clientY);
-              }}
-              className="shrink-0 mt-2 mb-2 flex h-6 w-full cursor-row-resize items-center justify-center"
-            >
-              <span className="flex w-full items-center gap-3 px-1">
-                <span className="h-px flex-1 bg-[#d7dce5]" />
-                <span className="h-1.5 w-20 rounded-full bg-[#b8c0cc]" />
-                <span className="h-px flex-1 bg-[#d7dce5]" />
-              </span>
-            </button>
-            <div className="min-h-[240px] flex-1 overflow-y-auto pr-1 pt-2">
-              {renderMediaContentSection()}
+            {showMediaTranscript ? (
+              <>
+                <button
+                  type="button"
+                  aria-label="Resize video and transcript panels"
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    startVideoResize(event.clientY);
+                  }}
+                  className="shrink-0 mt-2 mb-2 flex h-6 w-full cursor-row-resize items-center justify-center"
+                >
+                  <span className="flex w-full items-center gap-3 px-1">
+                    <span className="h-px flex-1 bg-[#d7dce5]" />
+                    <span className="h-1.5 w-20 rounded-full bg-[#b8c0cc]" />
+                    <span className="h-px flex-1 bg-[#d7dce5]" />
+                  </span>
+                </button>
+                <div className="min-h-[240px] flex-1 overflow-y-auto pr-1 pt-2">
+                  {renderMediaContentSection()}
+              
               <a
                 href={mediaUrl}
                 target="_blank"
@@ -590,12 +597,14 @@ export function SharedSourceViewer({
                   <path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
                 </svg>
                 영상이 차단되는 경우 YouTube에서 보기
-              </a>
-            </div>
+                  </a>
+                </div>
+              </>
+            ) : null}
           </div>
         ) : isVideo ? (
           <div ref={videoSectionRef} className="h-full flex flex-col p-4 overflow-hidden">
-            <div className="shrink-0" style={{ height: videoPaneHeight }}>
+            <div className="shrink-0" style={{ height: showMediaTranscript ? videoPaneHeight : "100%" }}>
               <div className="h-full w-full bg-black rounded-xl overflow-hidden flex items-center justify-center">
                 <video
                   ref={videoRef}
@@ -605,33 +614,39 @@ export function SharedSourceViewer({
                 />
               </div>
             </div>
-            <button
-              type="button"
-              aria-label="Resize video and transcript panels"
-              onPointerDown={(event) => {
-                event.preventDefault();
-                startVideoResize(event.clientY);
-              }}
-              className="shrink-0 mt-2 mb-2 flex h-6 w-full cursor-row-resize items-center justify-center"
-            >
-              <span className="flex w-full items-center gap-3 px-1">
-                <span className="h-px flex-1 bg-[#d7dce5]" />
-                <span className="h-1.5 w-20 rounded-full bg-[#b8c0cc]" />
-                <span className="h-px flex-1 bg-[#d7dce5]" />
-              </span>
-            </button>
-            <div className="min-h-0 flex-1 overflow-y-auto pr-1 pt-2">
-              {renderMediaContentSection()}
-            </div>
+            {showMediaTranscript ? (
+              <>
+                <button
+                  type="button"
+                  aria-label="Resize video and transcript panels"
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    startVideoResize(event.clientY);
+                  }}
+                  className="shrink-0 mt-2 mb-2 flex h-6 w-full cursor-row-resize items-center justify-center"
+                >
+                  <span className="flex w-full items-center gap-3 px-1">
+                    <span className="h-px flex-1 bg-[#d7dce5]" />
+                    <span className="h-1.5 w-20 rounded-full bg-[#b8c0cc]" />
+                    <span className="h-px flex-1 bg-[#d7dce5]" />
+                  </span>
+                </button>
+                <div className="min-h-0 flex-1 overflow-y-auto pr-1 pt-2">
+                  {renderMediaContentSection()}
+                </div>
+              </>
+            ) : null}
           </div>
         ) : isAudio ? (
           <div className="h-full flex flex-col gap-4 p-4 overflow-hidden">
             <div className="shrink-0 flex justify-center">
               <audio ref={audioRef} src={mediaUrl} controls className="w-full max-w-xl" />
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-              {renderMediaContentSection()}
-            </div>
+            {showMediaTranscript ? (
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                {renderMediaContentSection()}
+              </div>
+            ) : null}
           </div>
         ) : customViewer ? (
           <div className="w-full h-full">{customViewer}</div>
