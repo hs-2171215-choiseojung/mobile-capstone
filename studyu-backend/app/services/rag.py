@@ -3240,7 +3240,7 @@ def chat_with_docs(
 
     media_doc_ids = _get_media_doc_ids(doc_ids)
     youtube_doc_ids = _get_youtube_doc_ids(doc_ids)
-    youtube_only = bool(youtube_doc_ids) and set(youtube_doc_ids) == set(media_doc_ids) and set(doc_ids) == set(media_doc_ids)
+    youtube_only = False
     semantic_rows = _get_semantic_rows(doc_ids, question, top_k=TOP_K)
     references = _build_media_references(semantic_rows)
 
