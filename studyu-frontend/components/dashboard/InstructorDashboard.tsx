@@ -1,6 +1,6 @@
-"use client";
+﻿"use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -152,7 +152,7 @@ export default function InstructorDashboard({ notebooks: initial, userName }: Pr
   const cardProps = { onStar: toggleStar, onDelete: (id: string) => setConfirmId(id), onEdit: startEdit, onShare: handleShare, menuOpenId, setMenuOpenId, formatDate, userName } as const;
 
   return (
-    <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
       {/* 인사말 */}
       <div>
         <h1 className="text-3xl font-bold text-gray-900">안녕하세요, {userName} 강사님 👋</h1>
@@ -297,6 +297,90 @@ export default function InstructorDashboard({ notebooks: initial, userName }: Pr
 }
 
 // ── 노트북 카드 ──
+function ResponsiveActionLabel({
+  singleLine,
+  mediumLines,
+  narrowLines,
+}: {
+  singleLine: string;
+  mediumLines: string[];
+  narrowLines?: string[];
+}) {
+  const containerRef = useRef<HTMLSpanElement | null>(null);
+  const singleRef = useRef<HTMLSpanElement | null>(null);
+  const mediumRef = useRef<HTMLSpanElement | null>(null);
+  const narrowRef = useRef<HTMLSpanElement | null>(null);
+  const [layout, setLayout] = useState<"single" | "medium" | "narrow">("single");
+
+  useEffect(() => {
+    const container = containerRef.current;
+    const single = singleRef.current;
+    const medium = mediumRef.current;
+    const narrow = narrowRef.current;
+    if (!container || !single || !medium) return;
+
+    const updateLayout = () => {
+      const availableWidth = container.clientWidth;
+      const singleWidth = single.getBoundingClientRect().width;
+      const mediumWidth = medium.getBoundingClientRect().width;
+      const narrowWidth = narrow?.getBoundingClientRect().width ?? Number.POSITIVE_INFINITY;
+
+      if (singleWidth <= availableWidth) {
+        setLayout("single");
+        return;
+      }
+
+      if (mediumWidth <= availableWidth || !narrowLines) {
+        setLayout("medium");
+        return;
+      }
+
+      setLayout(narrowWidth <= availableWidth ? "narrow" : "narrow");
+    };
+
+    updateLayout();
+
+    const observer = new ResizeObserver(updateLayout);
+    observer.observe(container);
+
+    return () => observer.disconnect();
+  }, [mediumLines, narrowLines, singleLine]);
+
+  const visibleLines =
+    layout === "single" ? [singleLine] : layout === "medium" ? mediumLines : narrowLines ?? mediumLines;
+
+  return (
+    <span ref={containerRef} className="relative min-w-0 flex-1 text-center leading-tight">
+      <span ref={singleRef} className="invisible absolute left-0 top-0 whitespace-nowrap" aria-hidden="true">
+        {singleLine}
+      </span>
+      <span ref={mediumRef} className="invisible absolute left-0 top-0 inline-block" aria-hidden="true">
+        {mediumLines.map((line) => (
+          <span key={line} className="block whitespace-nowrap">
+            {line}
+          </span>
+        ))}
+      </span>
+      {narrowLines ? (
+        <span ref={narrowRef} className="invisible absolute left-0 top-0 inline-block" aria-hidden="true">
+          {narrowLines.map((line) => (
+            <span key={line} className="block whitespace-nowrap">
+              {line}
+            </span>
+          ))}
+        </span>
+      ) : null}
+      <span className="block">
+        {visibleLines.map((line) => (
+          <span key={line} className="block whitespace-nowrap">
+            {line}
+          </span>
+        ))}
+      </span>
+    </span>
+  );
+}
+
 function NotebookCard({ nb, onStar, onDelete, onEdit, onShare, menuOpenId, setMenuOpenId, formatDate, userName }: {
   nb: Notebook & { is_starred: boolean; student_count: number };
   onStar: (id: string) => void;
@@ -357,14 +441,21 @@ function NotebookCard({ nb, onStar, onDelete, onEdit, onShare, menuOpenId, setMe
       {/* 액션 버튼 */}
       <div className="flex items-center gap-1.5">
         <Link href={`/workspace/${nb.id}?from=/dashboard/instructor`}
-          className="flex-1 flex items-center justify-center gap-1 py-1 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/><rect x="14" y="3" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/><rect x="3" y="14" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/><rect x="14" y="14" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/></svg>
-          학습 생성
+          className="notebook-action-button flex-[0.95] min-w-0 gap-1 px-2 py-1 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+          <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/><rect x="14" y="3" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/><rect x="3" y="14" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/><rect x="14" y="14" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/></svg>
+          <ResponsiveActionLabel
+            singleLine="학습 생성"
+            mediumLines={["학습", "생성"]}
+          />
         </Link>
         <Link href={`/dashboard/students?notebook=${nb.id}`}
-          className="flex-1 flex items-center justify-center gap-1 py-1 text-xs font-medium border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors">
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-          학생진도현황
+          className="notebook-action-button flex-[1.35] min-w-0 gap-1 px-2 py-1 text-xs font-medium border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors">
+          <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          <ResponsiveActionLabel
+            singleLine="학습진도현황"
+            mediumLines={["학습진도", "현황"]}
+            narrowLines={["학습", "진도", "현황"]}
+          />
         </Link>
         <button onClick={() => onShare(nb.id)} className="w-6 h-6 flex items-center justify-center border border-gray-200 rounded-lg hover:bg-blue-50 hover:border-blue-300 transition-colors shrink-0" title="초대 코드 공유">
           <svg className="w-3 h-3 text-gray-500" fill="none" viewBox="0 0 24 24"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>

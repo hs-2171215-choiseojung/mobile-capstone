@@ -38,3 +38,7 @@
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-surface-400;
 }
+
+.notebook-action-button {
+  @apply flex items-center justify-center;
+}
