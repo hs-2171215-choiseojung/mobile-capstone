@@ -14,6 +14,7 @@ import { StudentSourceViewer } from "@/components/workspace/student/StudentSourc
 import { PptSlideViewer } from "@/components/workspace/PptSlideViewer";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const RECENT_NOTEBOOKS_STORAGE_KEY = "student-recent-notebooks";
 
 interface WeekTask {
   itemId?: string;
@@ -262,6 +263,19 @@ export default function StudentWorkspacePage() {
 
   useEffect(() => {
     if (notebookId) fetchData();
+  }, [notebookId]);
+
+  useEffect(() => {
+    if (!notebookId) return;
+    try {
+      const raw = localStorage.getItem(RECENT_NOTEBOOKS_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      const current = Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+      const next = [notebookId, ...current.filter((id) => id !== notebookId)].slice(0, 20);
+      localStorage.setItem(RECENT_NOTEBOOKS_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // ignore storage errors
+    }
   }, [notebookId]);
 
   const displayDocs = useMemo(() => mergeUniqueDocuments(docs), [docs]);

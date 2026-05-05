@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -59,9 +59,25 @@ function parseErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+const RECENT_NOTEBOOKS_STORAGE_KEY = "student-recent-notebooks";
+
+function getRecentNotebookOrder(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(RECENT_NOTEBOOKS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((value): value is string => typeof value === "string");
+  } catch {
+    return [];
+  }
+}
+
 export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, userName }: Props) {
   const router = useRouter();
   const [enrolledNotebooks, setEnrolledNotebooks] = useState<Notebook[]>(() => initialEnrolled.map(normalizeNotebook));
+  const [recentNotebookOrder, setRecentNotebookOrder] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<"newest" | "oldest" | "name">("newest");
   const [joinModalOpen, setJoinModalOpen] = useState(false);
@@ -86,11 +102,19 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
       });
   }, [enrolledNotebooks, search, sort]);
 
+  useEffect(() => {
+    setRecentNotebookOrder(getRecentNotebookOrder());
+  }, []);
+
   const recent = useMemo(() => {
-    return [...enrolledNotebooks]
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    if (recentNotebookOrder.length === 0) return [];
+
+    const notebookById = new Map(enrolledNotebooks.map((nb) => [nb.id, nb]));
+    return recentNotebookOrder
+      .map((id) => notebookById.get(id))
+      .filter((nb): nb is Notebook => Boolean(nb))
       .slice(0, 3);
-  }, [enrolledNotebooks]);
+  }, [enrolledNotebooks, recentNotebookOrder]);
 
   async function toggleEnrolledStar(id: string) {
     setEnrolledNotebooks((prev) =>
