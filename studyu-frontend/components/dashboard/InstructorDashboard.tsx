@@ -155,8 +155,8 @@ export default function InstructorDashboard({ notebooks: initial, userName }: Pr
     <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
       {/* 인사말 */}
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">안녕하세요, {userName} 강사님 👋</h1>
-        <p className="text-gray-500 mt-1">노트북을 생성하고 학생들과 공유해보세요</p>
+        <h1 className="text-3xl font-bold text-gray-900">안녕하세요, {userName} 강사님</h1>
+        <p className="text-gray-500 mt-2">노트북을 생성하고 학생들과 공유해보세요</p>
       </div>
 
       {/* 자주 쓰는 노트북 */}
@@ -174,7 +174,7 @@ export default function InstructorDashboard({ notebooks: initial, userName }: Pr
       {/* 내 노트북 */}
       <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-base font-semibold text-gray-900">📚 내 노트북 ({notebooks.length}개)</h2>
+          <h2 className="text-base font-semibold text-gray-900">내 노트북 ({notebooks.length}개)</h2>
           <CreateNotebookBtn onCreated={(nb) => setNotebooks((prev) => [{ ...nb, is_starred: false, student_count: 0 }, ...prev])} />
         </div>
 
@@ -480,8 +480,11 @@ function NotebookCard({ nb, onStar, onDelete, onEdit, onShare, menuOpenId, setMe
 // ── 노트북 생성 버튼 ──
 function CreateNotebookBtn({ onCreated }: { onCreated: (nb: Notebook) => void }) {
   const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
 
   async function handleCreate() {
+    if (!title.trim()) return;
     setLoading(true);
     try {
       const supabase = createClient();
@@ -491,11 +494,13 @@ function CreateNotebookBtn({ onCreated }: { onCreated: (nb: Notebook) => void })
       const res = await fetch(`${API}/api/notebooks`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ title: "새 노트북", notebook_type: "instructor" }),
+        body: JSON.stringify({ title: title.trim(), notebook_type: "instructor" }),
       });
       if (!res.ok) throw new Error("생성 실패");
       const nb = await res.json();
       onCreated(nb);
+      setOpen(false);
+      setTitle("");
     } catch (e: unknown) {
       alert(`생성 실패: ${e instanceof Error ? e.message : "오류"}`);
     } finally {
@@ -504,10 +509,57 @@ function CreateNotebookBtn({ onCreated }: { onCreated: (nb: Notebook) => void })
   }
 
   return (
-    <button onClick={handleCreate} disabled={loading}
-      className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-60">
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
-      새 노트북
-    </button>
+    <>
+      <button
+        onClick={() => {
+          setTitle("");
+          setOpen(true);
+        }}
+        disabled={loading}
+        className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-60"
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+        새 노트북
+      </button>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40"
+          onClick={(e) => { if (e.target === e.currentTarget && !loading) setOpen(false); }}
+        >
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl p-6">
+            <h2 className="font-semibold text-gray-900 mb-4">노트북 이름 입력</h2>
+            <input
+              autoFocus
+              type="text"
+              value={title}
+              placeholder="새 노트북"
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleCreate();
+                if (e.key === "Escape" && !loading) setOpen(false);
+              }}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
+            />
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setOpen(false)}
+                disabled={loading}
+                className="px-4 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-60"
+              >
+                취소
+              </button>
+              <button
+                onClick={() => void handleCreate()}
+                disabled={loading || !title.trim()}
+                className="px-5 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+              >
+                {loading ? "생성 중..." : "생성"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

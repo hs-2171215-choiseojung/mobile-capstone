@@ -16,6 +16,8 @@ interface Notebook {
   created_at: string;
   documents?: { count: number }[];
   is_starred?: boolean;
+  user_id?: string;
+  instructor_name?: string;
 }
 
 interface Props {
@@ -85,8 +87,6 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
   const [joining, setJoining] = useState(false);
   const [enrolledConfirmId, setEnrolledConfirmId] = useState<string | null>(null);
   const [leavingId, setLeavingId] = useState<string | null>(null);
-  const [enrolledEditId, setEnrolledEditId] = useState<string | null>(null);
-  const [enrolledEditTitle, setEnrolledEditTitle] = useState("");
 
   const filtered = useMemo(() => {
     const searchText = search.toLowerCase();
@@ -120,20 +120,6 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
     setEnrolledNotebooks((prev) =>
       prev.map((nb) => (nb.id === id ? { ...nb, is_starred: !nb.is_starred } : nb))
     );
-  }
-
-  function handleEnrolledRename(id: string) {
-    if (!enrolledEditTitle.trim()) return;
-    const newTitle = enrolledEditTitle.trim();
-    setEnrolledNotebooks((prev) =>
-      prev.map((nb) => (nb.id === id ? { ...nb, title: newTitle } : nb))
-    );
-    try {
-      localStorage.setItem(`notebook-custom-title:${id}`, newTitle);
-    } catch {
-      // ignore storage errors
-    }
-    setEnrolledEditId(null);
   }
 
   async function handleLeave(id: string) {
@@ -237,7 +223,7 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
     <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">안녕하세요, {userName}님</h1>
-        <p className="text-gray-500 mt-1">오늘도 열심히 학습해봐요!</p>
+        <p className="text-gray-500 mt-2">오늘도 열심히 학습해봐요!</p>
       </div>
 
       {recent.length > 0 && (
@@ -251,9 +237,9 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
                 className="p-4 bg-gradient-to-br from-purple-50 to-purple-100 border border-purple-200 rounded-xl hover:shadow-md hover:border-purple-300 transition-all"
               >
                 <h3 className="font-semibold text-purple-900 truncate">{toText(nb.title)}</h3>
-                <div className="flex items-center justify-between mt-2">
-                  <span className="text-xs text-purple-600">강사 노트북</span>
-                  <span className="text-xs text-purple-500">바로 열기</span>
+                <div className="flex items-center justify-between gap-2 mt-2">
+                  <span className="min-w-0 flex-1 text-xs text-purple-600 truncate">{nb.instructor_name ? `${nb.instructor_name} 강사` : "강사"}</span>
+                  <span className="shrink-0 text-xs text-purple-500 whitespace-nowrap">바로 열기</span>
                 </div>
               </Link>
             ))}
@@ -323,21 +309,9 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
                     </h3>
                   </Link>
                   <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-xs">
-                    <span className="text-purple-500">강사 노트북</span>
+                    <span className="text-purple-500 truncate">{nb.instructor_name ? `${nb.instructor_name} 강사` : "강사"}</span>
                   </div>
                   <div className="flex items-center gap-1 absolute top-4 right-10">
-                    <button
-                      onClick={() => {
-                        setEnrolledEditId(nb.id);
-                        setEnrolledEditTitle(toText(nb.title));
-                      }}
-                      className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-purple-50"
-                    >
-                      <svg className="w-3.5 h-3.5 text-gray-400 hover:text-purple-500" fill="none" viewBox="0 0 24 24">
-                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                      </svg>
-                    </button>
                     <button
                       onClick={() => setEnrolledConfirmId(nb.id)}
                       className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-red-50"
@@ -353,38 +327,6 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
           </div>
         )}
       </div>
-
-      {enrolledEditId && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40"
-          onClick={(e) => { if (e.target === e.currentTarget) setEnrolledEditId(null); }}
-        >
-          <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl p-6">
-            <h2 className="font-semibold text-gray-900 mb-4">노트북 이름 수정</h2>
-            <input
-              autoFocus
-              type="text"
-              value={enrolledEditTitle}
-              onChange={(e) => setEnrolledEditTitle(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleEnrolledRename(enrolledEditId);
-                if (e.key === "Escape") setEnrolledEditId(null);
-              }}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 mb-4"
-            />
-            <div className="flex gap-2 justify-end">
-              <button onClick={() => setEnrolledEditId(null)} className="px-4 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100">취소</button>
-              <button
-                onClick={() => handleEnrolledRename(enrolledEditId)}
-                disabled={!enrolledEditTitle.trim()}
-                className="px-5 py-2 rounded-lg text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-60"
-              >
-                저장
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {enrolledConfirmId && (
         <div

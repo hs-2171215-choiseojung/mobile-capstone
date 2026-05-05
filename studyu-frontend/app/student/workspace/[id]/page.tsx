@@ -15,6 +15,7 @@ import { PptSlideViewer } from "@/components/workspace/PptSlideViewer";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const RECENT_NOTEBOOKS_STORAGE_KEY = "student-recent-notebooks";
+const STUDENT_SELECTED_LLM_STORAGE_KEY = "student-selected-llm";
 
 interface WeekTask {
   itemId?: string;
@@ -137,6 +138,27 @@ export default function StudentWorkspacePage() {
 
   const [selectedLLM, setSelectedLLM] = useState('claude-haiku-4-5-20251001');
   const [selectedDifficulty, setSelectedDifficulty] = useState('intermediate');
+  const [llmPreferenceHydrated, setLlmPreferenceHydrated] = useState(false);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STUDENT_SELECTED_LLM_STORAGE_KEY);
+      if (saved) setSelectedLLM(saved);
+    } catch {
+      // ignore storage errors
+    } finally {
+      setLlmPreferenceHydrated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!llmPreferenceHydrated) return;
+    try {
+      localStorage.setItem(STUDENT_SELECTED_LLM_STORAGE_KEY, selectedLLM);
+    } catch {
+      // ignore storage errors
+    }
+  }, [selectedLLM, llmPreferenceHydrated]);
+
   const [expandedCenterWeeks, setExpandedCenterWeeks] = useState<number[]>([]);
   const [centerWeeksHydrated, setCenterWeeksHydrated] = useState(false);
 
@@ -654,9 +676,31 @@ export default function StudentWorkspacePage() {
     shouldRestoreCenterScrollRef.current = true;
   };
 
+  const renderModelControls = () => (
+    <>
+      <div className="relative">
+        <select value={selectedLLM} onChange={(e) => setSelectedLLM(e.target.value)} className="appearance-none bg-[#f8f9fb] border border-[#e7e9ed] hover:bg-[#e7e9ed] text-[#414751] text-[12px] font-medium pl-4 pr-8 py-1.5 rounded-full focus:outline-none focus:ring-2 focus:ring-[#155dfc]/20 transition-colors cursor-pointer shadow-sm">
+          <option value="gpt-4o-mini">GPT-4o mini</option>
+          <option value="gpt-4o">GPT-4o</option>
+          <option value="claude-haiku-4-5-20251001">Claude Haiku</option>
+          <option value="claude-sonnet-4-6">Claude Sonnet</option>
+        </select>
+        <ChevronDown className="w-3.5 h-3.5 text-[#99a1af] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+      </div>
+      <div className="relative">
+        <select value={selectedDifficulty} onChange={(e) => setSelectedDifficulty(e.target.value)} className="appearance-none bg-[#f8f9fb] border border-[#e7e9ed] hover:bg-[#e7e9ed] text-[#414751] text-[12px] font-medium pl-4 pr-8 py-1.5 rounded-full focus:outline-none focus:ring-2 focus:ring-[#155dfc]/20 transition-colors cursor-pointer shadow-sm">
+          <option value="beginner">초급</option>
+          <option value="intermediate">중급</option>
+          <option value="advanced">고급</option>
+        </select>
+        <ChevronDown className="w-3.5 h-3.5 text-[#99a1af] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+      </div>
+    </>
+  );
+
   return (
     <div className="flex flex-col h-screen bg-white overflow-hidden">
-      <TopNavBar title={notebookTitle} />
+      <TopNavBar title={notebookTitle} rightSlot={renderModelControls()} />
       <div className="flex flex-1 pt-[64px] overflow-hidden relative">
 
         {/* 채팅 없이 단독으로 열리는 스튜디오 타입 */}
@@ -796,29 +840,6 @@ export default function StudentWorkspacePage() {
         {!selectedSource && !selectedItem && (
           /* 기본: Weekly Study Plan */
           <div className="flex-1 flex flex-col min-w-0 h-full relative overflow-hidden">
-
-            <div className="flex items-center justify-end px-6 py-3 bg-white border-b border-[#e7e9ed] shrink-0 z-10">
-              <div className="flex items-center gap-2">
-                <div className="relative">
-                  <select value={selectedLLM} onChange={(e) => setSelectedLLM(e.target.value)} className="appearance-none bg-[#f8f9fb] border border-[#e7e9ed] hover:bg-[#e7e9ed] text-[#414751] text-[12px] font-medium pl-4 pr-8 py-1.5 rounded-full focus:outline-none focus:ring-2 focus:ring-[#155dfc]/20 transition-colors cursor-pointer shadow-sm">
-                    <option value="gpt-4o-mini">GPT-4o mini</option>
-                    <option value="gpt-4o">GPT-4o</option>
-                    <option value="claude-haiku-4-5-20251001">Claude Haiku</option>
-                    <option value="claude-sonnet-4-6">Claude Sonnet</option>
-                  </select>
-                  <ChevronDown className="w-3.5 h-3.5 text-[#99a1af] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
-                <div className="relative">
-                  <select value={selectedDifficulty} onChange={(e) => setSelectedDifficulty(e.target.value)} className="appearance-none bg-[#f8f9fb] border border-[#e7e9ed] hover:bg-[#e7e9ed] text-[#414751] text-[12px] font-medium pl-4 pr-8 py-1.5 rounded-full focus:outline-none focus:ring-2 focus:ring-[#155dfc]/20 transition-colors cursor-pointer shadow-sm">
-                    <option value="beginner">초급</option>
-                    <option value="intermediate">중급</option>
-                    <option value="advanced">고급</option>
-                  </select>
-                  <ChevronDown className="w-3.5 h-3.5 text-[#99a1af] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
-              </div>
-            </div>
-
             {/* 진도현황 고정 헤더 */}
             <div className="shrink-0 bg-white border-b border-[#e7e9ed] px-[20px] py-3 z-10">
               <div className="max-w-[900px] mx-auto">

@@ -42,6 +42,7 @@ class NotebookResponse(BaseModel):
     """노트북 기본 응답."""
     id: str
     user_id: str
+    instructor_name: str | None = None
     title: str
     description: str | None = None
     default_model: str
