@@ -921,6 +921,12 @@ export function StudentChatPanel({
       if (targetDocIds.length === 0)
         throw new Error("학습할 소스(문서)가 없습니다. 강사님께 자료 업로드를 요청해 주세요.");
 
+      // 최근 대화 히스토리 구성 (user/ai 메시지만, 최대 10개)
+      const chatHistory = messagesRef.current
+        .filter(m => m.type === 'user' || m.type === 'ai')
+        .slice(-10)
+        .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }));
+
       // 스트리밍 AI 메시지 자리 잡기
       setMessages(prev => [...prev, { type: 'ai', content: '', references: [], sources: [] }]);
 
@@ -934,6 +940,7 @@ export function StudentChatPanel({
           level: selectedDifficulty || "intermediate",
           session_id: notebookId,
           current_slide: currentSlide ?? null,
+          chat_history: chatHistory,
         }),
       });
 

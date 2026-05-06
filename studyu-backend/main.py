@@ -80,11 +80,6 @@ app.add_middleware(
     allow_origins=[
         settings.FRONTEND_URL,
         "http://localhost:3000",
-        "http://localhost:3001",
-        "http://localhost:3002",
-        "http://localhost:3003",
-        "http://localhost:3004",
-        "http://localhost:3005",
     ],
     allow_credentials=True,              # 쿠키/인증 헤더 허용
     allow_methods=["*"],                 # GET, POST, PUT, DELETE 등 모두 허용
