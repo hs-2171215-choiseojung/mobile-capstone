@@ -30,6 +30,15 @@ BUCKET_ALLOWED_MIME_TYPES = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio as _asyncio
+    # 임베딩 모델 사전 로딩 — 첫 요청 전에 로드해서 슬라이드 설명 생성 시 중복 로딩 방지
+    try:
+        from app.services.rag import _get_embedding_model
+        await _asyncio.to_thread(_get_embedding_model)
+        print("[startup] 임베딩 모델 로딩 완료")
+    except Exception as e:
+        print(f"[warn] 임베딩 모델 사전 로딩 실패: {e}")
+
     # 버킷 허용 MIME 타입 업데이트 (오디오 타입 포함)
     try:
         supabase_admin.storage.update_bucket(

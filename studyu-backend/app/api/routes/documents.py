@@ -31,7 +31,7 @@ from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.supabase import supabase_admin
 from app.services.tts import tts_with_timestamps, ELEVENLABS_VOICES, DEFAULT_VOICE, serialize_summary
-from app.services.audio_cache import load_cached_summary, save_cached_summary
+from app.services.audio_cache import load_cached_summary, save_cached_summary, load_slide_audio, save_slide_audio
 from app.services.rag import (
     ingest_document,
     ingest_url,
@@ -45,6 +45,9 @@ from app.services.rag import (
     _inject_media_summary,
     align_media_summary_to_timeline,
     chat_with_docs,
+    _call_llm,
+    _call_llm_vision,
+    _DEFAULT_MODEL,
 )
 
 router = APIRouter()
@@ -141,7 +144,7 @@ def _generate_media_summary_via_chat(document_id: str) -> dict[str, Any]:
             "시간 표시는 쓰지 말아줘.\n"
             "추천 질문은 넣지 말아줘."
         ),
-        model="gpt-4o-mini",
+        model=_DEFAULT_MODEL,
         level="intermediate",
         chat_history=[],
     )
@@ -288,33 +291,25 @@ def _generate_and_upload_slides(file_bytes: bytes, doc_id: str) -> tuple[int, di
                     {"content-type": "image/webp", "upsert": "true"},
                 )
 
-                # Vision AI로 슬라이드 시각 요소 분석 (gpt-4o, high detail)
+                # Vision AI로 슬라이드 시각 요소 분석
                 try:
                     b64 = base64.b64encode(webp_bytes).decode()
-                    resp = client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[{
-                            "role": "user",
-                            "content": [
-                                {"type": "image_url", "image_url": {
-                                    "url": f"data:image/webp;base64,{b64}",
-                                    "detail": "high"
-                                }},
-                                {"type": "text", "text": (
-                                    "이 PPT 슬라이드에서 텍스트 외의 시각적 요소를 분석해주세요.\n"
-                                    "- 이미지/사진: 무엇을 나타내는지, 어떤 장면인지\n"
-                                    "- 차트/그래프: 종류, 데이터 값, 추세, 축 레이블\n"
-                                    "- 다이어그램/흐름도: 구조, 관계, 흐름\n"
-                                    "- 표: 항목과 값\n"
-                                    "- 코드/스크린샷: 내용 요약\n"
-                                    "시각적 요소가 없고 텍스트만 있으면 정확히 '없음'이라고만 답하세요.\n"
-                                    "한국어로 상세하게 설명하세요."
-                                )}
-                            ]
-                        }],
+                    desc = _call_llm_vision(
+                        image_b64=b64,
+                        mime_type="image/webp",
+                        prompt=(
+                            "이 PPT 슬라이드에서 텍스트 외의 시각적 요소를 분석해주세요.\n"
+                            "- 이미지/사진: 무엇을 나타내는지, 어떤 장면인지\n"
+                            "- 차트/그래프: 종류, 데이터 값, 추세, 축 레이블\n"
+                            "- 다이어그램/흐름도: 구조, 관계, 흐름\n"
+                            "- 표: 항목과 값\n"
+                            "- 코드/스크린샷: 내용 요약\n"
+                            "시각적 요소가 없고 텍스트만 있으면 정확히 '없음'이라고만 답하세요.\n"
+                            "한국어로 상세하게 설명하세요."
+                        ),
+                        model="claude-sonnet-4-6",
                         max_tokens=800,
-                    )
-                    desc = resp.choices[0].message.content.strip()
+                    ).strip()
                     if desc and desc != "없음":
                         existing = vision_descriptions.get(i, "")
                         vision_descriptions[i] = (existing + f"\n[시각 자료] {desc}").strip()
@@ -397,21 +392,13 @@ def _analyze_pdf_images(file_bytes: bytes) -> dict:
                     "- 표: 항목과 값\n"
                     "설명은 문서 전체 흐름과 연결지어 학생이 이해할 수 있게 한국어로 작성하세요."
                 )
-                resp = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url", "image_url": {
-                                "url": f"data:image/webp;base64,{b64}",
-                                "detail": "high"
-                            }},
-                            {"type": "text", "text": prompt},
-                        ]
-                    }],
+                desc = _call_llm_vision(
+                    image_b64=b64,
+                    mime_type="image/webp",
+                    prompt=prompt,
+                    model="claude-sonnet-4-6",
                     max_tokens=1000,
-                )
-                desc = resp.choices[0].message.content.strip()
+                ).strip()
                 if desc:
                     vision_descriptions[page_idx] = desc
                     print(f"[pdf_vision] 페이지 {page_idx} Vision 분석 완료")
@@ -1076,6 +1063,164 @@ _TEXT_DOC_EXTS = {"pdf", "docx", "doc", "pptx", "ppt", "hwp", "hwpx", "txt"}
 
 # 인메모리 1차 캐시 (서버 재시작 전까지 빠른 응답용)
 _mem_cache: dict[tuple[str, str], dict] = {}
+_slide_desc_cache: dict[str, dict[int, str]] = {}  # doc_id → {슬라이드번호: 설명}
+
+
+@router.get("/documents/{document_id}/slide-descriptions")
+async def get_slide_descriptions(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """PPT 슬라이드별 설명 — chat_with_docs()를 슬라이드별 병렬 호출해 챗과 동일 품질로 생성."""
+    import re as _re
+    import asyncio
+
+    doc_res = supabase_admin.table("documents").select("id, notebook_id").eq("id", document_id).limit(1).execute()
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+    doc = doc_res.data[0]
+
+    nb = supabase_admin.table("notebooks").select("user_id").eq("id", doc["notebook_id"]).single().execute().data
+    is_owner = nb and nb.get("user_id") == user["id"]
+    if not is_owner:
+        enrolled = supabase_admin.table("notebook_enrollments").select("id").eq("notebook_id", doc["notebook_id"]).eq("student_id", user["id"]).execute().data
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    if document_id in _slide_desc_cache:
+        return {"descriptions": _slide_desc_cache[document_id]}
+
+    result = (
+        supabase_admin.table("document_chunks")
+        .select("chunk_index, content")
+        .eq("doc_id", document_id)
+        .order("chunk_index")
+        .execute()
+    )
+
+    # 슬라이드별 청크 내용 수집
+    slide_chunks: dict[int, list[str]] = {}
+    for row in result.data or []:
+        content = row.get("content", "")
+        m = _re.match(r"^\[슬라이드\s*(\d+)\]", content.strip())
+        if m:
+            n = int(m.group(1))
+            slide_chunks.setdefault(n, []).append(content)
+
+    slide_nums = sorted(slide_chunks.keys())
+    if not slide_nums:
+        return {"descriptions": {}}
+
+    _trailing_pattern = _re.compile(
+        r"\s*\n?\n?("
+        r"이해(가|하기)?\s*(되셨나요|됐나요|되었나요)\??|"
+        r"추가(로|적으로)?\s*(궁금한|질문이|알고\s*싶은).{0,30}(있으면|있다면|있으시면).{0,30}[\.\!~]*|"
+        r"질문(이)?\s*(있으면|있다면|있으시면).{0,30}[\.\!~]*|"
+        r"더\s*(궁금한|알고\s*싶은).{0,30}(있으면|있다면).{0,30}[\.\!~]*|"
+        r"언제든지\s*(질문|물어).{0,30}[\.\!~]*"
+        r")\s*$",
+        _re.IGNORECASE,
+    )
+
+    def _strip_trailing(text: str) -> str:
+        return _trailing_pattern.sub("", text).rstrip()
+
+    def _normalize_slide_refs(text: str) -> str:
+        def replacer(m: _re.Match) -> str:
+            if m.start() > 0 and text[m.start() - 1] == "[":
+                return m.group(0)
+            return f"[슬라이드 {m.group(1)}]"
+        return _re.sub(r"슬라이드\s*(\d+)", replacer, text)
+
+    # RAG 우회: 해당 슬라이드 청크 내용을 직접 LLM에 전달
+    def explain_slide(slide_num: int) -> tuple[int, str]:
+        import time as _time
+        content_text = "\n\n".join(slide_chunks.get(slide_num, []))
+        for attempt in range(4):
+            try:
+                answer = _call_llm(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": (
+                                f"다음은 슬라이드 {slide_num}의 내용입니다:\n\n{content_text}\n\n"
+                                "이 슬라이드의 내용을 학생에게 선생님처럼 자세히 설명해줘. "
+                                "이해도 확인 문구(예: '이해가 되었나요?', '궁금한 점 있으면 알려주세요' 등)는 절대 포함하지 말고 설명으로만 끝내줘."
+                            ),
+                        }
+                    ],
+                    model=_DEFAULT_MODEL,
+                    temperature=0.5,
+                    max_tokens=1024,
+                )
+                return slide_num, _normalize_slide_refs(_strip_trailing(answer))
+            except Exception as e:
+                if "429" in str(e) and attempt < 3:
+                    wait = 5 * (2 ** attempt)  # 5s → 10s → 20s
+                    print(f"[slide_desc] 슬라이드 {slide_num} rate limit, {wait}s 후 재시도 ({attempt+1}/3)")
+                    _time.sleep(wait)
+                else:
+                    print(f"[slide_desc] 슬라이드 {slide_num} 설명 생성 실패: {e}")
+                    return slide_num, ""
+        return slide_num, ""
+
+    # concurrent connection 한도 고려해 2개로 제한 + 429 재시도로 보완
+    semaphore = asyncio.Semaphore(2)
+
+    async def explain_slide_limited(slide_num: int) -> tuple[int, str]:
+        async with semaphore:
+            return await asyncio.to_thread(explain_slide, slide_num)
+
+    tasks = [explain_slide_limited(n) for n in slide_nums]
+    results = await asyncio.gather(*tasks)
+
+    descriptions: dict[int, str] = {n: ans for n, ans in results if ans}
+    _slide_desc_cache[document_id] = descriptions
+    return {"descriptions": descriptions}
+
+
+@router.get("/documents/{document_id}/slides/{slide_num}/audio")
+async def get_slide_audio(
+    document_id: str,
+    slide_num: int,
+    voice: str = DEFAULT_VOICE,
+    user: dict = Depends(get_current_user),
+):
+    """슬라이드 설명 TTS 오디오 반환. Supabase Storage에 캐싱."""
+    from app.services.tts import tts_with_timestamps
+
+    doc_res = supabase_admin.table("documents").select("id, notebook_id").eq("id", document_id).limit(1).execute()
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+    doc = doc_res.data[0]
+    nb = supabase_admin.table("notebooks").select("user_id").eq("id", doc["notebook_id"]).single().execute().data
+    is_owner = nb and nb.get("user_id") == user["id"]
+    if not is_owner:
+        enrolled = supabase_admin.table("notebook_enrollments").select("id").eq("notebook_id", doc["notebook_id"]).eq("student_id", user["id"]).execute().data
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    voice_key = voice if voice in ELEVENLABS_VOICES else DEFAULT_VOICE
+
+    cached = load_slide_audio(document_id, slide_num, voice_key)
+    if cached:
+        return StreamingResponse(io.BytesIO(cached), media_type="audio/mpeg")
+
+    desc_text = _slide_desc_cache.get(document_id, {}).get(slide_num)
+    if not desc_text:
+        raise HTTPException(status_code=404, detail="슬라이드 설명이 아직 생성되지 않았습니다. 잠시 후 다시 시도해주세요.")
+
+    clean_text = re.sub(r"\[슬라이드\s*\d+\]", "", desc_text)
+    clean_text = re.sub(r"📷|🎬", "", clean_text).strip()
+
+    mp3_bytes, _ = await tts_with_timestamps(clean_text, voice_key)
+
+    import asyncio as _asyncio
+    _asyncio.get_event_loop().run_in_executor(
+        None, save_slide_audio, document_id, slide_num, voice_key, mp3_bytes
+    )
+
+    return StreamingResponse(io.BytesIO(mp3_bytes), media_type="audio/mpeg")
 
 
 class AudioSummaryRequest(BaseModel):

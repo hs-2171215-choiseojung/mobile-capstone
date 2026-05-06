@@ -81,6 +81,131 @@ def _convert_messages_for_anthropic(messages: list[dict]) -> tuple[str, list[dic
             anthropic_msgs.append({"role": msg["role"], "content": content})
     return system, anthropic_msgs
 
+
+# ─────────────────────────────────────────────
+# 통합 LLM 호출 유틸리티
+# ─────────────────────────────────────────────
+
+_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+
+# sentence-transformers 모델 싱글톤 (첫 호출 시 다운로드)
+import threading as _threading
+_embedding_model = None
+_embedding_lock = _threading.Lock()
+
+def _get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        with _embedding_lock:
+            if _embedding_model is None:  # double-checked locking
+                from sentence_transformers import SentenceTransformer
+                _embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+    return _embedding_model
+
+
+def _call_llm(
+    messages: list[dict],
+    model: str = _DEFAULT_MODEL,
+    temperature: float = 0.7,
+    max_tokens: int = 2048,
+    json_mode: bool = False,
+) -> str:
+    """OpenAI/Claude 자동 라우팅 LLM 호출. model prefix로 분기."""
+    if _is_claude(model):
+        from anthropic import Anthropic as _Anthropic
+        client = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        system, anthropic_msgs = _convert_messages_for_anthropic(messages)
+        if json_mode:
+            system = (system + "\n\n반드시 유효한 JSON 객체만 응답하세요. 마크다운 코드블록 없이 JSON만 출력하세요.").strip()
+        kwargs: dict = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": anthropic_msgs,
+        }
+        if system:
+            kwargs["system"] = system
+        resp = client.messages.create(**kwargs)
+        return resp.content[0].text
+    else:
+        oai = OpenAI(api_key=settings.OPENAI_API_KEY)
+        create_kwargs: dict = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if json_mode:
+            create_kwargs["response_format"] = {"type": "json_object"}
+        resp = oai.chat.completions.create(**create_kwargs)
+        return resp.choices[0].message.content or ""
+
+
+def _call_llm_vision(
+    image_b64: str,
+    mime_type: str,
+    prompt: str,
+    model: str = "claude-sonnet-4-6",
+    json_mode: bool = False,
+    max_tokens: int = 2000,
+) -> str:
+    """이미지 포함 LLM Vision 호출. OpenAI/Claude 자동 라우팅."""
+    if _is_claude(model):
+        from anthropic import Anthropic as _Anthropic
+        client = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        content = [
+            {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": image_b64}},
+            {"type": "text", "text": prompt},
+        ]
+        sys_prompt = "반드시 유효한 JSON 객체만 응답하세요. 마크다운 코드블록 없이 JSON만 출력하세요." if json_mode else None
+        kwargs: dict = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": content}],
+        }
+        if sys_prompt:
+            kwargs["system"] = sys_prompt
+        resp = client.messages.create(**kwargs)
+        return resp.content[0].text
+    else:
+        safe_vision_model = model if "gpt-4" in model else "gpt-4o"
+        oai = OpenAI(api_key=settings.OPENAI_API_KEY)
+        create_kwargs: dict = {
+            "model": safe_vision_model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}", "detail": "high"}},
+                ],
+            }],
+            "max_tokens": max_tokens,
+        }
+        if json_mode:
+            create_kwargs["response_format"] = {"type": "json_object"}
+        resp = oai.chat.completions.create(**create_kwargs)
+        return resp.choices[0].message.content or ""
+
+
+def _elevenlabs_tts_simple(text: str, voice_name: str = "sarah") -> bytes:
+    """동기 ElevenLabs TTS (오디오 오버뷰용 간단 호출)."""
+    import httpx as _httpx
+    from app.services.tts import ELEVENLABS_VOICES
+    voice_id = ELEVENLABS_VOICES.get(voice_name, ELEVENLABS_VOICES["sarah"])
+    resp = _httpx.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        json={
+            "text": text,
+            "model_id": "eleven_multilingual_v2",
+            "voice_settings": {"stability": 0.45, "similarity_boost": 0.80},
+        },
+        headers={"xi-api-key": settings.ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.content
+
+
 # ─────────────────────────────────────────────
 # 텍스트 정제
 # ─────────────────────────────────────────────
@@ -841,15 +966,13 @@ def build_media_summary_from_chunks(rows: list[dict[str, Any]], filename: str) -
 """
 
     try:
-        client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        raw = _call_llm(
             messages=[{"role": "user", "content": prompt}],
+            model=_DEFAULT_MODEL,
             temperature=0.2,
             max_tokens=900,
-            response_format={"type": "json_object"},
+            json_mode=True,
         )
-        raw = response.choices[0].message.content or "{}"
         parsed = json.loads(raw)
         payload = _normalize_media_summary_payload(parsed)
         sections = payload.get("sections", [])
@@ -928,20 +1051,24 @@ def _db_safe_insert(table: str, records: list[dict]) -> None:
 # ─────────────────────────────────────────────
 
 def _embed_batch(texts: list[str], batch_size: int = 100) -> list[list[float]]:
-    """OpenAI text-embedding-3-small으로 텍스트 임베딩 생성 (배치 처리)."""
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    """sentence-transformers 로컬 모델로 임베딩 생성 (API 키 불필요)."""
+    model = _get_embedding_model()
     all_embeddings: list[list[float]] = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
-        response = client.embeddings.create(model="text-embedding-3-small", input=batch)
-        all_embeddings.extend([item.embedding for item in response.data])
+        vecs = model.encode(batch, normalize_embeddings=True)
+        all_embeddings.extend(vecs.tolist())
     return all_embeddings
 
 
 def _cosine_similarity(query_vec: list[float], embeddings: list[list[float]]) -> np.ndarray:
-    """query_vec과 embeddings 행렬의 코사인 유사도 벡터 반환."""
+    """query_vec과 embeddings 행렬의 코사인 유사도 벡터 반환.
+    차원 불일치 시(기존 DB 임베딩과 새 모델 차원이 다를 때) 균등 점수로 폴백."""
     q = np.array(query_vec, dtype=np.float32)
     m = np.array(embeddings, dtype=np.float32)
+    if q.shape[0] != m.shape[1]:
+        # 차원이 다르면 모든 청크를 동등하게 취급 (순서대로 선택)
+        return np.ones(m.shape[0], dtype=np.float32)
     q_norm = np.linalg.norm(q)
     m_norms = np.linalg.norm(m, axis=1)
     m_norms = np.where(m_norms == 0, 1e-10, m_norms)
@@ -1846,21 +1973,14 @@ image_type 선택 기준:
 
 반드시 JSON만 응답하세요."""
 
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}", "detail": "high"}},
-            ],
-        }],
-        response_format={"type": "json_object"},
+    raw = _call_llm_vision(
+        image_b64=b64,
+        mime_type=mime_type,
+        prompt=prompt,
+        model="claude-sonnet-4-6",
+        json_mode=True,
         max_tokens=2000,
     )
-
-    raw = response.choices[0].message.content or "{}"
     try:
         parsed = json.loads(raw)
     except Exception:
@@ -3034,14 +3154,12 @@ def _check_image_relevance(question: str, subjects: list[str], visual_context: s
 "YES" 또는 "NO"만 대답하세요."""
 
     try:
-        client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        answer = _call_llm(
             messages=[{"role": "user", "content": prompt}],
+            model=_DEFAULT_MODEL,
             max_tokens=5,
             temperature=0,
-        )
-        answer = (response.choices[0].message.content or "YES").strip().upper()
+        ).strip().upper()
         return answer != "NO"
     except Exception:
         return True  # 오류 시 관련 있다고 가정
@@ -3186,7 +3304,7 @@ def _get_slide_image_b64(doc_id: str, slide_num: int) -> str | None:
 def chat_with_docs(
     doc_ids: list[str],
     question: str,
-    model: str = "gpt-4o-mini",
+    model: str = _DEFAULT_MODEL,
     level: str = "intermediate",
     chat_history: list | None = None,
     current_slide: int | None = None,
@@ -3305,16 +3423,33 @@ def chat_with_docs(
                     slide_marker = f"[슬라이드 {current_slide}]"
                     slide_rows = (
                         supabase_admin.table("document_chunks")
-                        .select("chunk_index, text")
+                        .select("chunk_index, content")
                         .in_("doc_id", semantic_context_ids)
-                        .ilike("text", f"%{slide_marker}%")
+                        .ilike("content", f"%{slide_marker}%")
                         .limit(3)
                         .execute()
                     )
-                    slide_texts = [r["text"] for r in (slide_rows.data or []) if r.get("text")]
+                    slide_texts = [r["content"] for r in (slide_rows.data or []) if r.get("content")]
                     if slide_texts:
                         slide_context = f"【현재 슬라이드 {current_slide} 내용】\n" + "\n---\n".join(slide_texts)
                         semantic_context = slide_context + "\n\n" + semantic_context if semantic_context else slide_context
+                except Exception:
+                    pass
+            if is_pdf_doc and current_slide:
+                try:
+                    page_marker = f"[페이지 {current_slide}]"
+                    page_rows = (
+                        supabase_admin.table("document_chunks")
+                        .select("chunk_index, content")
+                        .in_("doc_id", semantic_context_ids)
+                        .ilike("content", f"%{page_marker}%")
+                        .limit(3)
+                        .execute()
+                    )
+                    page_texts = [r["content"] for r in (page_rows.data or []) if r.get("content")]
+                    if page_texts:
+                        page_context = f"【현재 페이지 {current_slide} 내용】\n" + "\n---\n".join(page_texts)
+                        semantic_context = page_context + "\n\n" + semantic_context if semantic_context else page_context
                 except Exception:
                     pass
         if semantic_context:
@@ -3507,7 +3642,12 @@ def chat_with_docs(
     elif is_pdf_doc:
         # PDF 전용 프롬프트
         pdf_name = doc_filenames[0] if doc_filenames else "PDF 문서"
+        current_page_hint = (
+            f"\n【현재 페이지】\n학생이 현재 [페이지 {current_slide}]를 보고 있습니다. "
+            f"질문이 특정 페이지를 명시하지 않는 경우, [페이지 {current_slide}]의 내용을 우선적으로 참조하여 답변하세요.\n"
+        ) if current_slide else ""
         system_msg = f"""당신은 '{pdf_name}' PDF 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
+{current_page_hint}
 
 【페이지 인용 규칙】
 - 내용을 설명할 때는 반드시 해당 페이지 번호를 [페이지 N] 형식으로 명시하세요.
@@ -3977,7 +4117,7 @@ def chat_with_docs(
 def generate_content(
     doc_ids: list[str],
     gen_type: str,
-    model: str = "gpt-4o-mini",
+    model: str = _DEFAULT_MODEL,
     level: str = "intermediate",
     quiz_count: int = 5,
     topic: str = "",
@@ -4044,19 +4184,12 @@ def generate_content(
     else:
         raise ValueError(f"Unknown gen_type: {gen_type}")
 
-    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-
-    create_kwargs: dict = {
-        "model": safe_model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.4,
-    }
-    if gen_type == "quiz":
-        create_kwargs["response_format"] = {"type": "json_object"}
-
-    response = client.chat.completions.create(**create_kwargs)
-    return response.choices[0].message.content or ""
+    return _call_llm(
+        messages=[{"role": "user", "content": prompt}],
+        model=model,
+        temperature=0.4,
+        json_mode=(gen_type == "quiz"),
+    )
 
 
 def generate_audio_overview(
@@ -4065,7 +4198,7 @@ def generate_audio_overview(
     language: str = "ko",
     length: str = "default",
     focus: str = "",
-    model: str = "gpt-4o-mini",
+    model: str = _DEFAULT_MODEL,
 ) -> tuple[bytes, str, str]:
     """2인 토크쇼 형식의 오디오 오버뷰 생성."""
     context = _get_context(doc_ids, max_chars=12000)
@@ -4112,15 +4245,13 @@ def generate_audio_overview(
   ]
 }}"""
 
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
+    raw = _call_llm(
         messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
+        model=model,
         temperature=0.7,
+        json_mode=True,
     )
-
-    result = json.loads(response.choices[0].message.content or "{}")
+    result = json.loads(raw)
     title = result.get("title", "오디오 오버뷰")
     lines: list[dict] = result.get("lines", [])
 
@@ -4129,20 +4260,18 @@ def generate_audio_overview(
         for l in lines
     )
 
-    voice_map = {"A": "alloy", "B": "echo"}
+    # Host A → sarah(여성), Host B → josh(남성) ElevenLabs 음성
+    voice_map = {"A": "sarah", "B": "josh"}
     audio_parts: list[bytes] = []
     for line in lines:
         text = line.get("text", "").strip()
         if not text:
             continue
-        voice = voice_map.get(line.get("speaker", "A"), "alloy")
-        tts_resp = client.audio.speech.create(
-            model="tts-1",
-            voice=voice,  # type: ignore[arg-type]
-            input=text,
-            response_format="mp3",
-        )
-        audio_parts.append(tts_resp.content)
+        voice_name = voice_map.get(line.get("speaker", "A"), "sarah")
+        try:
+            audio_parts.append(_elevenlabs_tts_simple(text, voice_name=voice_name))
+        except Exception as e:
+            print(f"[audio_overview] TTS 실패 (무시): {e}")
 
     audio_bytes = b"".join(audio_parts)
     return audio_bytes, script, title
@@ -4152,7 +4281,7 @@ def generate_mindmap(
     doc_ids: list[str],
     language: str = "ko",
     focus: str = "",
-    model: str = "gpt-4o-mini",
+    model: str = _DEFAULT_MODEL,
 ) -> tuple[list, str]:
     """문서 내용을 평면 노드 배열 형식의 마인드맵 JSON으로 변환."""
     context = _get_context(doc_ids, max_chars=10000)
@@ -4186,16 +4315,13 @@ def generate_mindmap(
   ]
 }}"""
 
-    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    response = client.chat.completions.create(
-        model=safe_model,
+    raw = _call_llm(
         messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
+        model=model,
         temperature=0.5,
+        json_mode=True,
     )
-
-    result = json.loads(response.choices[0].message.content or "{}")
+    result = json.loads(raw)
     title = result.get("title", "마인드맵")
     nodes = result.get("nodes", [{"id": "root", "text": title}])
     return nodes, title
@@ -4207,7 +4333,7 @@ def generate_flashcards(
     difficulty: str = "intermediate",
     topic: str = "",
     language: str = "ko",
-    model: str = "gpt-4o-mini",
+    model: str = _DEFAULT_MODEL,
 ) -> tuple[list, str]:
     """문서 내용을 바탕으로 플래시카드(앞면/뒷면) 배열을 생성.
 
@@ -4250,16 +4376,13 @@ def generate_flashcards(
   ]
 }}"""
 
-    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    response = client.chat.completions.create(
-        model=safe_model,
+    raw = _call_llm(
         messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
+        model=model,
         temperature=0.4,
+        json_mode=True,
     )
-
-    result = json.loads(response.choices[0].message.content or "{}")
+    result = json.loads(raw)
     title = result.get("title", "플래시카드")
     cards = result.get("cards", [])
     return cards, title
@@ -4271,7 +4394,7 @@ def generate_slides(
     length: str = "default",
     language: str = "ko",
     prompt: str = "",
-    model: str = "gpt-4o-mini",
+    model: str = _DEFAULT_MODEL,
 ) -> tuple[list, str, str]:
     """문서 내용을 바탕으로 슬라이드 자료(JSON)를 생성.
 
@@ -4324,25 +4447,21 @@ def generate_slides(
   ]
 }}"""
 
-    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    response = client.chat.completions.create(
-        model=safe_model,
+    raw = _call_llm(
         messages=[{"role": "user", "content": prompt_text}],
-        response_format={"type": "json_object"},
+        model=model,
         temperature=0.5,
+        json_mode=True,
     )
-
-    result = json.loads(response.choices[0].message.content or "{}")
+    result = json.loads(raw)
     title = result.get("title", "슬라이드 자료")
     slides = result.get("slides", [])
 
-    # DALL-E 3 표지 이미지 생성
+    # DALL-E 3 표지 이미지 생성 (OpenAI 전용 기능, 실패 시 빈 문자열)
     cover_image_b64 = ""
     try:
-        # 표지 이미지 프롬프트 자동 생성
-        img_prompt_resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+        oai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        img_prompt = _call_llm(
             messages=[{
                 "role": "user",
                 "content": f"""다음 슬라이드 제목을 위한 DALL-E 이미지 생성 프롬프트를 영어로 한 문장으로 작성해주세요.
@@ -4354,12 +4473,12 @@ def generate_slides(
 - 깔끔하고 미니멀한 디자인, 흰색 배경
 - 텍스트 없이 아이콘/도형/다이어그램으로만 구성
 - 16:9 비율에 맞는 가로형 구도
-프롬프트만 출력하세요."""
+프롬프트만 출력하세요.""",
             }],
+            model=model,
             max_tokens=200,
         )
-        img_prompt = img_prompt_resp.choices[0].message.content or ""
-        dalle_resp = client.images.generate(
+        dalle_resp = oai_client.images.generate(
             model="dall-e-3",
             prompt=img_prompt,
             size="1792x1024",
@@ -4381,7 +4500,7 @@ def generate_report(
     length: str = "default",
     tone: str = "formal",
     instructions: str = "",
-    model: str = "gpt-4o-mini",
+    model: str = _DEFAULT_MODEL,
 ) -> tuple[list, str]:
     """문서 내용을 바탕으로 구조화된 보고서를 생성.
 
@@ -4459,16 +4578,13 @@ def generate_report(
   ]
 }}"""
 
-    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    response = client.chat.completions.create(
-        model=safe_model,
+    raw = _call_llm(
         messages=[{"role": "user", "content": prompt_text}],
-        response_format={"type": "json_object"},
+        model=model,
         temperature=0.5,
+        json_mode=True,
     )
-
-    result = json.loads(response.choices[0].message.content or "{}")
+    result = json.loads(raw)
     title = result.get("title", "보고서")
     sections = result.get("sections", [])
     return sections, title
@@ -4479,7 +4595,7 @@ def generate_data_table(
     format: str = "summary_table",
     language: str = "ko",
     instructions: str = "",
-    model: str = "gpt-4o-mini",
+    model: str = _DEFAULT_MODEL,
 ) -> tuple[str, str, list, list]:
     """문서 내용을 바탕으로 구조화된 데이터 표를 생성.
 
@@ -4601,16 +4717,13 @@ def generate_data_table(
   ]
 }}"""
 
-    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    response = client.chat.completions.create(
-        model=safe_model,
+    raw = _call_llm(
         messages=[{"role": "user", "content": prompt_text}],
-        response_format={"type": "json_object"},
+        model=model,
         temperature=0.7,
+        json_mode=True,
     )
-
-    result = json.loads(response.choices[0].message.content or "{}")
+    result = json.loads(raw)
     title = result.get("title", "데이터표")
     description = result.get("description", "")
     columns = result.get("columns", [])
@@ -4671,7 +4784,7 @@ def generate_video(
     doc_ids: list[str],
     language: str = "ko",
     length: str = "default",
-    model: str = "gpt-4o-mini",
+    model: str = _DEFAULT_MODEL,
 ) -> tuple[list[dict], str]:
     """문서 내용을 바탕으로 Remotion 비디오용 슬라이드 데이터(TTS 오디오 포함)를 생성."""
     import base64 as _base64
@@ -4745,17 +4858,14 @@ def generate_video(
   ]
 }}"""
 
-    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    response = client.chat.completions.create(
-        model=safe_model,
+    raw = _call_llm(
         messages=[{"role": "user", "content": prompt_text}],
-        response_format={"type": "json_object"},
+        model=model,
         temperature=0.6,
         max_tokens=4000,
+        json_mode=True,
     )
-
-    result = json.loads(response.choices[0].message.content or "{}")
+    result = json.loads(raw)
     video_title = result.get("title", "동영상 개요")
     raw_slides = result.get("slides", [])
 
@@ -4772,14 +4882,9 @@ def generate_video(
         notes = _sanitize(notes)
 
         try:
-            tts_resp = client.audio.speech.create(
-                model="tts-1-hd",
-                voice="nova",
-                input=notes or _sanitize(slide.get("title", "")),
-                response_format="wav",
-            )
-            audio_b64 = _base64.b64encode(tts_resp.content).decode()
-            audio_sec = max(4.0, (len(tts_resp.content) - 44) / 48000)
+            tts_audio = _elevenlabs_tts_simple(notes or _sanitize(slide.get("title", "")), voice_name="sarah")
+            audio_b64 = _base64.b64encode(tts_audio).decode()
+            audio_sec = max(4.0, len(notes) / CHARS_PER_SEC)
             estimated_sec = audio_sec + 1.0
         except Exception as e:
             print(f"[video] TTS 실패, 무음으로 대체: {e}")
@@ -4809,7 +4914,7 @@ def generate_infographic(
     format: str = "overview",
     language: str = "ko",
     instructions: str = "",
-    model: str = "gpt-4o-mini",
+    model: str = _DEFAULT_MODEL,
 ) -> tuple[str, str, list[dict]]:
     """문서 내용을 바탕으로 인포그래픽을 생성.
 
@@ -4901,16 +5006,13 @@ def generate_infographic(
 
 올바른 JSON 형식으로만 응답하세요."""
 
-    safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    response = client.chat.completions.create(
-        model=safe_model,
+    raw = _call_llm(
         messages=[{"role": "user", "content": prompt_text}],
-        response_format={"type": "json_object"},
+        model=model,
         temperature=0.7,
+        json_mode=True,
     )
-
-    result = json.loads(response.choices[0].message.content or "{}")
+    result = json.loads(raw)
     title = result.get("title", "인포그래픽")
     description = result.get("description", "")
     sections = result.get("sections", [])
@@ -4929,7 +5031,7 @@ def generate_infographic(
 def generate_suggestions(
     doc_ids: list[str],
     asked_questions: list[str] = [],
-    model: str = "gpt-4o-mini",
+    model: str = _DEFAULT_MODEL,
     last_answer: str = "",
 ) -> list[dict]:
     """문서 타입과 내용 기반으로 카테고리별 추천 질문 3개를 생성한다.
@@ -5100,10 +5202,7 @@ JSON 형식으로만 응답:
             json_match = re.search(r'\{[\s\S]*\}', raw)
             result = json.loads(json_match.group(0) if json_match else raw)
         else:
-            safe_model = model if model.startswith("gpt") else "gpt-4o-mini"
-            client = OpenAI(api_key=settings.OPENAI_API_KEY)
-            response = client.chat.completions.create(
-                model=safe_model,
+            raw = _call_llm(
                 messages=[
                     {
                         "role": "system",
@@ -5111,10 +5210,11 @@ JSON 형식으로만 응답:
                     },
                     {"role": "user", "content": user_content},  # type: ignore
                 ],
-                response_format={"type": "json_object"},
+                model=model,
                 temperature=0.75,
+                json_mode=True,
             )
-            result = json.loads(response.choices[0].message.content or "{}")
+            result = json.loads(raw)
 
         questions = result.get("questions", [])
         if isinstance(questions, list):

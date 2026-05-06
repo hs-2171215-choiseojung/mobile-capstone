@@ -98,7 +98,8 @@ function prepareTtsText(raw: string): string {
     .replace(/#{1,6}\s*/g, '')                        // ## 헤더
     .replace(/\*\*([^*]+)\*\*/g, '$1')                // **굵게**
     .replace(/\*([^*]+)\*/g, '$1')                    // *기울임*
-    .replace(/`{1,3}[\s\S]*?`{1,3}/g, '')             // `코드`
+    .replace(/```[^\n]*\n[\s\S]*?```/g, '코드 블록')    // ```여러 줄 코드블록``` → "코드 블록"
+    .replace(/`([^`\n]+)`/g, '$1')                    // `한 줄 코드` → 내용만 읽음
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')          // [링크](url)
     .replace(/^\s*[-*+]\s+/gm, '')                    // - 목록
     .replace(/^\s*\d+\.\s+/gm, '')                    // 1. 번호 목록
@@ -287,6 +288,48 @@ function normalizeInlineListMarkers(content: string) {
     .replace(/([.!?])\s+(\d+\.\s+(?=\S))/g, "$1\n$2");
 }
 
+const mdContentRegex = /^[ \t]*[#\-*>|]|^[ \t]*\d+\. |[가-힣]/;
+function fixMarkdownCodeFences(text: string): string {
+  const lines = text.split('\n');
+  const result: string[] = [];
+  let inBlock = false;
+  let openIdx = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^```/.test(line)) {
+      if (!inBlock) {
+        inBlock = true;
+        openIdx = result.length;
+        result.push(line); // 일단 push, 닫을 때 결정
+      } else {
+        inBlock = false;
+        const inner = result.slice(openIdx + 1);
+        const hasMarkdown = inner.some(l => mdContentRegex.test(l));
+        if (hasMarkdown) {
+          result.splice(openIdx, 1); // opening fence 제거
+          const afterClose = line.slice(3).trim();
+          if (afterClose) result.push(afterClose); // ``` 뒤 내용 보존
+        } else {
+          result.push(line); // 실제 코드블록: closing fence 유지
+        }
+      }
+    } else {
+      result.push(line);
+    }
+  }
+
+  // 스트리밍 중 unclosed block 처리
+  if (inBlock) {
+    const inner = result.slice(openIdx + 1);
+    if (inner.some(l => mdContentRegex.test(l))) {
+      result.splice(openIdx, 1);
+    }
+  }
+
+  return result.join('\n');
+}
+
 function injectReferenceTimesIntoAnswer(
   content: string,
   mediaReferences: Array<{ reference: ChatReference; seconds: number }>
@@ -428,6 +471,8 @@ export function StudentChatPanel({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [editingPage, setEditingPage] = useState(false);
+  const [pageInput, setPageInput] = useState('');
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   const [isDeletingSummary, setIsDeletingSummary] = useState(false);
@@ -753,7 +798,7 @@ export function StudentChatPanel({
     };
     audio.onended = cleanup;
     audio.onerror = cleanup;
-    audio.play();
+    audio.play().catch(cleanup);
   };
 
   const speakMessage = async (text: string, msgIdx: number) => {
@@ -1086,6 +1131,13 @@ export function StudentChatPanel({
       </span>
     );
 
+    if (onSlideClick) {
+      content = content.replace(/슬라이드\s*(\d+)/g, (match, n, offset, str) => {
+        if (offset > 0 && str[offset - 1] === "[") return match;
+        return `[슬라이드 ${n}]`;
+      });
+    }
+
     const hasCitationRefs = onCitationClick && /\[\d+\]/.test(content);
     const hasSlideRefs = onSlideClick && /\[슬라이드[\s\d,~\-~]+\]/g.test(content);
     const hasPageRefs = onPageClick && /페이지\s*\d+/g.test(content);
@@ -1215,10 +1267,56 @@ export function StudentChatPanel({
         <div className="flex items-center gap-3">
           <BotMessageSquare className="w-5 h-5 text-[#155dfc]" />
           <h2 className="text-[14px] font-semibold text-[#1a1d26]">Ask AI</h2>
-          {currentSlide != null && (
+          {/* PPT: 슬라이드 뱃지 (읽기 전용) */}
+          {currentSlide != null && onSlideClick && (
             <span className="text-[11px] text-[#155dfc] font-medium bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full">
               슬라이드 {currentSlide}
             </span>
+          )}
+          {/* PDF: 페이지 뱃지 (클릭하면 수동 입력) */}
+          {onPageClick && !onSlideClick && (
+            editingPage ? (
+              <input
+                autoFocus
+                type="number"
+                min={1}
+                value={pageInput}
+                onChange={e => setPageInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    const n = parseInt(pageInput, 10);
+                    if (!isNaN(n) && n >= 1) onPageClick(n);
+                    setEditingPage(false);
+                  }
+                  if (e.key === 'Escape') setEditingPage(false);
+                }}
+                onBlur={() => {
+                  const n = parseInt(pageInput, 10);
+                  if (!isNaN(n) && n >= 1) onPageClick(n);
+                  setEditingPage(false);
+                }}
+                className="w-16 text-center text-[11px] font-medium border border-[#155dfc] rounded-full px-2 py-0.5 outline-none text-[#155dfc]"
+              />
+            ) : (
+              <button
+                onClick={() => { setPageInput(currentSlide != null ? String(currentSlide) : ''); setEditingPage(true); }}
+                className="text-[11px] text-[#155dfc] font-medium bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full hover:bg-blue-100 transition-colors"
+                title="클릭해서 페이지 번호 직접 입력"
+              >
+                {currentSlide != null ? `페이지 ${currentSlide}` : '페이지 입력'}
+              </button>
+            )
+          )}
+          {/* PDF: "이 페이지 설명해줘" 버튼 */}
+          {onPageClick && !onSlideClick && currentSlide != null && (
+            <button
+              onClick={() => handleSendMessage(`[페이지 ${currentSlide}]의 내용을 자세히 설명해줘.`)}
+              disabled={isLoading}
+              className="text-[11px] text-[#155dfc] font-medium bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full hover:bg-blue-100 disabled:opacity-40 transition-colors"
+              title="현재 페이지 설명 요청"
+            >
+              설명
+            </button>
           )}
         </div>
         <div className="flex items-center gap-1">
@@ -1529,10 +1627,21 @@ export function StudentChatPanel({
                     )
                     : msg.type === 'ai'
                     ? <MarkdownPreview
-                        content={msg.content
+                        content={fixMarkdownCodeFences(msg.content
                           .replace(/\[SUGGESTED_QUESTIONS\][\s\S]*?(\[\/SUGGESTED_QUESTIONS\]|$)/g, '')
+                          .replace(/~~([^~]+)~~/g, '$1')                       // ~~취소선~~ 제거
                           .trimEnd()
-                          .replace(/([^\n])\n(#{1,6} )/g, '$1\n\n$2')}
+                          .replace(/([^\n]) +(---+)(?=\s|$)/g, '$1\n\n$2')    // 같은 줄 내 text --- 분리
+                          .replace(/(---+) +(#{1,6} )/g, '$1\n\n$2')           // 같은 줄 내 --- ## 분리
+                          .replace(/([^\n\-]) +(#{1,6} )/g, '$1\n\n$2')        // 같은 줄 내 text ## 분리
+                          .replace(/([^\n])\n(#{1,6} )/g, '$1\n\n$2')          // 헤딩 앞 빈 줄 보장
+                          .replace(/([^\n])\n(---+\s*$)/gm, '$1\n\n$2')        // --- 앞 빈 줄 보장
+                          .replace(/(---+)\n([^\n])/g, '$1\n\n$2')             // --- 뒤 빈 줄 보장
+                          .replace(/([^\n])\n(> )/g, '$1\n\n$2')              // blockquote 앞 빈 줄 보장
+                          .replace(/([^\n])\n(\|)/g, '$1\n\n$2')              // 테이블 시작 앞 빈 줄 보장
+                          .replace(/(\|[^\n]*\n)\n+(?=\|)/g, '$1')            // 테이블 행 사이 빈 줄 제거
+                          .replace(/(\]\])(\[)/g, '$1 $2')                     // ][슬라이드 사이 공백
+                        )}
                         className="text-[#1a1d26]"
                         transformText={(text) =>
                           renderMessageContent(

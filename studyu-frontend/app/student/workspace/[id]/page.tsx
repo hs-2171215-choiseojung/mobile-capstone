@@ -128,7 +128,13 @@ export default function StudentWorkspacePage() {
     if (chatRequestedSlide !== null) setCurrentSlide(chatRequestedSlide);
   }, [chatRequestedSlide]);
 
-  const [selectedLLM, setSelectedLLM] = useState('gpt-4o');
+  // 소스 변경 시 현재 페이지/슬라이드 초기화
+  useEffect(() => {
+    setCurrentSlide(null);
+    setChatRequestedSlide(null);
+  }, [selectedSource?.id]);
+
+  const [selectedLLM, setSelectedLLM] = useState('claude-haiku-4-5-20251001');
   const [selectedDifficulty, setSelectedDifficulty] = useState('intermediate');
   const [expandedCenterWeeks, setExpandedCenterWeeks] = useState<number[]>([]);
   const [centerWeeksHydrated, setCenterWeeksHydrated] = useState(false);
@@ -719,12 +725,17 @@ export default function StudentWorkspacePage() {
                           const base = prev.split("#")[0];
                           return `${base}#page=${n}`;
                         });
+                        setCurrentSlide(n);
                       } else {
                         // DOCX/HWPX: PptSlideViewer의 페이지로 이동
                         setChatRequestedSlide(n);
                       }
                     } : undefined}
-                    currentSlide={(isPpt || isDocx || isHwpx) ? currentSlide : undefined}
+                    currentSlide={
+                      isPdf ? currentSlide
+                      : (isPpt || isDocx || isHwpx) ? currentSlide
+                      : undefined
+                    }
                   />
                 </Resizable>
               </div>
