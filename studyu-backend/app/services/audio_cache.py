@@ -134,3 +134,25 @@ def save_tts_cache(text: str, voice: str, audio_bytes: bytes, words: list[dict])
         _upsert(mp3_path,  audio_bytes, "audio/mpeg")
     except Exception as e:
         print(f"[tts_cache] 저장 실패 (무시): {e}")
+
+
+# ── 슬라이드별 오디오 캐시 ─────────────────────────────────
+_SLIDE_AUDIO_PREFIX = "_slide_audio"
+
+
+def load_slide_audio(doc_id: str, slide_num: int, voice: str) -> bytes | None:
+    """슬라이드 오디오 캐시 로드. 없으면 None."""
+    path = f"{_SLIDE_AUDIO_PREFIX}/{doc_id}/{slide_num}_{voice}.mp3"
+    try:
+        return supabase_admin.storage.from_(_BUCKET).download(path)
+    except Exception:
+        return None
+
+
+def save_slide_audio(doc_id: str, slide_num: int, voice: str, audio_bytes: bytes) -> None:
+    """슬라이드 오디오를 Storage에 저장. 실패해도 예외를 전파하지 않음."""
+    path = f"{_SLIDE_AUDIO_PREFIX}/{doc_id}/{slide_num}_{voice}.mp3"
+    try:
+        _upsert(path, audio_bytes, "audio/mpeg")
+    except Exception as e:
+        print(f"[slide_audio_cache] 저장 실패 (무시): {e}")
