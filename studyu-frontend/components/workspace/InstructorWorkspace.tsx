@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import Image from "next/image";
 import { createPortal } from "react-dom";
 import { useState, useRef, useCallback, useEffect, useLayoutEffect } from "react";
 import { useRouter } from "next/navigation";
@@ -242,6 +243,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [studioMenuOpen, setStudioMenuOpen] = useState(false);
   const [studioMemoRequest, setStudioMemoRequest] = useState(0);
   const [studioMenuPosition, setStudioMenuPosition] = useState({ top: 0, left: 0 });
+  const [studioMenuReady, setStudioMenuReady] = useState(false);
   const isResizingLeft = useRef(false);
   const startX = useRef(0);
   const startW = useRef(0);
@@ -287,6 +289,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const studyPlanScrollRef = useRef<HTMLDivElement>(null);
   const weekCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const pendingScrollWeekIdRef = useRef<number | null>(null);
 
   const scrollToWeek = (weekId: number) => {
     setTimeout(() => {
@@ -299,6 +302,35 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       }
     }, 50);
   };
+
+  useEffect(() => {
+    const pendingWeekId = pendingScrollWeekIdRef.current;
+    if (pendingWeekId === null) return;
+
+    const frameId = window.requestAnimationFrame(() => {
+      const el = weekCardRefs.current.get(pendingWeekId);
+      const container = studyPlanScrollRef.current;
+      if (!el || !container) return;
+
+      const elRect = el.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const isAbove = elRect.top < containerRect.top + 16;
+      const isBelow = elRect.bottom > containerRect.bottom - 16;
+
+      if (isAbove || isBelow) {
+        container.scrollTo({
+          top: container.scrollTop + elRect.top - containerRect.top - 16,
+          behavior: "smooth",
+        });
+      }
+
+      pendingScrollWeekIdRef.current = null;
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [weeks]);
 
   // Add Task modal
   const [openPickerWeekId, setOpenPickerWeekId] = useState<number | null>(null);
@@ -330,6 +362,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [leftSourcesCollapsed, setLeftSourcesCollapsed] = useState(false);
   const [leftStudioItemsCollapsed, setLeftStudioItemsCollapsed] = useState(false);
   const studioMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const studioMenuRef = useRef<HTMLDivElement>(null);
 
   // Share modal
   const [showShareModal, setShowShareModal] = useState(false);
@@ -337,6 +370,68 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [linkCopied, setLinkCopied] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
   const [inviteLoading, setInviteLoading] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | null>(null);
+  const [profileInitial, setProfileInitial] = useState("I");
+  const [profileName, setProfileName] = useState("Instructor");
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(async ({ data }) => {
+      const user = data.user;
+      if (!user) return;
+
+      const avatar =
+        typeof user.user_metadata?.avatar_url === "string"
+          ? user.user_metadata.avatar_url
+          : typeof user.user_metadata?.picture === "string"
+            ? user.user_metadata.picture
+            : null;
+
+      const metadataNameCandidates = [
+        user.user_metadata?.display_name,
+        user.user_metadata?.name,
+        user.user_metadata?.full_name,
+      ];
+      const metadataName = metadataNameCandidates.find(
+        (value): value is string => typeof value === "string" && value.trim().length > 0
+      )?.trim();
+
+      let resolvedName = metadataName || "";
+      if (!resolvedName) {
+        const { data: profile } = await supabase
+          .from("users")
+          .select("display_name")
+          .eq("id", user.id)
+          .single();
+        if (typeof profile?.display_name === "string" && profile.display_name.trim()) {
+          resolvedName = profile.display_name.trim();
+        }
+      }
+
+      const seed = resolvedName || "Instructor";
+
+      setProfileAvatarUrl(avatar);
+      setProfileInitial(seed[0]?.toUpperCase() || "I");
+      setProfileName(seed);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (!profileMenuRef.current?.contains(event.target as Node)) {
+        setProfileMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+    };
+  }, [profileMenuOpen]);
 
   const resetViewerState = useCallback((nextDocs: Doc[] = docs) => {
     setViewerDoc(null);
@@ -399,23 +494,35 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
 
   useLayoutEffect(() => {
     if (!studioMenuOpen) return;
+    setStudioMenuReady(false);
     const updatePosition = () => {
       const rect = studioMenuButtonRef.current?.getBoundingClientRect();
       if (!rect) return;
+      const menuHeight = studioMenuRef.current?.getBoundingClientRect().height ?? 520;
+      const maxTop = Math.max(16, window.innerHeight - menuHeight - 16);
       setStudioMenuPosition({
-        top: Math.max(16, rect.top),
+        top: Math.min(Math.max(16, rect.top), maxTop),
         left: Math.min(window.innerWidth - 396, rect.right + 12),
       });
     };
     updatePosition();
+    const rafId = window.requestAnimationFrame(() => {
+      updatePosition();
+      setStudioMenuReady(true);
+    });
     const handler = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
-      if (!target.closest("[data-studio-menu]")) setStudioMenuOpen(false);
+      if (!target.closest("[data-studio-menu]")) {
+        setStudioMenuOpen(false);
+        setStudioMenuReady(false);
+      }
     };
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
     document.addEventListener("mousedown", handler);
     return () => {
+      window.cancelAnimationFrame(rafId);
+      setStudioMenuReady(false);
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
       document.removeEventListener("mousedown", handler);
@@ -799,8 +906,10 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
 
   // ── Week handlers ─────────────────────────────────────────────────
   function handleAddWeek() {
+    if (weeks.length >= 16) return;
     const newId = weeks.length > 0 ? Math.max(...weeks.map((w) => w.id)) + 1 : 1;
     const newWeek: Week = { id: newId, title: `Week ${newId}: New Topic`, status: "UPCOMING", sources: [], tasks: [] };
+    pendingScrollWeekIdRef.current = newId;
     setWeeks((prev) => [...prev, newWeek]);
     setEditingWeekId(newId);
     setEditingTitle(`Week ${newId}: New Topic`);
@@ -1132,6 +1241,25 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     }
   }
 
+  function closeShareModal() {
+    setShowShareModal(false);
+    setLinkCopied(false);
+    setActiveView("sources");
+  }
+
+  function handleGoToDashboard() {
+    setProfileMenuOpen(false);
+    router.push("/dashboard/instructor");
+  }
+
+  async function handleLogout() {
+    setProfileMenuOpen(false);
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.push("/login");
+    router.refresh();
+  }
+
   function handleAddWeekTask(weekId: number, task: WeekTask) {
     setWeeks((prev) => prev.map((w) => {
       if (w.id !== weekId) return w;
@@ -1336,7 +1464,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   return (
     <div className="flex flex-col h-screen bg-[#f0f4f9] overflow-hidden">
       {/* Top Header */}
-      <header className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-5 shrink-0 shadow-sm z-10">
+      <header className="relative h-14 bg-white border-b border-gray-200 flex items-center justify-between px-5 shrink-0 shadow-sm z-30 overflow-visible">
         <div className="flex items-center gap-4">
           <button
             onClick={() => { router.push(backUrl); router.refresh(); }}
@@ -1353,7 +1481,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
           </span>
           <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-600">강사</span>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 mr-2">
           {/* Public Link Share */}
           <button
             onClick={handleOpenInvite}
@@ -1366,7 +1494,47 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
             </svg>
             공유
           </button>
-          <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white font-bold text-xs">I</div>
+          <div className="relative" ref={profileMenuRef}>
+            <button
+              onClick={() => setProfileMenuOpen((prev) => !prev)}
+              className="flex items-center justify-center rounded-full focus:outline-none focus:ring-2 focus:ring-pink-200"
+              aria-label="강사 메뉴"
+            >
+              {profileAvatarUrl ? (
+                <Image
+                  src={profileAvatarUrl}
+                  alt="프로필"
+                  width={32}
+                  height={32}
+                  className="rounded-full w-8 h-8"
+                />
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center text-xs font-semibold text-pink-600">
+                  {profileInitial}
+                </div>
+              )}
+            </button>
+            {profileMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 w-52 rounded-xl border border-gray-200 bg-white shadow-lg py-1.5 z-50">
+                <div className="px-4 py-2">
+                  <p className="text-sm font-semibold text-gray-800 break-words leading-5">{profileName}</p>
+                </div>
+                <div className="h-px bg-gray-100 my-1" />
+                <button
+                  onClick={handleGoToDashboard}
+                  className="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  내 대시보드로 이동
+                </button>
+                <button
+                  onClick={() => { void handleLogout(); }}
+                  className="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  로그아웃
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1735,7 +1903,10 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                             <span className="text-[10px] text-gray-300">주차 미지정 {unassignedStudioItems.length}개</span>
                             <button
                               ref={studioMenuButtonRef}
-                              onClick={() => setStudioMenuOpen((prev) => !prev)}
+                              onClick={() => {
+                                setStudioMenuReady(false);
+                                setStudioMenuOpen((prev) => !prev);
+                              }}
                               className="w-5 h-5 rounded-md flex items-center justify-center text-gray-400 hover:bg-gray-100"
                               title="스튜디오 추가"
                             >
@@ -1822,26 +1993,6 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         {/* ─── Main Content ─── */}
         <main className="flex-1 flex overflow-hidden">
           <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Sub header */}
-            <div className="h-11 bg-white border-b border-gray-200 flex items-center justify-between px-3 shrink-0">
-              <button
-                onClick={() => setLeftSidebarOpen((v) => !v)}
-                className="w-7 h-7 rounded-md bg-gray-100 hover:bg-blue-100 flex items-center justify-center text-gray-400 hover:text-blue-500 transition-colors"
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                  <rect x="1.5" y="1.5" width="13" height="13" rx="2.5" stroke="currentColor" strokeWidth="1.4"/>
-                  <line x1="5.5" y1="1.5" x2="5.5" y2="14.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                  {leftSidebarOpen
-                    ? <path d="M9 6L11 8L9 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-                    : <path d="M7 6L5 8L7 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>}
-                </svg>
-              </button>
-
-              <span className="text-gray-500 font-medium" style={{ fontSize: "0.8rem" }}>Instructor Study Plan</span>
-
-              <div className="w-7 h-7" />
-            </div>
-
             {/* Studio Item Viewer */}
             {viewerStudioItem && !viewerDoc && (
               <div className="flex-1 flex flex-col overflow-hidden bg-white">
@@ -1885,8 +2036,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
               const cols = totalWeeks <= 16 ? 16 : Math.ceil(totalWeeks / Math.ceil(totalWeeks / 16));
               const activeWeekIds = new Set(weeks.filter(w => w.status === "ACTIVE").map(w => w.id));
               return (
-                <div className="shrink-0 bg-white border-b border-gray-200 px-6 py-2.5 z-10">
-                  <div className="flex items-center justify-between mb-1.5">
+                <div className="shrink-0 bg-white border-b border-gray-200 px-6 py-3.5 z-10">
+                  <div className="flex items-center justify-between mb-2.5">
                     <span className="text-[11px] font-semibold text-[#2d3748]">진도현황</span>
                     <div className="flex items-center gap-3">
                       <span className="flex items-center gap-1 text-[10px] text-gray-500">
@@ -1899,7 +2050,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                       </span>
                     </div>
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: '4px' }}>
+                  <div className="mt-1" style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: '4px' }}>
                     {weekNums.map((weekNum) => {
                       const isActive = activeWeekIds.has(weekNum);
                       const exists = weeks.some(w => w.id === weekNum);
@@ -1935,7 +2086,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
 
             {/* Scrollable Study Plan */}
             {!viewerDoc && !viewerStudioItem && <div ref={studyPlanScrollRef} className="flex-1 overflow-y-auto min-h-0">
-              <div className="px-8 py-7 bg-white min-h-full">
+              <div className="px-8 pt-8 pb-7 bg-white min-h-full">
                 <h1 className="mb-7" style={{ fontFamily: "Manrope, sans-serif", fontSize: "1.3rem", fontWeight: 700, color: "#001c39" }}>
                   Instructor Study Plan Sequence
                 </h1>
@@ -2257,7 +2408,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                             <button
                               onClick={() => { setOpenSourcePickerWeekId(week.id); setSelectedSourceType(null); setSourceForm({ title:"", url:"", text:"" }); }}
                               className="flex-1 flex items-center justify-center gap-2 hover:bg-gray-50 transition-all"
-                              style={{ minHeight:52, borderRadius:8, border:"2px dashed rgba(193,199,211,0.7)" }}
+                              style={{ minHeight:52, borderRadius:8, border:"2px dashed rgba(193,199,211,0.7)", background:"rgba(249,250,251,0.8)" }}
                             >
                               <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M4 10H16M10 4V16" stroke="#717783" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.667"/></svg>
                               <span style={{ fontSize:"13px", fontWeight:600, color:"#717783" }}>소스를 먼저 추가해주세요</span>
@@ -2288,14 +2439,16 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                   ))}
 
                   {/* Add New Week */}
-                  <button
-                    onClick={handleAddWeek}
-                    className="w-full flex items-center justify-center gap-2 hover:bg-gray-50 transition-all"
-                    style={{ minHeight:52, borderRadius:8, border:"2px dashed rgba(193,199,211,0.5)" }}
-                  >
-                    <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M4 10H16M10 4V16" stroke="#717783" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.667"/></svg>
-                    <span style={{ fontSize:"13px", fontWeight:600, color:"#717783" }}>Add New Week</span>
-                  </button>
+                  {weeks.length < 16 && (
+                    <button
+                      onClick={handleAddWeek}
+                      className="w-full flex items-center justify-center gap-2 transition-all hover:bg-blue-50/60"
+                      style={{ minHeight:52, borderRadius:8, border:"2px dashed rgba(59,130,246,0.35)", background:"rgba(239,246,255,0.55)" }}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M4 10H16M10 4V16" stroke="#3b82f6" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.667"/></svg>
+                      <span style={{ fontSize:"13px", fontWeight:600, color:"#3b82f6" }}>Add New Week</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>}
@@ -2435,7 +2588,10 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
 
       {studioMenuOpen && createPortal(
         <div
-          className="fixed z-[1200] w-[380px] max-w-[calc(100vw-48px)] rounded-3xl border border-gray-200 bg-white shadow-2xl overflow-hidden"
+          ref={studioMenuRef}
+          className={`fixed z-[1200] w-[380px] max-w-[calc(100vw-48px)] rounded-3xl border border-gray-200 bg-white shadow-2xl overflow-hidden transition-opacity ${
+            studioMenuReady ? "opacity-100" : "opacity-0"
+          }`}
           style={{ top: studioMenuPosition.top, left: studioMenuPosition.left }}
           data-studio-menu
         >
@@ -2529,7 +2685,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       {openPickerWeekId !== null && (
         <>
           <div className="fixed inset-0 bg-black/30 z-40" onClick={closePickerModal} />
-          <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
+          <div className="fixed inset-0 z-50 overflow-y-auto pointer-events-none">
+            <div className="min-h-full flex items-center justify-center p-4 pt-8 pb-8">
             <div
               className="bg-white rounded-3xl shadow-2xl pointer-events-auto overflow-hidden"
               style={{ width: selectedPickerItem ? 560 : 520, maxHeight: "90vh", display: "flex", flexDirection: "column" }}
@@ -2745,6 +2902,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                 </div>
               )}
             </div>
+            </div>
           </div>
         </>
       )}
@@ -2853,7 +3011,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       {/* ─── Invite Code Modal ─── */}
       {showShareModal && (
         <>
-          <div className="fixed inset-0 bg-black/40 z-50" onClick={() => { setShowShareModal(false); setLinkCopied(false); }} />
+          <div className="fixed inset-0 bg-black/40 z-50" onClick={closeShareModal} />
           <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
             <div className="bg-white rounded-2xl shadow-2xl w-[400px] pointer-events-auto overflow-hidden">
               <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-100">
@@ -2861,7 +3019,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                   <h3 className="text-gray-800 font-bold" style={{ fontSize: "16px" }}>초대 코드 공유</h3>
                   <p className="text-gray-400" style={{ fontSize: "12px" }}>&quot;{notebook.title}&quot;</p>
                 </div>
-                <button onClick={() => { setShowShareModal(false); setLinkCopied(false); }} className="w-8 h-8 rounded-xl bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500">
+                <button onClick={closeShareModal} className="w-8 h-8 rounded-xl bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500">
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
                 </button>
               </div>

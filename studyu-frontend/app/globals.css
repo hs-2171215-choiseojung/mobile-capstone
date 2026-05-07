@@ -27,7 +27,7 @@
 
 /* 스크롤바 스타일링 */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
 }
 ::-webkit-scrollbar-track {
   @apply bg-transparent;
@@ -37,4 +37,8 @@
 }
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-surface-400;
+}
+
+.notebook-action-button {
+  @apply flex items-center justify-center;
 }

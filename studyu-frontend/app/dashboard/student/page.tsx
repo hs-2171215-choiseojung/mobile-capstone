@@ -58,6 +58,39 @@ export default async function StudentDashboardPage() {
     }
   }
 
+
+  if (enrolledNotebooks.length > 0) {
+    const hasInstructorNames = enrolledNotebooks.every(
+      (notebook) => typeof notebook?.instructor_name === 'string' && notebook.instructor_name.trim().length > 0
+    )
+
+    if (!hasInstructorNames) {
+      const ownerIds = [
+        ...new Set(
+          enrolledNotebooks
+            .map((notebook) => notebook?.user_id)
+            .filter((id): id is string => typeof id === 'string' && id.length > 0)
+        ),
+      ]
+
+      if (ownerIds.length > 0) {
+        const { data: instructors } = await supabase
+          .from('users')
+          .select('id, display_name')
+          .in('id', ownerIds)
+
+        const instructorNameById = new Map(
+          (instructors ?? []).map((instructor) => [instructor.id, instructor.display_name || '\uAC15\uC0AC'])
+        )
+
+        enrolledNotebooks = enrolledNotebooks.map((notebook) => ({
+          ...notebook,
+          instructor_name: instructorNameById.get(notebook.user_id) || '\uAC15\uC0AC',
+        }))
+      }
+    }
+  }
+
   const userName = profile?.display_name || user.email?.split('@')[0] || '사용자'
 
   return (
