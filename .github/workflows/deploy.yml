@@ -82,6 +82,7 @@ jobs:
             --platform=managed \
             --allow-unauthenticated \
             --port=8000
+            --set-env-vars="SUPABASE_URL=${{ secrets.SUPABASE_URL }},SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }},SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
 
   deploy-frontend:
     needs: changes
