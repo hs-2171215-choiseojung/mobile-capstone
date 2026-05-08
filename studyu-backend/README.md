@@ -79,3 +79,4 @@ uvicorn main:app --reload
 | DELETE | `/api/notebooks/{id}` | 노트북 삭제 | ✅ 완료 |
 | POST | `/api/documents/upload` | 문서 업로드 | 🔜 3주차 |
 | POST | `/api/chat` | RAG 질의응답 | 🔜 4주차 |
+
