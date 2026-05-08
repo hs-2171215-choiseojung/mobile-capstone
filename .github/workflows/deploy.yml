@@ -141,8 +141,12 @@ jobs:
     needs: [changes, deploy-frontend]
     if: |
       always() &&
-      (needs.changes.outputs.hosting == 'true' || needs.changes.outputs.frontend == 'true' || inputs.force_hosting == true) &&
-      (needs.deploy-frontend.result == 'success' || needs.deploy-frontend.result == 'skipped')
+      (needs.changes.outputs.hosting == 'true' ||
+       needs.changes.outputs.frontend == 'true' ||
+       needs.changes.outputs.backend == 'true' ||
+       inputs.force_hosting == true) &&
+      (needs.deploy-frontend.result == 'success' || needs.deploy-frontend.result == 'skipped') &&
+      (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
