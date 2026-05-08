@@ -136,7 +136,6 @@ jobs:
             --platform=managed \
             --allow-unauthenticated \
             --port=3000
-
   deploy-hosting:
     needs: [changes, deploy-frontend]
     if: |
@@ -152,6 +151,7 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          token_format: 'access_token'
 
       - uses: actions/setup-node@v4
         with:
@@ -159,5 +159,21 @@ jobs:
 
       - run: npm install -g firebase-tools
 
+      - name: Debug firebase auth
+        env:
+          FIREBASE_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          echo "=== firebase projects:list ==="
+          firebase projects:list --token "$FIREBASE_TOKEN" || true
+          echo ""
+          echo "=== sites list ==="
+          firebase hosting:sites:list --project ${{ vars.GCP_PROJECT_ID }} --token "$FIREBASE_TOKEN" || true
+
       - name: Deploy Firebase Hosting
-        run: firebase deploy --only hosting --project ${{ vars.GCP_PROJECT_ID }} --non-interactive
+        env:
+          FIREBASE_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          firebase deploy --only hosting \
+            --project ${{ vars.GCP_PROJECT_ID }} \
+            --token "$FIREBASE_TOKEN" \
+            --non-interactive --debug
