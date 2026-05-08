@@ -6,15 +6,15 @@ on:
   workflow_dispatch:
     inputs:
       force_backend:
-        description: 'Force deploy backend'
+        description: "Force deploy backend"
         type: boolean
         default: false
       force_frontend:
-        description: 'Force deploy frontend'
+        description: "Force deploy frontend"
         type: boolean
         default: false
       force_hosting:
-        description: 'Force deploy hosting'
+        description: "Force deploy hosting"
         type: boolean
         default: false
 
@@ -27,8 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
-      backend:  ${{ steps.filter.outputs.backend }}
-      hosting:  ${{ steps.filter.outputs.hosting }}
+      backend: ${{ steps.filter.outputs.backend }}
+      hosting: ${{ steps.filter.outputs.hosting }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -55,7 +55,7 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
-          token_format: 'access_token'
+          token_format: "access_token"
 
       - uses: google-github-actions/setup-gcloud@v2
 
@@ -89,6 +89,17 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
+      - name: Create env file
+        run: |
+          cat <<-EOF > env.yaml
+          SUPABASE_URL: "${{ secrets.SUPABASE_URL }}"
+          SUPABASE_ANON_KEY: "${{ secrets.SUPABASE_ANON_KEY }}"
+          SUPABASE_SERVICE_ROLE_KEY: "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+          EOF
+
+      - name: Show env.yaml
+        run: cat -A env.yaml
+
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy studyu-backend \
@@ -97,9 +108,13 @@ jobs:
             --platform=managed \
             --allow-unauthenticated \
             --port=8000 \
-            --set-env-vars="SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
-            --set-env-vars=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} \
-            --set-env-vars=SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+            --env-vars-file=env.yaml
+
+      - name: Check Cloud Run env
+        run: |
+          gcloud run services describe studyu-backend \
+            --region=${{ vars.GCP_REGION }} \
+            --format="yaml(spec.template.spec.containers[0].env)"
 
   deploy-frontend:
     needs: changes
@@ -113,7 +128,7 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
-          token_format: 'access_token'
+          token_format: "access_token"
 
       - uses: google-github-actions/setup-gcloud@v2
 
@@ -160,7 +175,7 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
-          token_format: 'access_token'
+          token_format: "access_token"
 
       - uses: actions/setup-node@v4
         with:
