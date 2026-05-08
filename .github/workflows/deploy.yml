@@ -2,7 +2,7 @@ name: Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, firebase-deploy]
   workflow_dispatch:   # 수동 실행도 가능
 
 permissions:
