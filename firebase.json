@@ -1,13 +1,16 @@
 {
-  "apphosting": {
-    "backendId": "tutor-capstone",
-    "rootDir": "./studyu-frontend",
-    "ignore": [
-      "node_modules",
-      ".git",
-      "firebase-debug.log",
-      "firebase-debug.*.log",
-      "functions"
+  "hosting": {
+    "public": "public",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      {
+        "source": "/api/**",
+        "run": { "serviceId": "studyu-backend", "region": "asia-northeast3" }
+      },
+      {
+        "source": "**",
+        "run": { "serviceId": "studyu-frontend", "region": "asia-northeast3" }
+      }
     ]
   }
 }
