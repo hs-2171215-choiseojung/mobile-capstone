@@ -576,7 +576,7 @@ STORAGE_CONTENT_TYPES = {
 STORABLE_EXTENSIONS = set(STORAGE_CONTENT_TYPES.keys())
 
 # 파일 크기 제한 (바이트)
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
 MAX_VIDEO_SIZE = 25 * 1024 * 1024  # Whisper API 제한 25MB
 VIDEO_AUDIO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a"}
 
@@ -622,7 +622,7 @@ async def upload_document(
     if ext in VIDEO_AUDIO_EXTENSIONS and len(file_bytes) > MAX_VIDEO_SIZE:
         raise HTTPException(status_code=400, detail=f"비디오/오디오 파일은 25MB 이하만 가능합니다.")
     if len(file_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="파일 크기는 100MB 이하만 가능합니다.")
+        raise HTTPException(status_code=400, detail="파일 크기는 200MB 이하만 가능합니다.")
 
     doc_id = str(uuid.uuid4())
 
