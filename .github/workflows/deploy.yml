@@ -74,6 +74,21 @@ jobs:
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
+      - name: Debug Secrets (safe)
+        run: |
+          echo "SUPABASE_URL set? $([[ -n "${{ secrets.SUPABASE_URL }}" ]] && echo YES || echo NO)"
+          echo "SUPABASE_ANON_KEY set? $([[ -n "${{ secrets.SUPABASE_ANON_KEY }}" ]] && echo YES || echo NO)"
+          echo "SUPABASE_SERVICE_ROLE_KEY set? $([[ -n "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]] && echo YES || echo NO)"
+
+          echo "Lengths:"
+          echo "URL length: ${#SUPABASE_URL}"
+          echo "ANON length: ${#SUPABASE_ANON_KEY}"
+          echo "SERVICE length: ${#SUPABASE_SERVICE_ROLE_KEY}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy studyu-backend \
@@ -82,7 +97,9 @@ jobs:
             --platform=managed \
             --allow-unauthenticated \
             --port=8000 \
-            --set-env-vars="SUPABASE_URL=${{ secrets.SUPABASE_URL }},SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }},SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+            --set-env-vars="SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
+            --set-env-vars=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} \
+            --set-env-vars=SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
 
   deploy-frontend:
     needs: changes
