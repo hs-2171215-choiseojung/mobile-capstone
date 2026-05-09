@@ -165,7 +165,7 @@ export default function InstructorDashboard({ notebooks: initial, userName }: Pr
           <h2 className="text-base font-semibold text-gray-900 mb-4">⭐ 자주 쓰는 노트북</h2>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {starred.map((nb) => (
-              <NotebookCard key={nb.id} nb={nb} {...cardProps} />
+              <NotebookCard key={`starred-${nb.id}`} nb={nb} menuScope="starred" {...cardProps} />
             ))}
           </div>
         </div>
@@ -201,7 +201,7 @@ export default function InstructorDashboard({ notebooks: initial, userName }: Pr
         ) : (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {filtered.map((nb) => (
-              <NotebookCard key={nb.id} nb={nb} {...cardProps} />
+              <NotebookCard key={`all-${nb.id}`} nb={nb} menuScope="all" {...cardProps} />
             ))}
           </div>
         )}
@@ -381,8 +381,9 @@ function ResponsiveActionLabel({
   );
 }
 
-function NotebookCard({ nb, onStar, onDelete, onEdit, onShare, menuOpenId, setMenuOpenId, formatDate, userName }: {
+function NotebookCard({ nb, menuScope, onStar, onDelete, onEdit, onShare, menuOpenId, setMenuOpenId, formatDate, userName }: {
   nb: Notebook & { is_starred: boolean; student_count: number };
+  menuScope: "starred" | "all";
   onStar: (id: string) => void;
   onDelete: (id: string) => void;
   onEdit: (id: string, title: string) => void;
@@ -392,6 +393,8 @@ function NotebookCard({ nb, onStar, onDelete, onEdit, onShare, menuOpenId, setMe
   formatDate: (d: string) => string;
   userName: string;
 }) {
+  const menuKey = `${menuScope}-${nb.id}`;
+
   return (
     <div className="border border-gray-200 rounded-xl p-4 bg-white hover:border-blue-300 hover:shadow-md transition-all relative flex flex-col gap-2">
       {/* 제목 + 즐겨찾기 + 메뉴 */}
@@ -407,12 +410,12 @@ function NotebookCard({ nb, onStar, onDelete, onEdit, onShare, menuOpenId, setMe
             }
           </button>
           <div className="relative">
-            <button onClick={() => setMenuOpenId(menuOpenId === nb.id ? null : nb.id)} className="p-1 rounded hover:bg-gray-100 transition-colors">
+            <button onClick={() => setMenuOpenId(menuOpenId === menuKey ? null : menuKey)} className="p-1 rounded hover:bg-gray-100 transition-colors">
               <svg className="w-3.5 h-3.5 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
                 <circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/>
               </svg>
             </button>
-            {menuOpenId === nb.id && (
+            {menuOpenId === menuKey && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpenId(null)} />
                 <div className="absolute right-0 top-7 z-20 w-32 bg-white border border-gray-200 rounded-lg shadow-lg py-1">

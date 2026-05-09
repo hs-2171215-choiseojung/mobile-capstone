@@ -232,7 +232,7 @@ def _format_media_timestamp(total_seconds: int | float) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-_WHISPER_SUPPORTED_MEDIA_EXTENSIONS = {"flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"}
+_WHISPER_SUPPORTED_MEDIA_EXTENSIONS = {"flac", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"}
 
 
 def _find_ffmpeg_binary() -> str | None:
@@ -247,6 +247,8 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
     import tempfile
 
     normalized_ext = (original_ext or "").lower().lstrip(".")
+    # Some .m4a files are accepted by extension but rejected by the transcription API
+    # depending on the actual container/codec. Converting them to wav first is safer.
     if normalized_ext in _WHISPER_SUPPORTED_MEDIA_EXTENSIONS:
         return input_path, False
 
@@ -257,7 +259,7 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
             "서버에 ffmpeg를 설치하면 자동으로 wav로 변환해서 처리할 수 있습니다."
         )
 
-    converted_fd, converted_path = tempfile.mkstemp(suffix=".wav")
+    converted_fd, converted_path = tempfile.mkstemp(suffix=".m4a")
     os.close(converted_fd)
 
     try:
@@ -272,6 +274,10 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
                 "1",
                 "-ar",
                 "16000",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
                 converted_path,
             ],
             check=False,
@@ -281,7 +287,7 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
         if completed.returncode != 0:
             stderr = (completed.stderr or "").strip()
             raise ValueError(
-                f".{normalized_ext} 파일을 전사용 wav로 변환하지 못했습니다."
+                f".{normalized_ext} 파일을 전사용 m4a로 변환하지 못했습니다."
                 + (f" ffmpeg 오류: {stderr[:240]}" if stderr else "")
             )
         return converted_path, True
