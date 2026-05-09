@@ -581,6 +581,51 @@ MAX_VIDEO_SIZE = 25 * 1024 * 1024  # Whisper API 제한 25MB
 VIDEO_AUDIO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm", "mp3", "m4a"}
 
 
+def _friendly_media_upload_error(ext: str, error: Exception) -> str:
+    raw = str(error)
+    lowered = raw.lower()
+
+    if "maximum content size limit" in lowered or "413" in lowered or "25mb" in lowered:
+        return "오디오/비디오 파일은 25MB 이하만 업로드할 수 있습니다."
+    if "invalid file format" in lowered or "지원하지 않는 파일 형식" in raw:
+        return (
+            "지원하지 않는 오디오/비디오 파일 형식입니다. "
+            "MP4, MOV, AVI, MKV, WEBM, MP3, M4A 파일만 업로드해주세요."
+        )
+    return (
+        f"{ext.upper()} 파일을 처리하지 못했습니다. "
+        "파일 형식이나 인코딩을 확인한 뒤 다시 시도해주세요."
+    )
+
+
+def _friendly_url_ingest_error(url: str, error: Exception) -> str:
+    raw = str(error)
+    lowered = raw.lower()
+    is_youtube = _extract_youtube_video_id(url) is not None
+    parsed = urlparse(url)
+    ext = parsed.path.lower().rsplit(".", 1)[-1] if "." in parsed.path else ""
+    is_media_url = ext in VIDEO_AUDIO_EXTENSIONS
+
+    if is_youtube:
+        if "자막이 없습니다" in raw:
+            return "이 유튜브 영상에는 사용할 수 있는 자막이 없습니다. 자막이 있는 영상 URL을 입력해주세요."
+        if "비활성화" in raw:
+            return "이 유튜브 영상은 자막이 비활성화되어 있어 불러올 수 없습니다."
+        return "유튜브 자막을 불러오지 못했습니다. 자막이 공개된 영상인지 확인한 뒤 다시 시도해주세요."
+
+    if is_media_url:
+        if "maximum content size limit" in lowered or "413" in lowered or "25mb" in lowered:
+            return "오디오/비디오 파일은 25MB 이하만 처리할 수 있습니다."
+        if "invalid file format" in lowered or "지원하지 않는 파일 형식" in raw:
+            return (
+                "지원하지 않는 오디오/비디오 형식입니다. "
+                "MP4, MOV, AVI, MKV, WEBM, MP3, M4A 형식만 사용할 수 있습니다."
+            )
+        return "오디오/비디오 파일을 처리하지 못했습니다. 파일 형식이나 인코딩을 확인한 뒤 다시 시도해주세요."
+
+    return raw
+
+
 def _ensure_youtube_document_chunks(document_id: str, storage_path: str) -> None:
     if not storage_path or not storage_path.startswith(("http://", "https://")):
         return
@@ -716,6 +761,8 @@ async def upload_document(
         import traceback
         traceback.print_exc()
         supabase_admin.table("documents").update({"status": "error"}).eq("id", doc_id).execute()
+        if ext in VIDEO_AUDIO_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=_friendly_media_upload_error(ext, e))
         raise HTTPException(status_code=500, detail=f"파일 파싱 실패: {str(e)}")
 
     # 4-B. HWPX 마크다운을 document_chunks 테이블에 chunk_index=-1로 저장
@@ -806,11 +853,14 @@ async def ingest_url_document(
         chunk_count, _ = ingest_url(req.url, doc_id)
     except ValueError as e:
         supabase_admin.table("documents").update({"status": "error"}).eq("id", doc_id).execute()
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=_friendly_url_ingest_error(req.url, e))
     except Exception as e:
         import traceback
         traceback.print_exc()
         supabase_admin.table("documents").update({"status": "error"}).eq("id", doc_id).execute()
+        friendly = _friendly_url_ingest_error(req.url, e)
+        if friendly != str(e):
+            raise HTTPException(status_code=400, detail=friendly)
         raise HTTPException(status_code=500, detail=f"URL 처리 실패: {str(e)}")
 
     # 3. 상태 업데이트

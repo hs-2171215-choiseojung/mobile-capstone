@@ -13,6 +13,7 @@ RAG 파이프라인 (Supabase 영속 저장, pdfplumber + OpenAI)
 
 import io
 import json
+import random
 import re
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -232,7 +233,7 @@ def _format_media_timestamp(total_seconds: int | float) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-_WHISPER_SUPPORTED_MEDIA_EXTENSIONS = {"flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"}
+_WHISPER_SUPPORTED_MEDIA_EXTENSIONS = {"flac", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"}
 
 
 def _find_ffmpeg_binary() -> str | None:
@@ -247,6 +248,8 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
     import tempfile
 
     normalized_ext = (original_ext or "").lower().lstrip(".")
+    # Some .m4a files are accepted by extension but rejected by the transcription API
+    # depending on the actual container/codec. Converting them to wav first is safer.
     if normalized_ext in _WHISPER_SUPPORTED_MEDIA_EXTENSIONS:
         return input_path, False
 
@@ -257,7 +260,7 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
             "서버에 ffmpeg를 설치하면 자동으로 wav로 변환해서 처리할 수 있습니다."
         )
 
-    converted_fd, converted_path = tempfile.mkstemp(suffix=".wav")
+    converted_fd, converted_path = tempfile.mkstemp(suffix=".m4a")
     os.close(converted_fd)
 
     try:
@@ -272,6 +275,10 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
                 "1",
                 "-ar",
                 "16000",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
                 converted_path,
             ],
             check=False,
@@ -281,7 +288,7 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
         if completed.returncode != 0:
             stderr = (completed.stderr or "").strip()
             raise ValueError(
-                f".{normalized_ext} 파일을 전사용 wav로 변환하지 못했습니다."
+                f".{normalized_ext} 파일을 전사용 m4a로 변환하지 못했습니다."
                 + (f" ffmpeg 오류: {stderr[:240]}" if stderr else "")
             )
         return converted_path, True
@@ -2241,13 +2248,37 @@ def _is_youtube_url(url: str) -> bool:
     return _extract_youtube_video_id(url) is not None
 
 
+def _build_youtube_transcript_api():
+    """Create a YouTubeTranscriptApi client with an optional rotating proxy."""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        from youtube_transcript_api.proxies import GenericProxyConfig
+    except ImportError as e:
+        raise ValueError("유튜브 자막 추출 기능이 서버에 설치되어 있지 않습니다. youtube-transcript-api를 설치해주세요.") from e
+
+    proxy_id = (settings.PROXY_USER_ID or "").strip()
+    proxy_pw = (settings.PROXY_USER_PW or "").strip()
+    if not proxy_id or not proxy_pw:
+        return YouTubeTranscriptApi()
+
+    proxies = [
+        f"http://{proxy_id}:{proxy_pw}_country-kr_city-seoul_session-gqwgIjJa_lifetime-10m@geo.iproyal.com:12321",
+        f"http://{proxy_id}:{proxy_pw}_country-kr_city-seoul_session-rbVhtO9v_lifetime-10m@geo.iproyal.com:12321",
+        f"http://{proxy_id}:{proxy_pw}_country-kr_city-seoul_session-xVd28AYq_lifetime-10m@geo.iproyal.com:12321",
+        f"http://{proxy_id}:{proxy_pw}_country-kr_city-seoul_session-Wj0p3nd3_lifetime-10m@geo.iproyal.com:12321",
+        f"http://{proxy_id}:{proxy_pw}_country-kr_city-seoul_session-800uCR8L_lifetime-10m@geo.iproyal.com:12321",
+    ]
+    proxy = random.choice(proxies)
+    return YouTubeTranscriptApi(proxy_config=GenericProxyConfig(http_url=proxy))
+
+
 def _fetch_youtube_transcript(video_id: str) -> str:
     """youtube_transcript_api로 자막 텍스트 추출 (한국어 → 영어 순)."""
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+        from youtube_transcript_api import NoTranscriptFound, TranscriptsDisabled
     except ImportError as e:
         raise ValueError("유튜브 자막 추출 기능이 서버에 설치되어 있지 않습니다. youtube-transcript-api를 설치해주세요.") from e
-    api = YouTubeTranscriptApi()
+    api = _build_youtube_transcript_api()
     try:
         transcript = api.fetch(video_id, languages=["ko", "ko-KR", "en", "en-US"])
     except NoTranscriptFound:
@@ -2271,11 +2302,11 @@ def _fetch_youtube_transcript(video_id: str) -> str:
 def _fetch_youtube_transcript_segments(video_id: str) -> list[dict[str, Any]]:
     """youtube_transcript_api로 자막 세그먼트 추출."""
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+        from youtube_transcript_api import NoTranscriptFound, TranscriptsDisabled
     except ImportError as e:
         raise ValueError("유튜브 자막 추출 기능이 서버에 설치되어 있지 않습니다. youtube-transcript-api를 설치해주세요.") from e
 
-    api = YouTubeTranscriptApi()
+    api = _build_youtube_transcript_api()
     try:
         transcript = api.fetch(video_id, languages=["ko", "ko-KR", "en", "en-US"])
     except NoTranscriptFound:
