@@ -76,7 +76,7 @@ export default function OnboardingPage() {
 
         {/* 역할 선택 카드 */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-          {/* 관리자 카드 */}
+          {/* 교수자 카드 */}
           <button
             onClick={() => setSelectedRole('instructor')}
             disabled={loading}
@@ -105,7 +105,7 @@ export default function OnboardingPage() {
 
               {/* 텍스트 */}
               <h3 className="text-lg font-bold text-surface-900 mb-2">
-                관리자
+                교수자
               </h3>
               <p className="text-sm text-surface-600 leading-relaxed">
                 교수, 강사 또는 교육 기관 관리자로서 학생들을 관리하고 교육 자료를 배포할 수 있습니다

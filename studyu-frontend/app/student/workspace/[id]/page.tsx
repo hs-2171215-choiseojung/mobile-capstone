@@ -14,6 +14,10 @@ import { StudentSourceViewer } from "@/components/workspace/student/StudentSourc
 import { PptSlideViewer } from "@/components/workspace/PptSlideViewer";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const RECENT_NOTEBOOKS_STORAGE_KEY = "student-recent-notebooks";
+const MODEL_STORAGE_KEY = "studyu_default_model";
+const LEVEL_STORAGE_KEY = "studyu_default_level";
+const LEGACY_MODEL_KEY = "student-selected-llm";
 
 interface WeekTask {
   itemId?: string;
@@ -136,6 +140,36 @@ export default function StudentWorkspacePage() {
 
   const [selectedLLM, setSelectedLLM] = useState('claude-haiku-4-5-20251001');
   const [selectedDifficulty, setSelectedDifficulty] = useState('intermediate');
+  const [prefsHydrated, setPrefsHydrated] = useState(false);
+  useEffect(() => {
+    try {
+      // 레거시 키(student-selected-llm)에 값이 있고 새 키가 비었으면 한 번만 이관
+      const legacy = localStorage.getItem(LEGACY_MODEL_KEY);
+      if (legacy && !localStorage.getItem(MODEL_STORAGE_KEY)) {
+        localStorage.setItem(MODEL_STORAGE_KEY, legacy);
+        localStorage.removeItem(LEGACY_MODEL_KEY);
+      }
+      const savedModel = localStorage.getItem(MODEL_STORAGE_KEY);
+      if (savedModel) setSelectedLLM(savedModel);
+      const savedLevel = localStorage.getItem(LEVEL_STORAGE_KEY);
+      if (savedLevel) setSelectedDifficulty(savedLevel);
+    } catch {
+      // ignore storage errors
+    } finally {
+      setPrefsHydrated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!prefsHydrated) return;
+    try {
+      localStorage.setItem(MODEL_STORAGE_KEY, selectedLLM);
+      localStorage.setItem(LEVEL_STORAGE_KEY, selectedDifficulty);
+    } catch {
+      // ignore storage errors
+    }
+  }, [selectedLLM, selectedDifficulty, prefsHydrated]);
+
   const [expandedCenterWeeks, setExpandedCenterWeeks] = useState<number[]>([]);
   const [centerWeeksHydrated, setCenterWeeksHydrated] = useState(false);
 
