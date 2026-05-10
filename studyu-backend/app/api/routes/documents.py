@@ -429,7 +429,7 @@ def _generate_and_upload_hwpx_pages(file_bytes: bytes, doc_id: str) -> tuple[int
         import pyhwpx
     except ImportError:
         print("[hwpx_pages] pyhwpx 미설치")
-        return 0
+        return 0, None
 
     with tempfile.TemporaryDirectory() as tmpdir:
         hwpx_path = os.path.join(tmpdir, "input.hwpx")
