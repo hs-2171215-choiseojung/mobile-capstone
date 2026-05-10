@@ -110,7 +110,30 @@ async def get_enrolled_notebooks(
         .eq("student_id", user["id"])
         .execute()
     )
-    return [row["notebooks"] for row in result.data if row.get("notebooks")]
+    notebooks = [row["notebooks"] for row in result.data if row.get("notebooks")]
+    owner_ids = list({nb.get("user_id") for nb in notebooks if nb.get("user_id")})
+    instructor_name_by_id: dict[str, str] = {}
+
+    if owner_ids:
+        owner_rows = (
+            supabase_admin.table("users")
+            .select("id, display_name")
+            .in_("id", owner_ids)
+            .execute()
+        )
+        instructor_name_by_id = {
+            row["id"]: row.get("display_name") or "\uAC15\uC0AC"
+            for row in (owner_rows.data or [])
+            if row.get("id")
+        }
+
+    return [
+        {
+            **nb,
+            "instructor_name": instructor_name_by_id.get(nb.get("user_id"), "\uAC15\uC0AC"),
+        }
+        for nb in notebooks
+    ]
 
 
 # ── 초대 코드로 참여 (고정 경로 → /{id} 보다 먼저 등록) ──

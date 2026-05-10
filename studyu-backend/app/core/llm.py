@@ -93,23 +93,49 @@ class OpenAIProvider(LLMProvider):
 
 
 # ─────────────────────────────────────────────
-# Claude Provider (나중에 구현)
+# Claude Provider
 # ─────────────────────────────────────────────
 class ClaudeProvider(LLMProvider):
-    """Anthropic Claude API를 사용하는 Provider. (9주차에 구현 예정)"""
+    """Anthropic Claude API를 사용하는 Provider."""
 
     def __init__(self):
-        # from anthropic import AsyncAnthropic
-        # self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-        raise NotImplementedError("Claude Provider는 아직 구현되지 않았습니다.")
+        from anthropic import AsyncAnthropic
+        self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self.default_chat_model = "claude-haiku-4-5-20251001"
 
-    async def chat(self, messages, **kwargs):
-        raise NotImplementedError
+    async def chat(
+        self,
+        messages: list[dict],
+        model: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        stream: bool = False,
+    ):
+        system_parts = [m["content"] for m in messages if m["role"] == "system"]
+        system = "\n".join(system_parts) if system_parts else ""
+        anthropic_msgs = [m for m in messages if m["role"] != "system"]
+
+        if stream:
+            return self.client.messages.stream(
+                model=model or self.default_chat_model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=anthropic_msgs,  # type: ignore
+                temperature=temperature,
+            )
+        else:
+            response = await self.client.messages.create(
+                model=model or self.default_chat_model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=anthropic_msgs,  # type: ignore
+                temperature=temperature,
+            )
+            return response.content[0].text
 
     async def embed(self, text: str) -> list[float]:
-        # Claude는 자체 임베딩이 없으므로 OpenAI 임베딩을 공유하거나
-        # 다른 임베딩 모델을 사용
-        raise NotImplementedError
+        # Claude는 자체 임베딩 API가 없으므로 OpenAI 임베딩 사용
+        return await OpenAIProvider().embed(text)
 
 
 # ─────────────────────────────────────────────
@@ -117,7 +143,7 @@ class ClaudeProvider(LLMProvider):
 # ─────────────────────────────────────────────
 _providers: dict[str, type[LLMProvider]] = {
     "openai": OpenAIProvider,
-    # "claude": ClaudeProvider,  # 나중에 활성화
+    "claude": ClaudeProvider,
 }
 
 
