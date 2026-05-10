@@ -1,6 +1,5 @@
 """
 문서 관리 라우터.
-
 엔드포인트:
     POST   /api/documents/upload       → Supabase Storage 저장 + DB 등록 + RAG 청킹
     POST   /api/documents/ingest_url   → URL에서 텍스트 추출 + DB 등록 + RAG 청킹
@@ -668,6 +667,35 @@ async def upload_document(
         raise HTTPException(status_code=400, detail=f"비디오/오디오 파일은 25MB 이하만 가능합니다.")
     if len(file_bytes) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="파일 크기는 200MB 이하만 가능합니다.")
+
+    # 이미지 파일이 5MB를 초과하면 자동 압축 (Claude Vision API 5MB 제한)
+    original_filename = file.filename
+    MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB
+    if ext in {"jpg", "jpeg", "png", "gif", "webp"} and len(file_bytes) > MAX_IMAGE_SIZE:
+        try:
+            from PIL import Image
+            import io as _io
+            img = Image.open(_io.BytesIO(file_bytes))
+            if img.mode == "RGBA":
+                img = img.convert("RGB")
+            compressed_buf = _io.BytesIO()
+            quality = 85
+            while quality >= 60:
+                compressed_buf.seek(0)
+                compressed_buf.truncate(0)
+                img.save(compressed_buf, format="JPEG" if ext in {"jpg", "jpeg"} else "PNG", quality=quality)
+                if compressed_buf.tell() <= MAX_IMAGE_SIZE:
+                    break
+                quality -= 5
+            file_bytes = compressed_buf.getvalue()
+            original_ext = ext
+            if ext not in {"jpg", "jpeg"}:
+                ext = "jpg"
+                file.filename = original_filename.rsplit(".", 1)[0] + ".jpg"
+            print(f"[Image] 자동 압축 완료: {len(file_bytes)} bytes (원본: {original_ext} → 변환: {ext})")
+        except Exception as e:
+            print(f"[Image] 압축 실패: {e}")
+            raise HTTPException(status_code=400, detail=f"이미지 압축 실패: {str(e)}")
 
     doc_id = str(uuid.uuid4())
 
