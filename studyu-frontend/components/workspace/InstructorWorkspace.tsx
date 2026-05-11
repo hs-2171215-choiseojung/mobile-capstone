@@ -1427,10 +1427,11 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
 
       const taskTitle = (data?.title as string) || item.label;
       const formatNote = detailConfig.format ? ` · ${detailConfig.format}` : "";
+      const lengthNote = ["quiz", "flashcard"].includes(item.id) ? ` · ${detailConfig.length}` : "";
       const newTask: WeekTask = {
         id: 0, icon: item.icon, iconBg: item.iconBg,
         title: taskTitle,
-        subtitle: `${item.subtitle}${formatNote} · ${detailConfig.length} · ${detailConfig.language}`,
+        subtitle: `${item.subtitle}${formatNote}${lengthNote} · ${detailConfig.language}`,
         itemId: data?.item_id as string | undefined,
         studioType: item.id,
       };
@@ -2428,7 +2429,11 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                     </button>
                                   </div>
                                 )}
-                                <p style={{ fontFamily:"Inter,sans-serif", fontSize:"12px", color:"#414751" }}>{task.subtitle}</p>
+                                <p style={{ fontFamily:"Inter,sans-serif", fontSize:"12px", color:"#414751" }}>
+                                  {["quiz", "flashcard"].includes(task.studioType || "")
+                                    ? task.subtitle
+                                    : task.subtitle.replace(/\s·\s\d+문제/g, "")}
+                                </p>
                               </div>
                               {task.itemId && (
                                 <button
