@@ -1423,9 +1423,10 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
       } else if (item.id === "report") {
+        const toneMap: Record<string, string> = { "구어체": "casual", "학술체": "academic", "공식체": "formal" };
         const res = await fetch(`${API}/api/generate/report`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, format: savedDetailConfig.format || "report", language: savedDetailConfig.language, length: lengthMap[savedDetailConfig.length] || "medium", tone: savedDetailConfig.style, instructions: savedDetailConfig.instructions, item_title: item.label, notebook_id: notebook.id }),
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: savedDetailConfig.format || "report", language: savedDetailConfig.language, length: lengthMap[savedDetailConfig.length] || "medium", tone: toneMap[savedDetailConfig.style] || "formal", instructions: savedDetailConfig.instructions, item_title: item.label, notebook_id: notebook.id }),
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
@@ -2484,8 +2485,16 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                   시작하기
                                 </button>
                               )}
-                              {/* 오류: X 버튼 (항상 보임) */}
-                              {task.generatingError ? (
+                              {/* 생성중/오류: X 버튼 항상 보임 | 완료: hover시 보임 */}
+                              {task.generating ? (
+                                <button
+                                  onClick={() => handleDeleteTask(week.id, task.id)}
+                                  className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-200 transition-all opacity-0 group-hover/task:opacity-100"
+                                  title="취소"
+                                >
+                                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+                                </button>
+                              ) : task.generatingError ? (
                                 <button
                                   onClick={() => handleDeleteTask(week.id, task.id)}
                                   className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-red-400 hover:text-red-600 hover:bg-red-100 transition-all"

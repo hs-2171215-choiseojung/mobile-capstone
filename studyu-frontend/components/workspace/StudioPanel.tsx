@@ -3300,7 +3300,16 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
                     <p className="text-gray-400 truncate" style={{ fontSize: "0.62rem" }}>{item.subtitle}</p>
                   )}
                 </div>
-                {/* 생성중: 아무 버튼 없음 | 오류: 삭제 버튼 | 완료: 기존 버튼 */}
+                {/* 생성중: X 버튼 | 오류: 빨간 X | 완료: 기존 버튼 */}
+                {item.generating && (
+                  <button
+                    onClick={() => setSavedItems((prev) => prev.filter((i) => i.id !== item.id))}
+                    className="w-5 h-5 rounded-md bg-gray-100 flex items-center justify-center shrink-0 hover:bg-gray-200 transition-colors opacity-0 group-hover:opacity-100"
+                    title="취소"
+                  >
+                    <svg className="w-2.5 h-2.5 text-gray-400" fill="none" viewBox="0 0 14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M2 2L12 12M12 2L2 12"/></svg>
+                  </button>
+                )}
                 {!item.generating && !item.generatingError && (
                   <button
                     onClick={() => {
