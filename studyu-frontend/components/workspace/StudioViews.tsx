@@ -667,6 +667,32 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
   const card = cards[idx];
   const total = cards.length;
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === " " || e.key === "Spacebar") {
+        e.preventDefault();
+        setFlipped((v) => !v);
+        setShowHint(false);
+      } else if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        setFlipped(false);
+        setShowHint(false);
+        setIdx((i) => (i + 1 < total ? i + 1 : i));
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setFlipped(false);
+        setShowHint(false);
+        setIdx((i) => (i > 0 ? i - 1 : i));
+      } else if (e.key === "1") {
+        if (flipped) { setKnown((prev) => { const n = [...prev]; n[idx] = false; return n; }); setIdx((i) => (i + 1 < total ? i + 1 : i)); setFlipped(false); setShowHint(false); }
+      } else if (e.key === "2") {
+        if (flipped) { setKnown((prev) => { const n = [...prev]; n[idx] = true; return n; }); setIdx((i) => (i + 1 < total ? i + 1 : i)); setFlipped(false); setShowHint(false); }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [total, flipped, idx]);
+
   function handleKnow(isKnown: boolean) {
     setKnown((prev) => {
       const next = [...prev];

@@ -1347,8 +1347,9 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let data: any;
       const lengthMap: Record<string, string> = { "5문제": "short", "10문제": "medium", "15문제": "long" };
-      const diffMap: Record<string, string> = { "5문제": "easy", "10문제": "medium", "15문제": "hard" };
-      const countMap: Record<string, number> = { "5문제": 5, "10문제": 10, "15문제": 15 };
+      const diffMap: Record<string, string> = { "5문제": "easy", "10문제": "intermediate", "15문제": "hard" };
+      const countMap: Record<string, string> = { "5문제": "fewer", "10문제": "standard", "15문제": "more" };
+      const countNumMap: Record<string, number> = { "5문제": 5, "10문제": 10, "15문제": 15 };
 
       if (item.id === "audio") {
         const res = await fetch(`${API}/api/generate/audio`, {
@@ -1362,7 +1363,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         const quizStyle = quizStyleMap[detailConfig.format] || "multiple_choice";
         const res = await fetch(`${API}/api/generate`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, type: "quiz", difficulty: diffMap[detailConfig.length] || "medium", quiz_count: countMap[detailConfig.length] || 5, quiz_style: quizStyle, topic: detailConfig.instructions || "", notebook_id: notebook.id }),
+          body: JSON.stringify({ doc_ids: effectiveDocIds, type: "quiz", difficulty: diffMap[detailConfig.length] || "intermediate", quiz_count: countNumMap[detailConfig.length] || 5, quiz_style: quizStyle, topic: detailConfig.instructions || "", notebook_id: notebook.id }),
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
@@ -1378,7 +1379,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       } else if (item.id === "flashcard") {
         const res = await fetch(`${API}/api/generate/flashcard`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, count: countMap[detailConfig.length] || 5, difficulty: diffMap[detailConfig.length] || "medium", topic: detailConfig.format || detailConfig.instructions || "", language: detailConfig.language, item_title: item.label, notebook_id: notebook.id }),
+          body: JSON.stringify({ doc_ids: effectiveDocIds, count: countMap[detailConfig.length] || "standard", difficulty: diffMap[detailConfig.length] || "intermediate", topic: detailConfig.format || detailConfig.instructions || "", language: detailConfig.language, item_title: item.label, notebook_id: notebook.id }),
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");

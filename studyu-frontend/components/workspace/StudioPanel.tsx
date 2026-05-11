@@ -1667,6 +1667,28 @@ function FlashcardView({
   const total = cards.length;
   const card = cards[idx];
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === " " || e.key === "Spacebar") {
+        e.preventDefault();
+        setFlipped((v) => !v);
+        setShowHint(false);
+      } else if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        setFlipped(false);
+        setShowHint(false);
+        setIdx((i) => (i + 1 < total ? i + 1 : i));
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setFlipped(false);
+        setShowHint(false);
+        setIdx((i) => (i > 0 ? i - 1 : i));
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [total]);
+
   function handleKnow(isKnown: boolean) {
     setKnown((prev) => { const n = [...prev]; n[idx] = isKnown; return n; });
     if (idx + 1 >= total) { setDone(true); return; }
@@ -1751,12 +1773,6 @@ function FlashcardView({
           className="w-full max-w-3xl cursor-pointer select-none"
           style={{ perspective: "1200px" }}
           onClick={() => { setFlipped((v) => !v); setShowHint(false); }}
-          onKeyDown={(e) => {
-            if (e.key === " ") { e.preventDefault(); setFlipped((v) => !v); }
-            if (e.key === "ArrowRight") handleKnow(true);
-            if (e.key === "ArrowLeft") handleKnow(false);
-          }}
-          tabIndex={0}
         >
           <div
             className="relative transition-transform duration-500"
