@@ -80,6 +80,7 @@ async def generate(
     user: dict = Depends(get_current_user),
 ):
     """요약 / 퀴즈 / 학습 계획 생성."""
+    print(f"[studio] 🚀 {req.type} 생성 시작 | docs={req.doc_ids} | user={user['id'][:8]}")
     if req.type not in ("summary", "quiz", "plan"):
         raise HTTPException(
             status_code=400,
@@ -123,7 +124,8 @@ async def generate(
             },
             notebook_id=req.notebook_id,
         )
-        return {"result": parsed, "type": req.type, "item_id": item_id}
+        print(f"[studio] ✅ quiz 생성 완료 | item_id={item_id} | title={parsed.get('title','')}")
+    return {"result": parsed, "type": req.type, "item_id": item_id}
 
     # summary / plan
     item_id = _save_studio_item(
@@ -134,6 +136,7 @@ async def generate(
         content={"text": result, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ {req.type} 생성 완료 | item_id={item_id}")
     return {"result": result, "type": req.type, "item_id": item_id}
 
 
@@ -155,6 +158,7 @@ async def generate_audio(
     user: dict = Depends(get_current_user),
 ):
     """2인 토크쇼 형식의 오디오 오버뷰 생성 (TTS 포함)."""
+    print(f"[studio] 🚀 오디오 생성 시작 | format={req.format} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -180,6 +184,7 @@ async def generate_audio(
         audio_bytes=audio_bytes,
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 오디오 생성 완료 | item_id={item_id} | title={title}")
     return {
         "audio_base64": base64.b64encode(audio_bytes).decode(),
         "script": script,
@@ -203,6 +208,7 @@ async def generate_mindmap_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 평면 노드 배열 형식의 마인드맵으로 생성."""
+    print(f"[studio] 🚀 마인드맵 생성 시작 | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -225,6 +231,7 @@ async def generate_mindmap_route(
         content={"nodes": nodes, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 마인드맵 생성 완료 | item_id={item_id} | title={title}")
     return {
         "nodes": nodes,
         "title": title,
@@ -250,6 +257,7 @@ async def generate_flashcard(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 플래시카드 세트를 생성."""
+    print(f"[studio] 🚀 플래시카드 생성 시작 | count={req.count} | difficulty={req.difficulty} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -274,6 +282,7 @@ async def generate_flashcard(
         content={"cards": cards, "difficulty": req.difficulty, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 플래시카드 생성 완료 | item_id={item_id} | title={title} | cards={len(cards)}장")
     return {
         "cards": cards,
         "title": title,
@@ -299,6 +308,7 @@ async def generate_slides_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 슬라이드 자료를 생성."""
+    print(f"[studio] 🚀 슬라이드 생성 시작 | format={req.format} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -323,6 +333,7 @@ async def generate_slides_route(
         content={"slides": slides, "format": req.format, "cover_image_b64": cover_image_b64, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 슬라이드 생성 완료 | item_id={item_id} | title={title} | slides={len(slides)}장")
     return {
         "slides": slides,
         "title": title,
@@ -350,6 +361,7 @@ async def generate_report_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 구조화된 보고서를 생성."""
+    print(f"[studio] 🚀 보고서 생성 시작 | format={req.format} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -375,6 +387,7 @@ async def generate_report_route(
         content={"sections": sections, "format": req.format, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 보고서 생성 완료 | item_id={item_id} | title={title}")
     return {
         "sections": sections,
         "title": title,
@@ -399,6 +412,7 @@ async def generate_data_table_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 구조화된 데이터 표를 생성."""
+    print(f"[studio] 🚀 데이터표 생성 시작 | format={req.format} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -422,6 +436,7 @@ async def generate_data_table_route(
         content={"title": title, "description": description, "columns": columns, "rows": rows, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 데이터표 생성 완료 | item_id={item_id} | title={title} | rows={len(rows)}행")
     return {
         "title": title,
         "description": description,
@@ -446,6 +461,7 @@ async def generate_video_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 Remotion 비디오용 슬라이드+오디오 데이터를 생성."""
+    print(f"[studio] 🚀 동영상 생성 시작 | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -468,6 +484,7 @@ async def generate_video_route(
         content={"slides": slides},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 동영상 생성 완료 | item_id={item_id} | title={title}")
     return {
         "slides": slides,
         "title": title,
@@ -490,6 +507,7 @@ async def generate_infographic_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 인포그래픽을 생성."""
+    print(f"[studio] 🚀 인포그래픽 생성 시작 | format={req.format} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -513,6 +531,7 @@ async def generate_infographic_route(
         content={"title": title, "description": description, "sections": sections},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 인포그래픽 생성 완료 | item_id={item_id} | title={title} | sections={len(sections)}개")
     return {
         "title": title,
         "description": description,

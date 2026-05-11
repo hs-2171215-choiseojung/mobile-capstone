@@ -1342,6 +1342,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     }
 
     setGeneratingTask(true);
+    console.log(`[studio] 🚀 ${item.id} 생성 시작 | format="${detailConfig.format}" | docs=${JSON.stringify(effectiveDocIds)} | lang=${detailConfig.language}`);
     try {
       const token = await getToken();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1444,8 +1445,10 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         }));
       }
       closePickerModal();
+      console.log(`[studio] ✅ ${item.id} 생성 완료 | item_id=${data?.item_id} | title="${taskTitle}"`);
       setDetailConfig({ format: selectedPickerItem?.id === "quiz" ? (selectedPickerItem.presets[0] ?? "") : "", instructions: "", length: "10문제", language: "한국어", style: "격식체", selectedSources: [] });
     } catch (e) {
+      console.error(`[studio] ❌ ${item.id} 생성 실패:`, e);
       alert(`생성 실패: ${e instanceof Error ? e.message : "오류가 발생했습니다"}`);
     } finally {
       setGeneratingTask(false);
