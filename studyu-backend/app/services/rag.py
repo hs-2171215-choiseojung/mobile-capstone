@@ -4393,8 +4393,8 @@ def generate_audio_overview(
         for l in lines
     )
 
-    # Host A → sarah(여성), Host B → josh(남성) ElevenLabs 음성
-    voice_map = {"A": "sarah", "B": "josh"}
+    # Host A → sarah(여성), Host B → adam(남성) ElevenLabs 음성 (무료 플랜 호환)
+    voice_map = {"A": "sarah", "B": "adam"}
     audio_parts: list[bytes] = []
     for line in lines:
         text = line.get("text", "").strip()
