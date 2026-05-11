@@ -60,11 +60,15 @@ class GenerateRequest(BaseModel):
     doc_id: Optional[str] = None
     doc_ids: Optional[list[str]] = None
     type: str  # "summary" | "quiz" | "plan"
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     level: Optional[str] = "intermediate"
     quiz_count: Optional[int] = 5
     topic: Optional[str] = None
     difficulty: Optional[str] = "intermediate"
+    quiz_style: Optional[str] = "multiple_choice"  # "multiple_choice" | "ox" | "short_answer"
+    language: Optional[str] = "ko"            # ko | en | ja | zh
+    tone: Optional[str] = "formal"            # formal | casual | academic
+    instructions: Optional[str] = None        # 추가 지시사항
     item_title: Optional[str] = None  # 스튜디오 저장 시 표시 제목
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -89,11 +93,15 @@ async def generate(
     result = generate_content(
         doc_ids=doc_ids,
         gen_type=req.type,
-        model=req.model or "claude-haiku-4-5-20251001",
+        model=req.model or "gpt-4o",
         level=req.level or "intermediate",
         quiz_count=req.quiz_count or 5,
         topic=req.topic or "",
         difficulty=req.difficulty or "intermediate",
+        quiz_style=req.quiz_style or "multiple_choice",
+        language=req.language or "ko",
+        tone=req.tone or "formal",
+        instructions=req.instructions or "",
     )
 
     if req.type == "quiz":
@@ -135,7 +143,7 @@ class AudioGenerateRequest(BaseModel):
     language: str = "ko"            # ko | en | ja | zh
     length: str = "default"         # short | default
     focus: str = ""
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None  # 스튜디오 저장 시 표시 제목
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -158,7 +166,7 @@ async def generate_audio(
             language=req.language,
             length=req.length,
             focus=req.focus,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"오디오 생성 실패: {str(e)}")
@@ -184,7 +192,7 @@ class MindmapGenerateRequest(BaseModel):
     doc_ids: list[str]
     language: str = "ko"       # ko | en | ja | zh
     focus: str = ""
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
 
@@ -204,7 +212,7 @@ async def generate_mindmap_route(
             doc_ids=req.doc_ids,
             language=req.language,
             focus=req.focus,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"마인드맵 생성 실패: {str(e)}")
@@ -230,7 +238,7 @@ class FlashcardGenerateRequest(BaseModel):
     difficulty: str = "intermediate"  # easy | intermediate | hard
     topic: str = ""
     language: str = "ko"           # ko | en | ja | zh
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -253,7 +261,7 @@ async def generate_flashcard(
             difficulty=req.difficulty,
             topic=req.topic,
             language=req.language,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"플래시카드 생성 실패: {str(e)}")
@@ -279,7 +287,7 @@ class SlideGenerateRequest(BaseModel):
     length: str = "default"        # short | default | long
     language: str = "ko"           # ko | en | ja | zh
     prompt: str = ""               # 사용자 커스텀 프롬프트
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -302,7 +310,7 @@ async def generate_slides_route(
             length=req.length,
             language=req.language,
             prompt=req.prompt,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"슬라이드 생성 실패: {str(e)}")
@@ -330,7 +338,7 @@ class ReportGenerateRequest(BaseModel):
     length: str = "default"        # short | default | long
     tone: str = "formal"           # formal | casual | academic
     instructions: str = ""         # 사용자 커스텀 지시사항
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -354,7 +362,7 @@ async def generate_report_route(
             length=req.length,
             tone=req.tone,
             instructions=req.instructions,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"보고서 생성 실패: {str(e)}")
@@ -379,7 +387,7 @@ class DataTableGenerateRequest(BaseModel):
     format: str = "summary_table"   # summary_table | comparison_table | concept_definition | learning_checklist | progress_tracking
     language: str = "ko"            # ko | en | ja | zh
     instructions: str = ""          # 사용자 커스텀 지시사항
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -401,7 +409,7 @@ async def generate_data_table_route(
             format=req.format,
             language=req.language,
             instructions=req.instructions,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"데이터 표 생성 실패: {str(e)}")
@@ -427,7 +435,7 @@ class VideoGenerateRequest(BaseModel):
     doc_ids: list[str]
     language: str = "ko"
     length: str = "default"
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
 
@@ -447,7 +455,7 @@ async def generate_video_route(
             doc_ids=req.doc_ids,
             language=req.language,
             length=req.length,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"동영상 스크립트 생성 실패: {str(e)}")
@@ -472,7 +480,7 @@ class InfographicGenerateRequest(BaseModel):
     format: str = "overview"       # overview | process | comparison | statistics | timeline
     language: str = "ko"
     instructions: str = ""
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     notebook_id: Optional[str] = None
 
 
@@ -492,7 +500,7 @@ async def generate_infographic_route(
             format=req.format,
             language=req.language,
             instructions=req.instructions,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"인포그래픽 생성 실패: {str(e)}")

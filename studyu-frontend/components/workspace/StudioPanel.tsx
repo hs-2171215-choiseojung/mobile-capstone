@@ -14,8 +14,10 @@ const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 // ── Types ──────────────────────────────────────────────────────────────────
 interface QuizQuestion {
   question: string;
+  type: "multiple_choice" | "ox" | "short_answer";
   options: string[];
   answer: number;
+  answerText?: string;
   hint: string;
   explanation: string;
 }
@@ -32,6 +34,7 @@ interface QuizConfig {
   count: "fewer" | "standard" | "more";
   difficulty: "easy" | "intermediate" | "hard";
   topic: string;
+  quizStyle: "multiple_choice" | "ox" | "short_answer";
 }
 
 interface AudioConfig {
@@ -235,7 +238,7 @@ const STUDIO_TASK_ITEMS: StudioTaskItem[] = [
   { id: "flashcard", label: "플래시카드",       icon: "🃏",
     presets: ["단어·정의 카드","Q&A 카드","빈칸 채우기 카드","이미지 연상 카드","공식 암기 카드","사례 카드"] },
   { id: "quiz",      label: "퀴즈",             icon: "✅",
-    presets: ["객관식 퀴즈","O/X 퀴즈","단답형 퀴즈","빈칸 채우기","서술형 퀴즈","사례 분석 퀴즈"] },
+    presets: ["객관식 퀴즈","O/X 퀴즈"] },
   { id: "table",     label: "데이터 표",       icon: "📋",
     presets: ["핵심 내용 정리표","비교 분석 표","개념 정의 표","학습 점검표","진도 추적 표","요약 데이터표"] },
   { id: "infographic", label: "인포그래픽",   icon: "🎨",
@@ -265,7 +268,7 @@ function UnifiedGenerateModal({
   onGenerate: (cfg: UnifiedConfig, weekId: number | null) => void;
 }) {
   const [cfg, setCfg] = useState<UnifiedConfig>({
-    format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체",
+    format: item.id === "quiz" ? (item.presets[0] ?? "") : "", instructions: "", length: "10문제", language: "한국어", style: "격식체",
     selectedDocIds: activeDocIds.length > 0 ? activeDocIds : docs.map((d) => d.id),
   });
   const [selectedWeekId, setSelectedWeekId] = useState<number | null>(initialWeekId);
@@ -322,14 +325,16 @@ function UnifiedGenerateModal({
             {/* Format */}
             <div>
               <p className="text-gray-700 mb-3 font-bold" style={{ fontSize: "0.88rem" }}>형식</p>
-              <button
-                onClick={() => setCfg((c) => ({ ...c, format: "" }))}
-                className={`w-full flex items-center gap-2 px-4 py-3 rounded-xl border-2 mb-3 transition-all ${cfg.format === "" ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}
-              >
-                <span className={cfg.format === "" ? "text-blue-600 font-semibold" : "text-gray-600 font-semibold"} style={{ fontSize: "0.85rem" }}>직접 만들기</span>
-                {cfg.format === "" && <svg className="ml-auto" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-              </button>
-              <p className="text-gray-400 mb-2 font-semibold" style={{ fontSize: "0.75rem" }}>추천 형식</p>
+              {item.id !== "quiz" && (
+                <button
+                  onClick={() => setCfg((c) => ({ ...c, format: "" }))}
+                  className={`w-full flex items-center gap-2 px-4 py-3 rounded-xl border-2 mb-3 transition-all ${cfg.format === "" ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}
+                >
+                  <span className={cfg.format === "" ? "text-blue-600 font-semibold" : "text-gray-600 font-semibold"} style={{ fontSize: "0.85rem" }}>직접 만들기</span>
+                  {cfg.format === "" && <svg className="ml-auto" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                </button>
+              )}
+              {item.id !== "quiz" && <p className="text-gray-400 mb-2 font-semibold" style={{ fontSize: "0.75rem" }}>추천 형식</p>}
               <div className="grid grid-cols-2 gap-2">
                 {item.presets.map((preset) => (
                   <button key={preset}
@@ -359,37 +364,11 @@ function UnifiedGenerateModal({
 
             {/* Length */}
             <div>
-              <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>길이</p>
+              <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>문제 수</p>
               <div className="flex gap-2">
-                {["간결하게","기본값","상세하게"].map((opt) => (
+                {["5문제","10문제","15문제"].map((opt) => (
                   <button key={opt} onClick={() => setCfg((c) => ({ ...c, length: opt }))}
                     className={`flex-1 py-2 rounded-xl border-2 transition-all ${cfg.length === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
-                    style={{ fontSize: "0.82rem" }}
-                  >{opt}</button>
-                ))}
-              </div>
-            </div>
-
-            {/* Language */}
-            <div>
-              <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>언어</p>
-              <div className="flex gap-2">
-                {["한국어","English","日本語","中文"].map((opt) => (
-                  <button key={opt} onClick={() => setCfg((c) => ({ ...c, language: opt }))}
-                    className={`flex-1 py-2 rounded-xl border-2 transition-all ${cfg.language === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
-                    style={{ fontSize: "0.8rem" }}
-                  >{opt}</button>
-                ))}
-              </div>
-            </div>
-
-            {/* Style */}
-            <div>
-              <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>문체</p>
-              <div className="flex gap-2">
-                {["격식체","구어체","학술체"].map((opt) => (
-                  <button key={opt} onClick={() => setCfg((c) => ({ ...c, style: opt }))}
-                    className={`flex-1 py-2 rounded-xl border-2 transition-all ${cfg.style === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
                     style={{ fontSize: "0.82rem" }}
                   >{opt}</button>
                 ))}
@@ -805,6 +784,7 @@ function QuizModal({
     count: "standard",
     difficulty: "intermediate",
     topic: "",
+    quizStyle: "multiple_choice",
   });
   const [step, setStep] = useState<1 | 2>(1);
   const [selectedWeekId, setSelectedWeekId] = useState<number | null>(null);
@@ -826,6 +806,18 @@ function QuizModal({
         {step === 1 ? (
           <>
             <div className="px-6 py-5 space-y-5 overflow-y-auto flex-1">
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2.5">유형</p>
+                <div className="flex gap-2">
+                  {(["multiple_choice", "ox", "short_answer"] as const).map((s) => (
+                    <button key={s} onClick={() => setCfg((p) => ({ ...p, quizStyle: s }))}
+                      className="flex-1 py-2 rounded-full text-sm font-medium border transition-all"
+                      style={cfg.quizStyle === s ? { background: "#e8f0fe", color: "#1a73e8", borderColor: "#1a73e8" } : { background: "white", color: "#5f6368", borderColor: "#e0e0e0" }}>
+                      {s === "multiple_choice" ? "객관식" : s === "ox" ? "O / X" : "단답형"}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div>
                 <p className="text-sm font-medium text-gray-700 mb-2.5">질문 수</p>
                 <div className="flex gap-2">
@@ -884,9 +876,11 @@ function QuizView({ quiz, onBack }: { quiz: SavedQuiz; onBack: () => void }) {
   const [showHint, setShowHint] = useState(false);
   const [done, setDone] = useState(false);
   const [score, setScore] = useState(0);
-
+  const [userInput, setUserInput] = useState("");
+  const [selfGraded, setSelfGraded] = useState<boolean | null>(null);
   const total = quiz.questions.length;
   const q = quiz.questions[idx];
+  const qType = q.type ?? "multiple_choice";
 
   function select(i: number) {
     if (answered) return;
@@ -901,6 +895,8 @@ function QuizView({ quiz, onBack }: { quiz: SavedQuiz; onBack: () => void }) {
     setSelected(null);
     setAnswered(false);
     setShowHint(false);
+    setUserInput("");
+    setSelfGraded(null);
   }
 
   if (done) {
@@ -949,25 +945,87 @@ function QuizView({ quiz, onBack }: { quiz: SavedQuiz; onBack: () => void }) {
       <div className="p-4 flex-1">
         <div className="rounded-2xl p-4 mb-3 bg-white border border-gray-200">
           <p className="text-sm font-semibold text-gray-800 mb-4">{q.question}</p>
-          <div className="space-y-2">
-            {q.options.map((opt, i) => {
-              let bg = "white", borderColor = "#e0e0e0", color = "#202124";
-              if (answered) {
-                if (i === q.answer) { bg = "#e6f4ea"; borderColor = "#34a853"; color = "#137333"; }
-                else if (i === selected) { bg = "#fce8e6"; borderColor = "#ea4335"; color = "#c5221f"; }
-              } else if (selected === i) { bg = "#e8f0fe"; borderColor = "#1a73e8"; color = "#1a73e8"; }
-              return (
-                <button key={i} onClick={() => select(i)}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm text-left transition-all border"
-                  style={{ background: bg, borderColor, color }}>
-                  <span className="w-6 h-6 rounded-full border flex items-center justify-center shrink-0 text-xs font-bold" style={{ borderColor }}>
-                    {OPTION_ALPHA[i]}
-                  </span>
-                  {opt}
+          {qType === "ox" ? (
+            <div className="flex gap-6 justify-center py-4">
+              {["O", "X"].map((opt, i) => {
+                const defaultColor = i === 0 ? "#1a73e8" : "#c5221f";
+                let bg = "white", borderColor = defaultColor, color = defaultColor;
+                if (answered) {
+                  if (i === q.answer) { bg = "#e6f4ea"; borderColor = "#34a853"; color = "#137333"; }
+                  else if (i === selected) { bg = "#fce8e6"; borderColor = "#ea4335"; color = "#c5221f"; }
+                } else if (selected === i) { bg = i === 0 ? "#e8f0fe" : "#fce8e6"; borderColor = defaultColor; }
+                return (
+                  <button key={i} onClick={() => select(i)}
+                    className="w-24 h-24 rounded-full text-4xl font-black border-4 transition-all"
+                    style={{ background: bg, borderColor, color }}>
+                    {opt}
+                  </button>
+                );
+              })}
+            </div>
+          ) : qType === "short_answer" ? (
+            !answered ? (
+              <div className="space-y-2">
+                <textarea
+                  value={userInput}
+                  onChange={(e) => setUserInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && userInput.trim()) { e.preventDefault(); setAnswered(true); } }}
+                  placeholder="답을 입력하세요..."
+                  rows={2}
+                  className="w-full text-sm rounded-xl px-4 py-3 border-2 border-gray-200 outline-none resize-none focus:border-blue-400"
+                />
+                <button onClick={() => setAnswered(true)} disabled={!userInput.trim()}
+                  className="w-full py-2.5 rounded-xl text-sm font-semibold bg-blue-600 text-white"
+                  style={{ opacity: userInput.trim() ? 1 : 0.45 }}>
+                  정답 확인
                 </button>
-              );
-            })}
-          </div>
+              </div>
+            ) : (
+              <div className="rounded-xl p-4 bg-green-50 border border-green-200 space-y-3">
+                <div>
+                  <p className="text-xs font-semibold text-green-700 mb-1">정답</p>
+                  <p className="text-sm font-bold text-green-900">{q.answerText}</p>
+                </div>
+                {selfGraded === null && (
+                  <div className="flex gap-2 pt-1">
+                    <button onClick={() => { setSelfGraded(true); setScore((s) => s + 1); }}
+                      className="flex-1 py-2 rounded-lg text-sm font-medium bg-green-500 text-white">
+                      맞았어요 ✓
+                    </button>
+                    <button onClick={() => setSelfGraded(false)}
+                      className="flex-1 py-2 rounded-lg text-sm font-medium bg-red-400 text-white">
+                      틀렸어요 ✗
+                    </button>
+                  </div>
+                )}
+                {selfGraded !== null && (
+                  <p className="text-xs text-center font-semibold pt-1" style={{ color: selfGraded ? "#137333" : "#c5221f" }}>
+                    {selfGraded ? "정답이에요! 🎉" : "아쉽네요. 다음에 잘 할 수 있어요!"}
+                  </p>
+                )}
+              </div>
+            )
+          ) : (
+            <div className="space-y-2">
+              {q.options.map((opt, i) => {
+                let bg = "white", borderColor = "#e0e0e0", color = "#202124";
+                if (answered) {
+                  if (i === q.answer) { bg = "#e6f4ea"; borderColor = "#34a853"; color = "#137333"; }
+                  else if (i === selected) { bg = "#fce8e6"; borderColor = "#ea4335"; color = "#c5221f"; }
+                } else if (selected === i) { bg = "#e8f0fe"; borderColor = "#1a73e8"; color = "#1a73e8"; }
+                return (
+                  <button key={i} onClick={() => select(i)}
+                    className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm text-left transition-all border"
+                    style={{ background: bg, borderColor, color }}>
+                    <span className="w-6 h-6 rounded-full border flex items-center justify-center shrink-0 text-xs font-bold" style={{ borderColor }}>
+                      {OPTION_ALPHA[i]}
+                    </span>
+                    {opt}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
         {answered && (
           <div className="rounded-xl p-4 text-sm text-gray-700 bg-blue-50 border border-blue-100 mb-3">
@@ -983,7 +1041,7 @@ function QuizView({ quiz, onBack }: { quiz: SavedQuiz; onBack: () => void }) {
         {showHint && !answered && (
           <div className="rounded-xl p-3 text-sm text-gray-600 bg-yellow-50 border border-yellow-200 mb-3">💡 {q.hint}</div>
         )}
-        {answered && (
+        {(qType === "short_answer" ? selfGraded !== null : answered) && (
           <button onClick={next} className="w-full py-3 rounded-xl text-sm font-semibold bg-blue-600 text-white">
             {idx + 1 >= total ? "결과 보기" : "다음 문제"}
           </button>
@@ -2301,6 +2359,11 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
             columns: (item.content?.columns as any[]) || (item.content?.headers as any[]) || [],
             rows: (item.content?.rows as any[]) || (item.content?.data as any[]) || [],
           } : undefined,
+          infographic: item.type === "infographic" ? {
+            title: (item.content?.title as string) || item.title,
+            description: (item.content?.description as string) || "",
+            sections: (item.content?.sections as any[]) || [],
+          } : undefined,
           content: item.content,
         }));
         setSavedItems(loaded);
@@ -2439,6 +2502,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
           quiz_count: COUNT_MAP[cfg.count],
           difficulty: cfg.difficulty,
           topic: cfg.topic,
+          quiz_style: cfg.quizStyle,
           item_title: docs.filter((d) => docIds.includes(d.id)).map((d) => d.name).join(", ") || "퀴즈",
           notebook_id: notebookId,
         }),
@@ -2446,14 +2510,16 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "생성 실패");
 
-      // data.result는 백엔드에서 파싱된 객체: { title, questions: [{id, question, options, answerIndex, hint, explanation}] }
+      // data.result는 백엔드에서 파싱된 객체: { title, questions: [{id, type, question, options, answerIndex, answerText, hint, explanation}] }
       const quizData = data.result as {
         title: string;
         questions: {
           id: number;
+          type?: string;
           question: string;
           options: string[];
           answerIndex: number;
+          answerText?: string;
           hint: string;
           explanation: string;
         }[];
@@ -2461,8 +2527,10 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
 
       const questions: QuizQuestion[] = quizData.questions.map((q) => ({
         question: q.question,
-        options: q.options,
-        answer: q.answerIndex,
+        type: (q.type as QuizQuestion["type"]) ?? "multiple_choice",
+        options: q.options ?? [],
+        answer: q.answerIndex ?? -1,
+        answerText: q.answerText,
         hint: q.hint,
         explanation: q.explanation,
       }));
@@ -2727,9 +2795,9 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
   async function handleUnifiedGenerate(typeId: string, cfg: UnifiedConfig, saveToWeekId: number | null) {
     const docIds = cfg.selectedDocIds.length > 0 ? cfg.selectedDocIds : activeDocIds;
     const langMap: Record<string, string> = { "한국어": "ko", "English": "en", "日本語": "ja", "中文": "zh" };
-    const lengthMap: Record<string, string> = { "간결하게": "short", "기본값": "medium", "상세하게": "long" };
-    const diffMap: Record<string, string> = { "간결하게": "easy", "기본값": "medium", "상세하게": "hard" };
-    const countMap: Record<string, number> = { "간결하게": 3, "기본값": 5, "상세하게": 10 };
+    const lengthMap: Record<string, string> = { "5문제": "short", "10문제": "medium", "15문제": "long" };
+    const diffMap: Record<string, string> = { "5문제": "easy", "10문제": "medium", "15문제": "hard" };
+    const countMap: Record<string, number> = { "5문제": 5, "10문제": 10, "15문제": 15 };
     const lang = langMap[cfg.language] || "ko";
     const length = lengthMap[cfg.length] || "medium";
     setLoadingType(typeId);
@@ -2755,14 +2823,35 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("audio", title, `오디오 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
         else { setActiveAudio({ base64: data.audio_base64, script: data.script, title }); }
       } else if (typeId === "quiz") {
+        const toneMap: Record<string, string> = { "격식체": "formal", "구어체": "casual", "학술체": "academic" };
+        const quizStyleFromFormat: Record<string, string> = { "객관식 퀴즈": "multiple_choice", "O/X 퀴즈": "ox" };
         const res = await fetch(`${API}/api/generate`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: docIds, type: "quiz", difficulty: diffMap[cfg.length] || "medium", quiz_count: countMap[cfg.length] || 5, topic: cfg.format || cfg.instructions || "", notebook_id: notebookId }),
+          body: JSON.stringify({
+            doc_ids: docIds,
+            type: "quiz",
+            difficulty: diffMap[cfg.length] || "medium",
+            quiz_count: countMap[cfg.length] || 5,
+            topic: cfg.instructions || "",
+            quiz_style: quizStyleFromFormat[cfg.format] || "multiple_choice",
+            language: lang,
+            tone: toneMap[cfg.style] || "formal",
+            instructions: cfg.instructions || "",
+            notebook_id: notebookId,
+          }),
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
-        const quizData = data.result as { title: string; questions: { id: number; question: string; options: string[]; answerIndex: number; hint: string; explanation: string }[] };
-        const questions: QuizQuestion[] = quizData.questions.map((q) => ({ question: q.question, options: q.options, answer: q.answerIndex, hint: q.hint, explanation: q.explanation }));
+        const quizData = data.result as { title: string; questions: { id: number; type?: string; question: string; options: string[]; answerIndex: number; answerText?: string; hint: string; explanation: string }[] };
+        const questions: QuizQuestion[] = quizData.questions.map((q) => ({
+          question: q.question,
+          type: (q.type as QuizQuestion["type"]) ?? "multiple_choice",
+          options: q.options ?? [],
+          answer: q.answerIndex ?? -1,
+          answerText: q.answerText,
+          hint: q.hint,
+          explanation: q.explanation,
+        }));
         const quiz: SavedQuiz = { id: data.item_id || Date.now().toString(), title: quizData.title || "퀴즈", questions, createdAt: new Date(), difficulty: diffMap[cfg.length] || "medium" };
         const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "quiz", title: quiz.title, subtitle: `퀴즈 · 소스 ${docIds.length}개`, createdAt: new Date(), quiz };
         setSavedItems((prev) => [newItem, ...prev]);

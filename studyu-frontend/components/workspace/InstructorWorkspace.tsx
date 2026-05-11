@@ -141,9 +141,9 @@ const studioTaskItems: StudioTaskItem[] = [
   { id:"flashcard",  label:"플래시카드",      icon:"🃏", iconBg:"bg-pink-50",    subtitle:"핵심 개념 플래시카드",
     presets:["단어·정의 카드","Q&A 카드","빈칸 채우기 카드","이미지 연상 카드","공식 암기 카드","사례 카드"] },
   { id:"quiz",       label:"퀴즈",            icon:"✅", iconBg:"bg-emerald-50", subtitle:"이해도 확인 퀴즈",
-    presets:["객관식 퀴즈","O/X 퀴즈","단답형 퀴즈","빈칸 채우기","서술형 퀴즈","사례 분석 퀴즈"] },
+    presets:["객관식 퀴즈","O/X 퀴즈"] },
   { id:"infographic",label:"인포그래픽",     icon:"📈", iconBg:"bg-orange-50",  subtitle:"시각화 인포그래픽",
-    presets:["프로세스 인포그래픽","비교 인포그래픽","타임라인 인포그래픽","통계 시각화","지도 인포그래픽","목록형 인포그래픽"] },
+    presets:["개요형","프로세스형","비교형","통계형","타임라인형"] },
   { id:"table",      label:"데이터 표",       icon:"📋", iconBg:"bg-slate-50",   subtitle:"정형화된 데이터 표",
     presets:["비교 분석 표","일정 계획 표","평가 기준 표","개념 정리 표","통계 데이터 표","체크리스트 표"] },
 ];
@@ -336,7 +336,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [openPickerWeekId, setOpenPickerWeekId] = useState<number | null>(null);
   const [selectedPickerItem, setSelectedPickerItem] = useState<StudioTaskItem | null>(null);
   const [detailConfig, setDetailConfig] = useState({
-    format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체",
+    format: "", instructions: "", length: "10문제", language: "한국어", style: "격식체",
     selectedSources: [] as number[],
   });
   const [pickerSelectedWeekId, setPickerSelectedWeekId] = useState<number | null>(null);
@@ -1282,7 +1282,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     setPickerSelectedWeekId(null);
     setPickerOpenedFromStudioMenu(true);
     setPickerSourcesCollapsed(false);
-    setDetailConfig({ format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체", selectedSources: [] });
+    setDetailConfig({ format: item.id === "quiz" ? (item.presets[0] ?? "") : "", instructions: "", length: "10문제", language: "한국어", style: "격식체", selectedSources: [] });
     setStudioMenuOpen(false);
   }
 
@@ -1333,7 +1333,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     const docIds = usedSources.flatMap((s) => (s.docId ? [s.docId] : []));
     const effectiveDocIds = docIds.length > 0 ? docIds : activeDocIds;
 
-    if (["video", "infographic", "table"].includes(item.id)) {
+    if (["video", "table"].includes(item.id)) {
       setOpenPickerWeekId(null);
       setSelectedPickerItem(null);
       setStudioCreateType(item.id);
@@ -1346,9 +1346,9 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       const token = await getToken();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let data: any;
-      const lengthMap: Record<string, string> = { "간결하게": "short", "기본값": "medium", "상세하게": "long" };
-      const diffMap: Record<string, string> = { "간결하게": "easy", "기본값": "medium", "상세하게": "hard" };
-      const countMap: Record<string, number> = { "간결하게": 3, "기본값": 5, "상세하게": 10 };
+      const lengthMap: Record<string, string> = { "5문제": "short", "10문제": "medium", "15문제": "long" };
+      const diffMap: Record<string, string> = { "5문제": "easy", "10문제": "medium", "15문제": "hard" };
+      const countMap: Record<string, number> = { "5문제": 5, "10문제": 10, "15문제": 15 };
 
       if (item.id === "audio") {
         const res = await fetch(`${API}/api/generate/audio`, {
@@ -1358,9 +1358,11 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
       } else if (item.id === "quiz") {
+        const quizStyleMap: Record<string, string> = { "객관식 퀴즈": "multiple_choice", "O/X 퀴즈": "ox" };
+        const quizStyle = quizStyleMap[detailConfig.format] || "multiple_choice";
         const res = await fetch(`${API}/api/generate`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, type: "quiz", difficulty: diffMap[detailConfig.length] || "medium", quiz_count: countMap[detailConfig.length] || 5, topic: detailConfig.format || detailConfig.instructions || "", notebook_id: notebook.id }),
+          body: JSON.stringify({ doc_ids: effectiveDocIds, type: "quiz", difficulty: diffMap[detailConfig.length] || "medium", quiz_count: countMap[detailConfig.length] || 5, quiz_style: quizStyle, topic: detailConfig.instructions || "", notebook_id: notebook.id }),
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
@@ -1394,6 +1396,18 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      } else if (item.id === "infographic") {
+        const infographicFormatMap: Record<string, string> = {
+          "개요형": "overview", "프로세스형": "process", "비교형": "comparison",
+          "통계형": "statistics", "타임라인형": "timeline",
+        };
+        const infographicFormat = infographicFormatMap[detailConfig.format] || "overview";
+        const res = await fetch(`${API}/api/generate/infographic`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: infographicFormat, language: detailConfig.language || "ko", instructions: detailConfig.instructions || "", notebook_id: notebook.id }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
       }
 
       const taskTitle = (data?.title as string) || item.label;
@@ -1413,7 +1427,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         }));
       }
       closePickerModal();
-      setDetailConfig({ format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체", selectedSources: [] });
+      setDetailConfig({ format: selectedPickerItem?.id === "quiz" ? (selectedPickerItem.presets[0] ?? "") : "", instructions: "", length: "10문제", language: "한국어", style: "격식체", selectedSources: [] });
     } catch (e) {
       alert(`생성 실패: ${e instanceof Error ? e.message : "오류가 발생했습니다"}`);
     } finally {
@@ -1952,6 +1966,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                   <p className="text-[#364153] truncate" style={{ fontSize: "12.8px", fontWeight: 500 }}>{item.title}</p>
                                   <p className="text-[#99a1af]" style={{ fontSize: "11.2px" }}>{item.subtitle || "스튜디오 생성물"}</p>
                                 </div>
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
@@ -1960,10 +1975,29 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                     setViewerText(null);
                                     setViewerStudioItem(item);
                                   }}
-                                  className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity px-2.5 py-1 rounded-lg bg-blue-50 text-blue-600 text-[11px] font-semibold"
+                                  className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-600 text-[11px] font-semibold"
                                 >
                                   보기
                                 </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setStudioItems((prev) => prev.filter((i) => i.id !== item.id));
+                                    getToken().then((token) => {
+                                      fetch(`${API}/api/studio/${item.id}`, {
+                                        method: "DELETE",
+                                        headers: { Authorization: `Bearer ${token}` },
+                                      }).catch(() => {});
+                                    });
+                                  }}
+                                  className="w-6 h-6 rounded-lg bg-red-50 text-red-500 flex items-center justify-center"
+                                  title="삭제"
+                                >
+                                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
+                                  </svg>
+                                </button>
+                              </div>
                               </div>
                             ))
                           )}
@@ -2719,7 +2753,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                   {studioTaskItems.map((item) => (
                     <button
                       key={item.id}
-                      onClick={() => { setSelectedPickerItem(item); setPickerSelectedWeekId(openPickerWeekId); setPickerOpenedFromStudioMenu(false); setPickerSourcesCollapsed(false); setDetailConfig({ format:"", instructions:"", length:"기본값", language:"한국어", style:"격식체", selectedSources:[] }); }}
+                      onClick={() => { setSelectedPickerItem(item); setPickerSelectedWeekId(openPickerWeekId); setPickerOpenedFromStudioMenu(false); setPickerSourcesCollapsed(false); setDetailConfig({ format: item.id === "quiz" ? (item.presets[0] ?? "") : "", instructions:"", length:"10문제", language:"한국어", style:"격식체", selectedSources:[] }); }}
                       className="flex flex-col items-center gap-2 p-4 rounded-2xl border-2 border-gray-100 hover:border-blue-300 hover:bg-blue-50 hover:shadow-md transition-all group"
                     >
                       <div className={`w-12 h-12 rounded-2xl ${item.iconBg} flex items-center justify-center text-2xl border border-gray-100 group-hover:scale-110 transition-transform`}>
@@ -2808,14 +2842,16 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                     {/* Format */}
                     <div>
                       <p className="text-gray-700 mb-3 font-bold" style={{ fontSize: "0.88rem" }}>형식</p>
-                      <button
-                        onClick={() => setDetailConfig((c) => ({ ...c, format: "" }))}
-                        className={`w-full flex items-center gap-2 px-4 py-3 rounded-xl border-2 mb-3 transition-all ${detailConfig.format === "" ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}
-                      >
-                        <span className={detailConfig.format === "" ? "text-blue-600 font-semibold" : "text-gray-600 font-semibold"} style={{ fontSize: "0.85rem" }}>직접 만들기</span>
-                        {detailConfig.format === "" && <svg className="ml-auto" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                      </button>
-                      <p className="text-gray-400 mb-2 font-semibold" style={{ fontSize: "0.75rem" }}>추천 형식</p>
+                      {selectedPickerItem?.id !== "quiz" && (
+                        <button
+                          onClick={() => setDetailConfig((c) => ({ ...c, format: "" }))}
+                          className={`w-full flex items-center gap-2 px-4 py-3 rounded-xl border-2 mb-3 transition-all ${detailConfig.format === "" ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}
+                        >
+                          <span className={detailConfig.format === "" ? "text-blue-600 font-semibold" : "text-gray-600 font-semibold"} style={{ fontSize: "0.85rem" }}>직접 만들기</span>
+                          {detailConfig.format === "" && <svg className="ml-auto" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        </button>
+                      )}
+                      {selectedPickerItem?.id !== "quiz" && <p className="text-gray-400 mb-2 font-semibold" style={{ fontSize: "0.75rem" }}>추천 형식</p>}
                       <div className="grid grid-cols-2 gap-2">
                         {selectedPickerItem.presets.map((preset) => (
                           <button key={preset}
@@ -2843,11 +2879,12 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                       />
                     </div>
 
-                    {/* Length */}
+                    {/* Length - 퀴즈/플래시카드만 표시 */}
+                    {["quiz", "flashcard"].includes(selectedPickerItem.id) && (
                     <div>
-                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>길이</p>
+                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>문제 수</p>
                       <div className="flex gap-2">
-                        {["간결하게","기본값","상세하게"].map((opt) => (
+                        {["5문제","10문제","15문제"].map((opt) => (
                           <button key={opt} onClick={() => setDetailConfig((c) => ({ ...c, length: opt }))}
                             className={`flex-1 py-2 rounded-xl border-2 transition-all ${detailConfig.length === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
                             style={{ fontSize: "0.82rem" }}
@@ -2855,32 +2892,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                         ))}
                       </div>
                     </div>
-
-                    {/* Language */}
-                    <div>
-                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>언어</p>
-                      <div className="flex gap-2">
-                        {["한국어","English","日本語","中文"].map((opt) => (
-                          <button key={opt} onClick={() => setDetailConfig((c) => ({ ...c, language: opt }))}
-                            className={`flex-1 py-2 rounded-xl border-2 transition-all ${detailConfig.language === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
-                            style={{ fontSize: "0.8rem" }}
-                          >{opt}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Style */}
-                    <div>
-                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>문체</p>
-                      <div className="flex gap-2">
-                        {["격식체","구어체","학술체"].map((opt) => (
-                          <button key={opt} onClick={() => setDetailConfig((c) => ({ ...c, style: opt }))}
-                            className={`flex-1 py-2 rounded-xl border-2 transition-all ${detailConfig.style === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
-                            style={{ fontSize: "0.82rem" }}
-                          >{opt}</button>
-                        ))}
-                      </div>
-                    </div>
+                    )}
 
                     {/* Create button */}
                     <button
