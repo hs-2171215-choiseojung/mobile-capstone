@@ -145,7 +145,7 @@ const studioTaskItems: StudioTaskItem[] = [
   { id:"infographic",label:"인포그래픽",     icon:"📈", iconBg:"bg-orange-50",  subtitle:"시각화 인포그래픽",
     presets:["개요형","프로세스형","비교형","통계형","타임라인형"] },
   { id:"table",      label:"데이터 표",       icon:"📋", iconBg:"bg-slate-50",   subtitle:"정형화된 데이터 표",
-    presets:["비교 분석 표","일정 계획 표","평가 기준 표","개념 정리 표","통계 데이터 표","체크리스트 표"] },
+    presets:["핵심 내용 정리표","비교 분석 표","개념 정의 표","학습 점검표","진도 추적 표"] },
 ];
 
 const sourceTypes: SourceType[] = [
@@ -1333,7 +1333,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     const docIds = usedSources.flatMap((s) => (s.docId ? [s.docId] : []));
     const effectiveDocIds = docIds.length > 0 ? docIds : activeDocIds;
 
-    if (["video", "table"].includes(item.id)) {
+    if (["video"].includes(item.id)) {
       setOpenPickerWeekId(null);
       setSelectedPickerItem(null);
       setStudioCreateType(item.id);
@@ -1405,6 +1405,21 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         const res = await fetch(`${API}/api/generate/infographic`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ doc_ids: effectiveDocIds, format: infographicFormat, language: detailConfig.language || "ko", instructions: detailConfig.instructions || "", notebook_id: notebook.id }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      } else if (item.id === "table") {
+        const tableFormatMap: Record<string, string> = {
+          "핵심 내용 정리표": "summary_table",
+          "비교 분석 표": "comparison_table",
+          "개념 정의 표": "concept_definition",
+          "학습 점검표": "learning_checklist",
+          "진도 추적 표": "progress_tracking",
+        };
+        const tableFormat = tableFormatMap[detailConfig.format] || "summary_table";
+        const res = await fetch(`${API}/api/generate/data`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: tableFormat, language: detailConfig.language || "ko", instructions: detailConfig.instructions || "", notebook_id: notebook.id }),
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
