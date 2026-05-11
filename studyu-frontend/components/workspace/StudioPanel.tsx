@@ -108,6 +108,8 @@ export interface SavedItem {
   title: string;
   subtitle: string;
   createdAt: Date;
+  generating?: boolean;
+  generatingError?: string;
   summaryContent?: string;
   quiz?: SavedQuiz;
   audio?: { base64?: string; script: string };
@@ -2808,7 +2810,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     }
   }
 
-  async function handleUnifiedGenerate(typeId: string, cfg: UnifiedConfig, saveToWeekId: number | null) {
+  function handleUnifiedGenerate(typeId: string, cfg: UnifiedConfig, saveToWeekId: number | null) {
     const docIds = cfg.selectedDocIds.length > 0 ? cfg.selectedDocIds : activeDocIds;
     const langMap: Record<string, string> = { "한국어": "ko", "English": "en", "日本語": "ja", "中文": "zh" };
     const lengthMap: Record<string, string> = { "5문제": "short", "10문제": "medium", "15문제": "long" };
@@ -2816,7 +2818,32 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     const countMap: Record<string, number> = { "5문제": 5, "10문제": 10, "15문제": 15 };
     const lang = langMap[cfg.language] || "ko";
     const length = lengthMap[cfg.length] || "medium";
-    setLoadingType(typeId);
+
+    // 타입 라벨
+    const typeLabel: Record<string, string> = {
+      audio: "AI 오디오 오버뷰", quiz: "퀴즈", mindmap: "마인드맵", flashcard: "플래시카드",
+      slides: "슬라이드 자료", report: "보고서", table: "데이터 표", infographic: "인포그래픽",
+    };
+    const savedType = (typeId === "table" ? "data" : typeId) as SavedItem["type"];
+
+    // 1. 플레이스홀더 즉시 추가
+    const tempId = `pending-${typeId}-${Date.now()}`;
+    const pendingItem: SavedItem = {
+      id: tempId,
+      type: savedType,
+      title: `${typeLabel[typeId] || typeId} 생성 중...`,
+      subtitle: `기반:소스 ${docIds.length}개`,
+      createdAt: new Date(),
+      generating: true,
+    };
+    setSavedItems((prev) => [pendingItem, ...prev]);
+
+    // 2. 모달 즉시 닫기
+    setShowUnifiedModal(false);
+    setUnifiedModalItem(null);
+
+    // 3. 백그라운드 생성
+    (async () => {
     try {
       const token = await getToken();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2834,9 +2861,9 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
         const title = data.title || "오디오 오버뷰";
         const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "audio", title, subtitle: `오디오 · 소스 ${docIds.length}개`, createdAt: new Date(), audio: { base64: data.audio_base64, script: data.script } };
-        setSavedItems((prev) => [newItem, ...prev]);
-        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
-        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("audio", title, `오디오 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        setSavedItems((prev) => prev.map((i) => i.id === tempId ? newItem : i));
+        const resolvedWeekIdA = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekIdA !== null) { onAddWeekTask?.(resolvedWeekIdA, buildWeekTask("audio", title, `오디오 · 소스 ${docIds.length}개`, resolvedWeekIdA, data.item_id)); setWeekGeneratingFor(null); }
         else { setActiveAudio({ base64: data.audio_base64, script: data.script, title }); }
       } else if (typeId === "quiz") {
         const toneMap: Record<string, string> = { "격식체": "formal", "구어체": "casual", "학술체": "academic" };
@@ -2870,9 +2897,9 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         }));
         const quiz: SavedQuiz = { id: data.item_id || Date.now().toString(), title: quizData.title || "퀴즈", questions, createdAt: new Date(), difficulty: diffMap[cfg.length] || "medium" };
         const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "quiz", title: quiz.title, subtitle: `퀴즈 · 소스 ${docIds.length}개`, createdAt: new Date(), quiz };
-        setSavedItems((prev) => [newItem, ...prev]);
-        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
-        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("quiz", quiz.title, `퀴즈 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        setSavedItems((prev) => prev.map((i) => i.id === tempId ? newItem : i));
+        const resolvedWeekIdQ = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekIdQ !== null) { onAddWeekTask?.(resolvedWeekIdQ, buildWeekTask("quiz", quiz.title, `퀴즈 · 소스 ${docIds.length}개`, resolvedWeekIdQ, data.item_id)); setWeekGeneratingFor(null); }
         else { setActiveQuiz(quiz); }
       } else if (typeId === "mindmap") {
         const res = await fetch(`${API}/api/generate/mindmap`, {
@@ -2883,9 +2910,9 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
         const title = data.title || "마인드맵";
         const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "mindmap", title, subtitle: `마인드맵 · 소스 ${docIds.length}개`, createdAt: new Date(), mindmap: { nodes: data.nodes || [] } };
-        setSavedItems((prev) => [newItem, ...prev]);
-        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
-        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("mindmap", title, `마인드맵 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        setSavedItems((prev) => prev.map((i) => i.id === tempId ? newItem : i));
+        const resolvedWeekIdM = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekIdM !== null) { onAddWeekTask?.(resolvedWeekIdM, buildWeekTask("mindmap", title, `마인드맵 · 소스 ${docIds.length}개`, resolvedWeekIdM, data.item_id)); setWeekGeneratingFor(null); }
         else { setActiveMindmap({ nodes: data.nodes || [], title }); }
       } else if (typeId === "flashcard") {
         const res = await fetch(`${API}/api/generate/flashcard`, {
@@ -2896,9 +2923,9 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
         const title = data.title || "플래시카드";
         const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "flashcard", title, subtitle: `플래시카드 · 소스 ${docIds.length}개`, createdAt: new Date(), flashcard: { cards: data.cards || [], difficulty: diffMap[cfg.length] || "medium" } };
-        setSavedItems((prev) => [newItem, ...prev]);
-        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
-        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("flashcard", title, `플래시카드 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        setSavedItems((prev) => prev.map((i) => i.id === tempId ? newItem : i));
+        const resolvedWeekIdF = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekIdF !== null) { onAddWeekTask?.(resolvedWeekIdF, buildWeekTask("flashcard", title, `플래시카드 · 소스 ${docIds.length}개`, resolvedWeekIdF, data.item_id)); setWeekGeneratingFor(null); }
         else { setActiveFlashcard({ cards: data.cards || [], title }); }
       } else if (typeId === "slides") {
         const res = await fetch(`${API}/api/generate/slides`, {
@@ -2909,9 +2936,9 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
         const title = data.title || "슬라이드 자료";
         const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "slides", title, subtitle: `슬라이드 · 소스 ${docIds.length}개`, createdAt: new Date(), slides: { slides: data.slides || [], format: cfg.format, cover_image_b64: data.cover_image_b64 || "" } };
-        setSavedItems((prev) => [newItem, ...prev]);
-        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
-        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("slides", title, `슬라이드 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        setSavedItems((prev) => prev.map((i) => i.id === tempId ? newItem : i));
+        const resolvedWeekIdS = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekIdS !== null) { onAddWeekTask?.(resolvedWeekIdS, buildWeekTask("slides", title, `슬라이드 · 소스 ${docIds.length}개`, resolvedWeekIdS, data.item_id)); setWeekGeneratingFor(null); }
         else { setActiveSlides({ slides: data.slides || [], title, cover_image_b64: data.cover_image_b64 || "" }); }
       } else if (typeId === "report") {
         const res = await fetch(`${API}/api/generate/report`, {
@@ -2922,9 +2949,9 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
         const title = data.title || "보고서";
         const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "report", title, subtitle: `보고서 · 소스 ${docIds.length}개`, createdAt: new Date(), report: { sections: data.sections || [], format: cfg.format } };
-        setSavedItems((prev) => [newItem, ...prev]);
-        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
-        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("report", title, `보고서 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        setSavedItems((prev) => prev.map((i) => i.id === tempId ? newItem : i));
+        const resolvedWeekIdR = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekIdR !== null) { onAddWeekTask?.(resolvedWeekIdR, buildWeekTask("report", title, `보고서 · 소스 ${docIds.length}개`, resolvedWeekIdR, data.item_id)); setWeekGeneratingFor(null); }
         else { setActiveReport({ sections: data.sections || [], title, format: cfg.format }); }
       } else if (typeId === "table") {
         const tableFormatMap: Record<string, string> = {
@@ -2944,9 +2971,9 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
         const title = data.title || "데이터표";
         const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "data", title, subtitle: `데이터표 · 소스 ${docIds.length}개`, createdAt: new Date(), dataTable: { title: data.title || "데이터표", description: data.description || "", columns: data.columns || [], rows: data.rows || [] } };
-        setSavedItems((prev) => [newItem, ...prev]);
-        const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
-        if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("data", title, `데이터표 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
+        setSavedItems((prev) => prev.map((i) => i.id === tempId ? newItem : i));
+        const resolvedWeekIdT = weekGeneratingFor ?? saveToWeekId;
+        if (resolvedWeekIdT !== null) { onAddWeekTask?.(resolvedWeekIdT, buildWeekTask("data", title, `데이터표 · 소스 ${docIds.length}개`, resolvedWeekIdT, data.item_id)); setWeekGeneratingFor(null); }
         else { setActiveDataTable({ title: data.title || "데이터표", description: data.description || "", columns: data.columns || [], rows: data.rows || [] }); }
       } else if (typeId === "infographic") {
         const infographicFormatMap: Record<string, string> = {
@@ -2962,18 +2989,16 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
         const title = data.title || "인포그래픽";
         const newItem: SavedItem = { id: data.item_id || Date.now().toString(), type: "infographic", title, subtitle: `인포그래픽 · 소스 ${docIds.length}개`, createdAt: new Date(), infographic: { title: data.title || "인포그래픽", description: data.description || "", sections: data.sections || [] } };
-        setSavedItems((prev) => [newItem, ...prev]);
+        setSavedItems((prev) => prev.map((i) => i.id === tempId ? newItem : i));
         const resolvedWeekId = weekGeneratingFor ?? saveToWeekId;
         if (resolvedWeekId !== null) { onAddWeekTask?.(resolvedWeekId, buildWeekTask("infographic", title, `인포그래픽 · 소스 ${docIds.length}개`, resolvedWeekId, data.item_id)); setWeekGeneratingFor(null); }
         else { setActiveInfographic({ title: data.title || "인포그래픽", description: data.description || "", sections: data.sections || [] }); }
       }
-      setShowUnifiedModal(false);
-      setUnifiedModalItem(null);
     } catch (e: unknown) {
-      alert(`생성 실패: ${e instanceof Error ? e.message : "오류가 발생했습니다"}`);
-    } finally {
-      setLoadingType(null);
+      const errMsg = e instanceof Error ? e.message : "오류가 발생했습니다";
+      setSavedItems((prev) => prev.map((i) => i.id === tempId ? { ...i, generating: false, generatingError: errMsg } : i));
     }
+    })();
   }
 
   async function handleVideoGenerate(cfg: VideoConfig) {
@@ -3207,9 +3232,10 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
             {savedItems.map((item) => (
               <div
                 key={item.id}
-                className="flex items-center gap-2 px-4 py-1.5 hover:bg-gray-50 transition-colors cursor-grab group"
-                draggable={true}
+                className={`flex items-center gap-2 px-4 py-1.5 transition-colors group ${item.generating || item.generatingError ? "cursor-default" : "cursor-grab hover:bg-gray-50"}`}
+                draggable={!item.generating && !item.generatingError}
                 onDragStart={(e) => {
+                  if (item.generating || item.generatingError) { e.preventDefault(); return; }
                   const ICONS: Record<string, { icon: string; iconBg: string }> = {
                     audio: { icon: "🎧", iconBg: "#d0f5f1" },
                     slides: { icon: "📊", iconBg: "#fef0da" },
@@ -3228,16 +3254,23 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
                   e.dataTransfer.effectAllowed = "copy";
                 }}
               >
-                {/* Type icon — week4 style: small blue square */}
+                {/* Type icon */}
                 <div
-                  className="w-5 h-5 rounded flex items-center justify-center shrink-0 text-blue-500"
-                  style={{ background: "#EFF6FF" }}
+                  className={`w-5 h-5 rounded flex items-center justify-center shrink-0 ${item.generating ? "text-blue-400" : item.generatingError ? "text-red-400" : "text-blue-500"}`}
+                  style={{ background: item.generatingError ? "#FEF2F2" : "#EFF6FF" }}
                 >
-                  <TypeIcon id={item.type} color="#2563eb" size={11} />
+                  {item.generating
+                    ? <Spinner className="w-3 h-3" />
+                    : <TypeIcon id={item.type} color={item.generatingError ? "#ef4444" : "#2563eb"} size={11} />
+                  }
                 </div>
                 {/* Text */}
                 <div className="flex-1 min-w-0">
-                  {renamingItemId === item.id ? (
+                  {item.generating ? (
+                    <p className="text-blue-500 truncate animate-pulse" style={{ fontSize: "0.72rem", fontWeight: 500 }}>{item.title}</p>
+                  ) : item.generatingError ? (
+                    <p className="text-red-500 truncate" style={{ fontSize: "0.72rem", fontWeight: 500 }}>생성 실패</p>
+                  ) : renamingItemId === item.id ? (
                     <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                       <input
                         autoFocus
@@ -3250,85 +3283,78 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
                         className="w-full bg-transparent border-b border-blue-400 outline-none truncate"
                         style={{ fontSize: "0.72rem", fontWeight: 500 }}
                       />
-                      <button
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          commitRename(item.id);
-                        }}
-                        className="w-4 h-4 rounded bg-blue-500 text-white flex items-center justify-center shrink-0"
-                      >
+                      <button onMouseDown={(e) => e.preventDefault()} onClick={(e) => { e.stopPropagation(); commitRename(item.id); }} className="w-4 h-4 rounded bg-blue-500 text-white flex items-center justify-center shrink-0">
                         <svg width="8" height="8" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       </button>
-                      <button
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setRenamingItemId(null);
-                        }}
-                        className="w-4 h-4 rounded bg-gray-100 text-gray-500 flex items-center justify-center shrink-0"
-                      >
+                      <button onMouseDown={(e) => e.preventDefault()} onClick={(e) => { e.stopPropagation(); setRenamingItemId(null); }} className="w-4 h-4 rounded bg-gray-100 text-gray-500 flex items-center justify-center shrink-0">
                         <svg width="8" height="8" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
                       </button>
                     </div>
                   ) : (
                     <p className="text-gray-700 truncate" style={{ fontSize: "0.72rem", fontWeight: 500 }}>{item.title}</p>
                   )}
-                </div>
-                {/* Play button */}
-                <button
-                  onClick={() => {
-                    if (onViewItem) { onViewItem(item); return; }
-                    if (item.type === "quiz" && item.quiz) setActiveQuiz(item.quiz);
-                    else if (item.type === "audio") setActiveAudio({ base64: item.audio?.base64, audioUrl: item.audioUrl, script: item.audio?.script || "", title: item.title });
-                    else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });
-                    else if (item.type === "memo") setActiveMemo({ id: item.id, title: item.title, content: item.memoContent ?? "" });
-                    else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
-                    else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
-                    else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
-                    else if (item.type === "data" && item.dataTable) setActiveDataTable({ title: item.dataTable.title, description: item.dataTable.description, columns: item.dataTable.columns, rows: item.dataTable.rows });
-                    else if (item.type === "infographic" && item.infographic) setActiveInfographic({ title: item.infographic.title, description: item.infographic.description, sections: item.infographic.sections });
-                    else if (item.summaryContent) setSummaryContent(item.summaryContent);
-                  }}
-                  className="w-5 h-5 rounded-md bg-blue-500 flex items-center justify-center shrink-0 hover:bg-blue-600 transition-colors opacity-0 group-hover:opacity-100"
-                >
-                  <svg className="w-2.5 h-2.5 text-white ml-px" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </button>
-                {/* Three-dots menu */}
-                <div className="relative">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === item.id ? null : item.id); }}
-                    className="p-0.5 rounded hover:bg-gray-200 text-gray-400 transition-colors opacity-0 group-hover:opacity-100"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                      <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
-                    </svg>
-                  </button>
-                  {openMenuId === item.id && (
-                    <div className="absolute right-0 top-6 z-20 bg-white rounded-xl shadow-lg border border-gray-200 py-1 w-32">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); startRename(item); }}
-                        className="w-full px-3 py-2 text-xs text-gray-700 hover:bg-gray-50 text-left flex items-center gap-2"
-                      >
-                        <svg className="w-3 h-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
-                        </svg>
-                        이름 변경
-                      </button>
-                      <button
-                        onClick={() => handleDeleteItem(item.id)}
-                        className="w-full px-3 py-2 text-xs text-red-600 hover:bg-red-50 text-left flex items-center gap-2"
-                      >
-                        <svg className="w-3 h-3 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                        </svg>
-                        삭제
-                      </button>
-                    </div>
+                  {item.generatingError && (
+                    <p className="text-red-400 truncate" style={{ fontSize: "0.62rem" }}>{item.generatingError}</p>
+                  )}
+                  {item.generating && (
+                    <p className="text-gray-400 truncate" style={{ fontSize: "0.62rem" }}>{item.subtitle}</p>
                   )}
                 </div>
+                {/* 생성중: 아무 버튼 없음 | 오류: 삭제 버튼 | 완료: 기존 버튼 */}
+                {!item.generating && !item.generatingError && (
+                  <button
+                    onClick={() => {
+                      if (onViewItem) { onViewItem(item); return; }
+                      if (item.type === "quiz" && item.quiz) setActiveQuiz(item.quiz);
+                      else if (item.type === "audio") setActiveAudio({ base64: item.audio?.base64, audioUrl: item.audioUrl, script: item.audio?.script || "", title: item.title });
+                      else if (item.type === "mindmap" && item.mindmap) setActiveMindmap({ nodes: item.mindmap.nodes, title: item.title });
+                      else if (item.type === "memo") setActiveMemo({ id: item.id, title: item.title, content: item.memoContent ?? "" });
+                      else if (item.type === "flashcard" && item.flashcard) setActiveFlashcard({ cards: item.flashcard.cards, title: item.title });
+                      else if (item.type === "slides" && item.slides) setActiveSlides({ slides: item.slides.slides, title: item.title, cover_image_b64: item.slides.cover_image_b64 });
+                      else if (item.type === "report" && item.report) setActiveReport({ sections: item.report.sections, title: item.title, format: item.report.format });
+                      else if (item.type === "data" && item.dataTable) setActiveDataTable({ title: item.dataTable.title, description: item.dataTable.description, columns: item.dataTable.columns, rows: item.dataTable.rows });
+                      else if (item.type === "infographic" && item.infographic) setActiveInfographic({ title: item.infographic.title, description: item.infographic.description, sections: item.infographic.sections });
+                      else if (item.summaryContent) setSummaryContent(item.summaryContent);
+                    }}
+                    className="w-5 h-5 rounded-md bg-blue-500 flex items-center justify-center shrink-0 hover:bg-blue-600 transition-colors opacity-0 group-hover:opacity-100"
+                  >
+                    <svg className="w-2.5 h-2.5 text-white ml-px" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                  </button>
+                )}
+                {item.generatingError && (
+                  <button
+                    onClick={() => setSavedItems((prev) => prev.filter((i) => i.id !== item.id))}
+                    className="w-5 h-5 rounded-md bg-red-100 flex items-center justify-center shrink-0 hover:bg-red-200 transition-colors"
+                    title="삭제"
+                  >
+                    <svg className="w-2.5 h-2.5 text-red-500" fill="none" viewBox="0 0 14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M2 2L12 12M12 2L2 12"/></svg>
+                  </button>
+                )}
+                {/* Three-dots menu (완료 아이템만) */}
+                {!item.generating && !item.generatingError && (
+                  <div className="relative">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === item.id ? null : item.id); }}
+                      className="p-0.5 rounded hover:bg-gray-200 text-gray-400 transition-colors opacity-0 group-hover:opacity-100"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                        <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
+                      </svg>
+                    </button>
+                    {openMenuId === item.id && (
+                      <div className="absolute right-0 top-6 z-20 bg-white rounded-xl shadow-lg border border-gray-200 py-1 w-32">
+                        <button onClick={(e) => { e.stopPropagation(); startRename(item); }} className="w-full px-3 py-2 text-xs text-gray-700 hover:bg-gray-50 text-left flex items-center gap-2">
+                          <svg className="w-3 h-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" /></svg>
+                          이름 변경
+                        </button>
+                        <button onClick={() => handleDeleteItem(item.id)} className="w-full px-3 py-2 text-xs text-red-600 hover:bg-red-50 text-left flex items-center gap-2">
+                          <svg className="w-3 h-3 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
+                          삭제
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
