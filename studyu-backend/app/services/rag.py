@@ -3152,10 +3152,32 @@ def _get_youtube_doc_ids(doc_ids: list[str]) -> list[str]:
 # ─────────────────────────────────────────────
 
 LEVEL_PROMPTS = {
-    "beginner": "쉽고 친절하게, 예시를 들어 입문자 수준으로 설명해주세요.",
-    "intermediate": "핵심 개념 위주로 중급 학습자에게 적합하게 설명해주세요.",
-    "advanced": "심화 분석과 비판적 관점을 포함하여 전문가 수준으로 설명해주세요.",
+    "easy": (
+        "반드시 쉬운 설명 모드로 답변하세요. 어려운 용어는 일상적인 말로 풀어쓰고, "
+        "필요하면 용어 뜻을 한 번 더 짧게 설명하세요. 답변 길이는 보통 5~8문장 또는 3~4개 불릿으로 유지하고, "
+        "가능하면 짧은 예시를 1개 포함하세요. 전문적인 배경지식을 이미 안다고 가정하지 마세요."
+    ),
+    "normal": (
+        "반드시 보통 설명 모드로 답변하세요. 핵심 개념을 중심으로 자세함과 간결함의 균형을 맞춰 설명하세요. "
+        "답변 길이는 보통 4~7문장 또는 2~4개 불릿으로 유지하고, 필요한 경우에만 예시를 덧붙이세요."
+    ),
+    "brief": (
+        "반드시 간략 설명 모드로 답변하세요. 가장 중요한 내용만 추려서 짧고 압축적으로 답하세요. "
+        "가능하면 2~4문장 또는 2~3개 불릿 이내로 끝내고, 배경 설명·부연 설명·예시는 꼭 필요할 때만 최소화하세요."
+    ),
 }
+
+
+def normalize_learning_level(level: str | None) -> str:
+    mapping = {
+        "beginner": "easy",
+        "easy": "easy",
+        "intermediate": "normal",
+        "normal": "normal",
+        "advanced": "brief",
+        "brief": "brief",
+    }
+    return mapping.get((level or "").strip().lower(), "normal")
 
 
 SUGGESTION_BLOCK = """【추천 질문 — 필수 출력】
@@ -3379,7 +3401,7 @@ def chat_with_docs(
     doc_ids: list[str],
     question: str,
     model: str = _DEFAULT_MODEL,
-    level: str = "intermediate",
+    level: str = "normal",
     chat_history: list | None = None,
     current_slide: int | None = None,
     stream: bool = False,
@@ -3390,7 +3412,8 @@ def chat_with_docs(
     import base64
 
     is_multi = len(doc_ids) > 1
-    level_hint = LEVEL_PROMPTS.get(level, LEVEL_PROMPTS["intermediate"])
+    normalized_level = normalize_learning_level(level)
+    level_hint = LEVEL_PROMPTS.get(normalized_level, LEVEL_PROMPTS["normal"])
     filename_map = _get_doc_filename_map(doc_ids)
     doc_filenames = [filename_map.get(doc_id, doc_id) for doc_id in doc_ids]
 
@@ -4169,7 +4192,7 @@ def generate_content(
     doc_ids: list[str],
     gen_type: str,
     model: str = _DEFAULT_MODEL,
-    level: str = "intermediate",
+    level: str = "normal",
     quiz_count: int = 5,
     topic: str = "",
     difficulty: str = "intermediate",
@@ -4181,9 +4204,10 @@ def generate_content(
     """요약 / 퀴즈 / 학습 계획 생성. 결과 문자열 반환."""
     context = _get_context(doc_ids, max_chars=10000)
 
-    level_map = {"beginner": "입문", "intermediate": "중급", "advanced": "심화"}
+    normalized_level = normalize_learning_level(level)
+    level_map = {"easy": "쉽게", "normal": "보통", "brief": "간략하게"}
     difficulty_map = {"easy": "쉬운", "intermediate": "중간", "hard": "어려운"}
-    level_ko = level_map.get(level, "중급")
+    level_ko = level_map.get(normalized_level, "보통")
     difficulty_ko = difficulty_map.get(difficulty, "중간")
 
     lang_map = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}

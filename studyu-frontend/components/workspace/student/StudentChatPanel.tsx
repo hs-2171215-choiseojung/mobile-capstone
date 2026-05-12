@@ -28,6 +28,7 @@ interface StudentChatPanelProps {
   docs: Doc[];
   selectedLLM?: string;
   selectedDifficulty?: string;
+  difficultyReady?: boolean;
   activeSourceId?: string;
   activeSourceMediaType?: "audio" | "video" | null;
   activeSourceMediaDuration?: number;
@@ -453,6 +454,7 @@ export function StudentChatPanel({
   notebookId,
   selectedLLM,
   selectedDifficulty,
+  difficultyReady = true,
   activeSourceId,
   activeSourceMediaType,
   activeSourceMediaDuration,
@@ -530,6 +532,7 @@ export function StudentChatPanel({
   const showSummaryButton = canOpenSummary || hasMediaSummary || activeSourceSummaryLoading;
   const summaryButtonLabel = activeSourceSummaryLoading && !hasMediaSummary ? "요약 준비 중" : "요약";
   const summaryButtonTitle = activeSourceSummaryLoading && !hasMediaSummary ? "요약을 준비하고 있어요" : "요약 보기";
+  const sendDisabled = !difficultyReady || isLoading || !inputValue.trim();
   const summaryReportMarkdown = hasMediaSummary
     ? [
         activeSourceSummary?.title?.trim() ? `# ${activeSourceSummary.title.trim()}` : "# 자료 요약",
@@ -893,7 +896,7 @@ export function StudentChatPanel({
   // ── 채팅 전송 ─────────────────────────────────────────────
   const handleSendMessage = async (textOverride?: string) => {
     const userMessage = (textOverride ?? inputValue).trim();
-    if (!userMessage || isLoading) return;
+    if (!difficultyReady || !userMessage || isLoading) return;
 
     setMessages(prev => [...prev, { type: 'user', content: userMessage }]);
     if (!textOverride) setInputValue('');
@@ -941,7 +944,7 @@ export function StudentChatPanel({
           doc_ids: targetDocIds,
           question: userMessage,
           model: selectedLLM || "gpt-4o-mini",
-          level: selectedDifficulty || "intermediate",
+          level: selectedDifficulty || "normal",
           session_id: notebookId,
           current_slide: currentSlide ?? null,
           chat_history: chatHistory,
@@ -1020,7 +1023,7 @@ export function StudentChatPanel({
             doc_ids: targetDocIds,
             question: userMessage,
             model: selectedLLM || "gpt-4o-mini",
-            level: selectedDifficulty || "intermediate",
+            level: selectedDifficulty || "normal",
             session_id: notebookId,
             current_slide: currentSlide ?? null,
           }),
@@ -1322,7 +1325,7 @@ export function StudentChatPanel({
           {onPageClick && !onSlideClick && currentSlide != null && (
             <button
               onClick={() => handleSendMessage(`[페이지 ${currentSlide}]의 내용을 자세히 설명해줘.`)}
-              disabled={isLoading}
+                    disabled={!difficultyReady || isLoading}
               className="text-[11px] text-[#155dfc] font-medium bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full hover:bg-blue-100 disabled:opacity-40 transition-colors"
               title="현재 페이지 설명 요청"
             >
@@ -1592,7 +1595,7 @@ export function StudentChatPanel({
                 <button
                   key={q}
                   onClick={() => handleInitialQuestionClick(i, q)}
-                  disabled={isLoading}
+                  disabled={!difficultyReady || isLoading}
                   className="px-4 py-2 rounded-full border border-[#e7e9ed] bg-white text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm text-right disabled:opacity-40"
                 >
                   {q}
@@ -1610,7 +1613,7 @@ export function StudentChatPanel({
                   <button
                     key={s.text}
                     onClick={() => handleSuggestionClick(index, si, s.text)}
-                    disabled={isLoading}
+                    disabled={!difficultyReady || isLoading}
                     className="px-4 py-2 rounded-full border border-[#e7e9ed] bg-white text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm disabled:opacity-40 text-right max-w-[82%]"
                   >
                     {s.text}
@@ -1759,14 +1762,14 @@ export function StudentChatPanel({
           </button>
           <textarea
             value={isRecording && interimText ? interimText : inputValue}
-            onChange={e => { if (!isRecording) setInputValue(e.target.value); }}
+            onChange={e => { if (!isRecording && difficultyReady) setInputValue(e.target.value); }}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
             rows={1}
             className={`flex-1 max-h-[100px] min-h-[40px] py-2 leading-5 bg-transparent text-[13px] placeholder-[#99a1af] focus:outline-none resize-none self-center ${
               isRecording && interimText ? 'text-red-500 italic' : 'text-[#1a1d26]'
             }`}
-            placeholder={isRecording ? "말씀해 주세요..." : "학습 내용에 대해 무엇이든 물어보세요..."}
-            readOnly={isRecording}
+            placeholder={difficultyReady ? (isRecording ? "말씀해 주세요..." : "학습 내용에 대해 무엇이든 물어보세요...") : "설명 방식 설정을 불러오는 중이에요..."}
+            readOnly={isRecording || !difficultyReady}
           />
           <div className="flex items-center gap-1 shrink-0">
             <button
@@ -1782,7 +1785,7 @@ export function StudentChatPanel({
             </button>
             <button
               onClick={() => handleSendMessage()}
-              disabled={!inputValue.trim()}
+              disabled={sendDisabled}
               className="p-2 text-white bg-[#155dfc] hover:bg-[#0d4ac4] rounded-lg disabled:opacity-50 disabled:bg-[#99a1af] transition-colors shadow-sm"
             >
               <Send className="w-4 h-4 ml-0.5" />
