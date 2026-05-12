@@ -1,11 +1,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import Image from "next/image";
-import LogoutButton from "@/components/auth/LogoutButton";
 import StudyULogo from "@/components/StudyULogo";
 import InstructorDashboard from "./InstructorDashboard";
 import StudentDashboard from "./StudentDashboard";
+import UserMenu from "./UserMenu";
 
 type Role = "instructor" | "student";
 
@@ -29,7 +28,6 @@ interface Props {
 
 export default function DashboardClient({ role, instructorNotebooks, studentNotebooks, enrolledNotebooks, notebooks, userName, avatarUrl }: Props) {
   const router = useRouter();
-  const initial = userName[0]?.toUpperCase() || "U";
 
   // 역할별 노트북: 분리된 props 우선, 없으면 공통 notebooks 사용
   const instructorNbs = instructorNotebooks ?? notebooks ?? [];
@@ -61,20 +59,7 @@ export default function DashboardClient({ role, instructorNotebooks, studentNote
               이전
             </button>
 
-            {/* 사용자 정보 */}
-            <div className="flex items-center gap-2">
-              {avatarUrl ? (
-                <Image src={avatarUrl} alt="프로필" width={32} height={32} className="rounded-full w-8 h-8" />
-              ) : (
-                <div className="w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center text-xs font-semibold text-pink-600">
-                  {initial}
-                </div>
-              )}
-              <span className="text-sm text-gray-700 hidden sm:block">{userName}</span>
-            </div>
-
-            <div className="h-5 w-px bg-gray-200" />
-            <LogoutButton />
+            <UserMenu userName={userName} avatarUrl={avatarUrl} />
           </div>
         </div>
       </header>

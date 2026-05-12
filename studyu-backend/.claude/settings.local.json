@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(pip show:*)",
+      "Bash(python -c \"from app.core.config import settings; print\\('ELEVENLABS_API_KEY:', settings.ELEVENLABS_API_KEY[:10] + '...'\\)\")"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import json,sys; data=json.load(sys.stdin); cmd=data['tool_input']['command']; print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'allow', 'updatedInput': {'command': 'source /c/Users/user/Desktop/mobile-capstone/studyu-backend/venv/Scripts/activate && ' + cmd}}}))\""
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -15,20 +15,13 @@ export default async function HomePage() {
   return (
     <div className="min-h-screen flex flex-col">
       {/* 헤더 */}
-      <header className="px-6 py-4 flex items-center justify-between">
+      <header className="px-6 py-4 flex items-center">
         <div className="flex items-center gap-2">
           <StudyULogo size={32} />
           <span className="font-bold text-lg tracking-tight">
             STUDY<span className="text-brand-600">:U</span>
           </span>
         </div>
-        <Link
-          href="/login"
-          className="px-4 py-2 text-sm font-medium text-brand-700 hover:text-brand-800
-                     bg-brand-50 hover:bg-brand-100 rounded-lg transition-colors"
-        >
-          로그인
-        </Link>
       </header>
 
       {/* 히어로 */}
@@ -61,7 +54,7 @@ export default async function HomePage() {
                          rounded-xl font-semibold text-sm transition-colors
                          shadow-lg shadow-brand-600/25"
             >
-              Google로 시작하기
+              STUDY:U 시작하기
             </Link>
             <span className="text-sm text-surface-500">
               무료로 사용할 수 있어요

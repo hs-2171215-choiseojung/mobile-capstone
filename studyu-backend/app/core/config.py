@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     # ── Google Cloud STT ──
     GOOGLE_APPLICATION_CREDENTIALS: str = "google-credentials.json"
     GCP_PROJECT_ID: str = ""
+    PROXY_USER_ID: str = ""
+    PROXY_USER_PW: str = ""
 
     class Config:
         env_file = str(_ENV_FILE)  # .env 파일에서 자동으로 읽음 (절대 경로)
