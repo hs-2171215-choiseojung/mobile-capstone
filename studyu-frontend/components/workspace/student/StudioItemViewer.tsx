@@ -18,15 +18,10 @@ const InfographicView = dynamic(
   { ssr: false }
 );
 
-function downloadCsv(headers: string[], rows: string[][], filename: string) {
-  const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
-  const csv = [headers.map(esc).join(","), ...rows.map(r => r.map(esc).join(","))].join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
-}
+const DataTableView = dynamic(
+  () => import("../DataTableView").then((m) => ({ default: m.DataTableView })),
+  { ssr: false }
+);
 
 const normalizeStudioType = (rawType: string) => {
   const typeMap: Record<string, string> = {
@@ -135,74 +130,16 @@ export function StudioItemViewer({ item, onClose }: StudioItemViewerProps) {
   }
 
   if (t === "table") {
-    const headers = (c.headers || c.columns || []) as string[];
-    const rows = (c.rows || c.data || []) as Array<string[] | Record<string, any>>;
-    const normalizedRows: string[][] = rows.map((row) => {
-      if (Array.isArray(row)) return row.map((cell) => String(cell ?? ""));
-      if (headers.length > 0) return headers.map((h) => String((row as Record<string, any>)[h] ?? ""));
-      return Object.values(row as Record<string, any>).map((v) => String(v ?? ""));
-    });
-    const fallbackHeaders = headers.length > 0
-      ? headers
-      : (normalizedRows[0] ? normalizedRows[0].map((_, idx) => `열 ${idx + 1}`) : []);
-
     return (
-      <div className="h-full w-full bg-white flex flex-col">
-        <div className="shrink-0 px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-bold text-gray-900">{toText(item.title, "데이터 표")}</h2>
-            <p className="text-xs text-gray-500 mt-1">AI가 생성한 표 형식 학습 자료</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => downloadCsv(fallbackHeaders, normalizedRows, `${toText(item.title, "데이터표")}.csv`)}
-              title="CSV 다운로드"
-              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-              저장
-            </button>
-            <button onClick={onClose} className="px-3 py-1.5 rounded-lg bg-gray-100 text-sm text-gray-700 hover:bg-gray-200">
-              학습 종료
-            </button>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-auto p-6 bg-gray-50">
-          {normalizedRows.length === 0 ? (
-            <div className="text-sm text-gray-500">표 데이터가 없습니다.</div>
-          ) : (
-            <div className="overflow-auto rounded-xl border border-gray-200 bg-white">
-              <table className="min-w-full text-sm">
-                {fallbackHeaders.length > 0 && (
-                  <thead className="bg-gray-100">
-                    <tr>
-                      {fallbackHeaders.map((h, idx) => (
-                        <th key={`${h}-${idx}`} className="px-4 py-2 text-left font-semibold text-gray-700 border-b border-gray-200 whitespace-nowrap">
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                )}
-                <tbody>
-                  {normalizedRows.map((row, rIdx) => (
-                    <tr key={`r-${rIdx}`} className="odd:bg-white even:bg-gray-50">
-                      {row.map((cell, cIdx) => (
-                        <td key={`c-${rIdx}-${cIdx}`} className="px-4 py-2 text-gray-700 border-b border-gray-100 align-top">
-                          {cell}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </div>
+      <DataTableView
+        data={{
+          title: toText(item.title, "데이터 표"),
+          description: c.description || "",
+          columns: c.columns || [],
+          rows: c.rows || c.data || [],
+        }}
+        onBack={onClose}
+      />
     );
   }
 
