@@ -356,6 +356,8 @@ export function MemoView({
   onBack,
   onSave,
   readOnly = false,
+  initialState,
+  onStateChange,
 }: {
   initialId: string | null;
   initialTitle: string;
@@ -363,10 +365,16 @@ export function MemoView({
   onBack: () => void;
   onSave: (id: string | null, title: string, content: string) => Promise<string>;
   readOnly?: boolean;
+  initialState?: { title?: string; content?: string };
+  onStateChange?: (state: { title: string; content: string }) => void;
 }) {
-  const [title, setTitle] = useState(initialTitle);
-  const [content, setContent] = useState(initialContent);
+  const [title, setTitle] = useState(initialState?.title ?? initialTitle);
+  const [content, setContent] = useState(initialState?.content ?? initialContent);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    onStateChange?.({ title, content });
+  }, [title, content, onStateChange]);
 
   async function handleSave() {
     if (readOnly) return;
@@ -423,20 +431,48 @@ export function MemoView({
   );
 }
 
-export function QuizView({ quiz, onBack }: { quiz: any; onBack: () => void }) {
+export function QuizView({
+  quiz,
+  onBack,
+  initialState,
+  onStateChange,
+}: {
+  quiz: any;
+  onBack: () => void;
+  initialState?: {
+    idx?: number;
+    selected?: number | null;
+    answered?: boolean;
+    showHint?: boolean;
+    done?: boolean;
+    score?: number;
+  };
+  onStateChange?: (state: {
+    idx: number;
+    selected: number | null;
+    answered: boolean;
+    showHint: boolean;
+    done: boolean;
+    score: number;
+  }) => void;
+}) {
   const questions = Array.isArray(quiz?.questions) ? quiz.questions : [];
-  const [idx, setIdx] = useState(0);
-  const [selected, setSelected] = useState<number | null>(null);
-  const [answered, setAnswered] = useState(false);
-  const [showHint, setShowHint] = useState(false);
-  const [done, setDone] = useState(false);
-  const [score, setScore] = useState(0);
+  const [idx, setIdx] = useState(initialState?.idx ?? 0);
+  const [selected, setSelected] = useState<number | null>(initialState?.selected ?? null);
+  const [answered, setAnswered] = useState(initialState?.answered ?? false);
+  const [showHint, setShowHint] = useState(initialState?.showHint ?? false);
+  const [done, setDone] = useState(initialState?.done ?? false);
+  const [score, setScore] = useState(initialState?.score ?? 0);
   const q = questions[idx];
   const total = questions.length;
   const correctAnswerIndex = resolveQuizAnswerIndex(q);
   const correctAnswerLabel = correctAnswerIndex >= 0 ? OPTION_ALPHA[correctAnswerIndex] || String(correctAnswerIndex + 1) : null;
   const correctAnswerText = correctAnswerIndex >= 0 ? toText(q?.options?.[correctAnswerIndex]) : "";
   const isCorrectSelection = selected !== null && selected === correctAnswerIndex;
+
+  useEffect(() => {
+    onStateChange?.({ idx, selected, answered, showHint, done, score });
+  }, [idx, selected, answered, showHint, done, score, onStateChange]);
 
   function select(i: number) {
     if (!q || answered) return;
@@ -696,14 +732,42 @@ export function AudioView({ audioBase64, audioUrl: propAudioUrl, script, title, 
   );
 }
 
-export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: string; onBack: () => void }) {
-  const [idx, setIdx] = useState(0);
-  const [flipped, setFlipped] = useState(false);
-  const [showHint, setShowHint] = useState(false);
-  const [known, setKnown] = useState<boolean[]>([]);
-  const [done, setDone] = useState(false);
+export function FlashcardView({
+  cards,
+  title,
+  onBack,
+  initialState,
+  onStateChange,
+}: {
+  cards: any[];
+  title: string;
+  onBack: () => void;
+  initialState?: {
+    idx?: number;
+    flipped?: boolean;
+    showHint?: boolean;
+    known?: boolean[];
+    done?: boolean;
+  };
+  onStateChange?: (state: {
+    idx: number;
+    flipped: boolean;
+    showHint: boolean;
+    known: boolean[];
+    done: boolean;
+  }) => void;
+}) {
+  const [idx, setIdx] = useState(initialState?.idx ?? 0);
+  const [flipped, setFlipped] = useState(initialState?.flipped ?? false);
+  const [showHint, setShowHint] = useState(initialState?.showHint ?? false);
+  const [known, setKnown] = useState<boolean[]>(initialState?.known ?? []);
+  const [done, setDone] = useState(initialState?.done ?? false);
   const card = cards[idx];
   const total = cards.length;
+
+  useEffect(() => {
+    onStateChange?.({ idx, flipped, showHint, known, done });
+  }, [idx, flipped, showHint, known, done, onStateChange]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -892,11 +956,29 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
   );
 }
 
-export function SlideView({ slides, title, coverImageB64, onBack }: { slides: any[]; title: string; coverImageB64?: string; onBack: () => void }) {
-  const [idx, setIdx] = useState(0);
-  const [showNotes, setShowNotes] = useState(false);
+export function SlideView({
+  slides,
+  title,
+  coverImageB64,
+  onBack,
+  initialState,
+  onStateChange,
+}: {
+  slides: any[];
+  title: string;
+  coverImageB64?: string;
+  onBack: () => void;
+  initialState?: { idx?: number; showNotes?: boolean };
+  onStateChange?: (state: { idx: number; showNotes: boolean }) => void;
+}) {
+  const [idx, setIdx] = useState(initialState?.idx ?? 0);
+  const [showNotes, setShowNotes] = useState(initialState?.showNotes ?? false);
   const total = slides.length;
   const slide = slides[idx] || { title: "", bullets: [], layout: "content" };
+
+  useEffect(() => {
+    onStateChange?.({ idx, showNotes });
+  }, [idx, showNotes, onStateChange]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
