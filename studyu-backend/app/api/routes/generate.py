@@ -86,21 +86,28 @@ async def generate(
     if not doc_ids:
         raise HTTPException(status_code=400, detail="doc_id 또는 doc_ids가 필요합니다.")
 
-    result = generate_content(
-        doc_ids=doc_ids,
-        gen_type=req.type,
-        model=req.model or "claude-haiku-4-5-20251001",
-        level=req.level or "intermediate",
-        quiz_count=req.quiz_count or 5,
-        topic=req.topic or "",
-        difficulty=req.difficulty or "intermediate",
-    )
+    try:
+        result = generate_content(
+            doc_ids=doc_ids,
+            gen_type=req.type,
+            model=req.model or "claude-haiku-4-5-20251001",
+            level=req.level or "intermediate",
+            quiz_count=req.quiz_count or 5,
+            topic=req.topic or "",
+            difficulty=req.difficulty or "intermediate",
+        )
+    except Exception as e:
+        print(f"[ERROR] generate_content 실패: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"콘텐츠 생성 실패: {str(e)}")
 
     if req.type == "quiz":
         try:
             parsed = json.loads(result)
-        except (json.JSONDecodeError, ValueError):
-            raise HTTPException(status_code=500, detail="퀴즈 JSON 파싱에 실패했습니다. 다시 시도해주세요.")
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[ERROR] JSON 파싱 실패. 결과: {result[:200]}")
+            raise HTTPException(status_code=500, detail=f"퀴즈 JSON 파싱 실패: {str(e)}")
         quiz_title = parsed.get("title", "퀴즈")
         item_id = _save_studio_item(
             user_id=user["id"],
