@@ -60,11 +60,15 @@ class GenerateRequest(BaseModel):
     doc_id: Optional[str] = None
     doc_ids: Optional[list[str]] = None
     type: str  # "summary" | "quiz" | "plan"
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     level: Optional[str] = "intermediate"
     quiz_count: Optional[int] = 5
     topic: Optional[str] = None
     difficulty: Optional[str] = "intermediate"
+    quiz_style: Optional[str] = "multiple_choice"  # "multiple_choice" | "ox" | "short_answer"
+    language: Optional[str] = "ko"            # ko | en | ja | zh
+    tone: Optional[str] = "formal"            # formal | casual | academic
+    instructions: Optional[str] = None        # 추가 지시사항
     item_title: Optional[str] = None  # 스튜디오 저장 시 표시 제목
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -76,6 +80,7 @@ async def generate(
     user: dict = Depends(get_current_user),
 ):
     """요약 / 퀴즈 / 학습 계획 생성."""
+    print(f"[studio] 🚀 {req.type} 생성 시작 | docs={req.doc_ids} | user={user['id'][:8]}")
     if req.type not in ("summary", "quiz", "plan"):
         raise HTTPException(
             status_code=400,
@@ -90,11 +95,15 @@ async def generate(
         result = generate_content(
             doc_ids=doc_ids,
             gen_type=req.type,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
             level=req.level or "intermediate",
             quiz_count=req.quiz_count or 5,
             topic=req.topic or "",
             difficulty=req.difficulty or "intermediate",
+            quiz_style=req.quiz_style or "multiple_choice",
+            language=req.language or "ko",
+            tone=req.tone or "formal",
+            instructions=req.instructions or "",
         )
     except Exception as e:
         print(f"[ERROR] generate_content 실패: {str(e)}")
@@ -122,7 +131,8 @@ async def generate(
             },
             notebook_id=req.notebook_id,
         )
-        return {"result": parsed, "type": req.type, "item_id": item_id}
+        print(f"[studio] ✅ quiz 생성 완료 | item_id={item_id} | title={parsed.get('title','')}")
+    return {"result": parsed, "type": req.type, "item_id": item_id}
 
     # summary / plan
     item_id = _save_studio_item(
@@ -133,6 +143,7 @@ async def generate(
         content={"text": result, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ {req.type} 생성 완료 | item_id={item_id}")
     return {"result": result, "type": req.type, "item_id": item_id}
 
 
@@ -142,7 +153,7 @@ class AudioGenerateRequest(BaseModel):
     language: str = "ko"            # ko | en | ja | zh
     length: str = "default"         # short | default
     focus: str = ""
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None  # 스튜디오 저장 시 표시 제목
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -154,6 +165,7 @@ async def generate_audio(
     user: dict = Depends(get_current_user),
 ):
     """2인 토크쇼 형식의 오디오 오버뷰 생성 (TTS 포함)."""
+    print(f"[studio] 🚀 오디오 생성 시작 | format={req.format} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -165,7 +177,7 @@ async def generate_audio(
             language=req.language,
             length=req.length,
             focus=req.focus,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"오디오 생성 실패: {str(e)}")
@@ -179,6 +191,7 @@ async def generate_audio(
         audio_bytes=audio_bytes,
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 오디오 생성 완료 | item_id={item_id} | title={title}")
     return {
         "audio_base64": base64.b64encode(audio_bytes).decode(),
         "script": script,
@@ -191,7 +204,7 @@ class MindmapGenerateRequest(BaseModel):
     doc_ids: list[str]
     language: str = "ko"       # ko | en | ja | zh
     focus: str = ""
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
 
@@ -202,6 +215,7 @@ async def generate_mindmap_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 평면 노드 배열 형식의 마인드맵으로 생성."""
+    print(f"[studio] 🚀 마인드맵 생성 시작 | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -211,7 +225,7 @@ async def generate_mindmap_route(
             doc_ids=req.doc_ids,
             language=req.language,
             focus=req.focus,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"마인드맵 생성 실패: {str(e)}")
@@ -224,6 +238,7 @@ async def generate_mindmap_route(
         content={"nodes": nodes, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 마인드맵 생성 완료 | item_id={item_id} | title={title}")
     return {
         "nodes": nodes,
         "title": title,
@@ -237,7 +252,7 @@ class FlashcardGenerateRequest(BaseModel):
     difficulty: str = "intermediate"  # easy | intermediate | hard
     topic: str = ""
     language: str = "ko"           # ko | en | ja | zh
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -249,6 +264,7 @@ async def generate_flashcard(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 플래시카드 세트를 생성."""
+    print(f"[studio] 🚀 플래시카드 생성 시작 | count={req.count} | difficulty={req.difficulty} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -260,7 +276,7 @@ async def generate_flashcard(
             difficulty=req.difficulty,
             topic=req.topic,
             language=req.language,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"플래시카드 생성 실패: {str(e)}")
@@ -273,6 +289,7 @@ async def generate_flashcard(
         content={"cards": cards, "difficulty": req.difficulty, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 플래시카드 생성 완료 | item_id={item_id} | title={title} | cards={len(cards)}장")
     return {
         "cards": cards,
         "title": title,
@@ -286,7 +303,7 @@ class SlideGenerateRequest(BaseModel):
     length: str = "default"        # short | default | long
     language: str = "ko"           # ko | en | ja | zh
     prompt: str = ""               # 사용자 커스텀 프롬프트
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -298,6 +315,7 @@ async def generate_slides_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 슬라이드 자료를 생성."""
+    print(f"[studio] 🚀 슬라이드 생성 시작 | format={req.format} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -309,7 +327,7 @@ async def generate_slides_route(
             length=req.length,
             language=req.language,
             prompt=req.prompt,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"슬라이드 생성 실패: {str(e)}")
@@ -322,6 +340,7 @@ async def generate_slides_route(
         content={"slides": slides, "format": req.format, "cover_image_b64": cover_image_b64, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 슬라이드 생성 완료 | item_id={item_id} | title={title} | slides={len(slides)}장")
     return {
         "slides": slides,
         "title": title,
@@ -337,7 +356,7 @@ class ReportGenerateRequest(BaseModel):
     length: str = "default"        # short | default | long
     tone: str = "formal"           # formal | casual | academic
     instructions: str = ""         # 사용자 커스텀 지시사항
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -349,6 +368,7 @@ async def generate_report_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 구조화된 보고서를 생성."""
+    print(f"[studio] 🚀 보고서 생성 시작 | format={req.format} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -361,7 +381,7 @@ async def generate_report_route(
             length=req.length,
             tone=req.tone,
             instructions=req.instructions,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"보고서 생성 실패: {str(e)}")
@@ -374,6 +394,7 @@ async def generate_report_route(
         content={"sections": sections, "format": req.format, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 보고서 생성 완료 | item_id={item_id} | title={title}")
     return {
         "sections": sections,
         "title": title,
@@ -386,7 +407,7 @@ class DataTableGenerateRequest(BaseModel):
     format: str = "summary_table"   # summary_table | comparison_table | concept_definition | learning_checklist | progress_tracking
     language: str = "ko"            # ko | en | ja | zh
     instructions: str = ""          # 사용자 커스텀 지시사항
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
     week_id: Optional[int] = None
@@ -398,6 +419,7 @@ async def generate_data_table_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 구조화된 데이터 표를 생성."""
+    print(f"[studio] 🚀 데이터표 생성 시작 | format={req.format} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -408,7 +430,7 @@ async def generate_data_table_route(
             format=req.format,
             language=req.language,
             instructions=req.instructions,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"데이터 표 생성 실패: {str(e)}")
@@ -421,6 +443,7 @@ async def generate_data_table_route(
         content={"title": title, "description": description, "columns": columns, "rows": rows, "week_id": req.week_id},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 데이터표 생성 완료 | item_id={item_id} | title={title} | rows={len(rows)}행")
     return {
         "title": title,
         "description": description,
@@ -434,7 +457,7 @@ class VideoGenerateRequest(BaseModel):
     doc_ids: list[str]
     language: str = "ko"
     length: str = "default"
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     item_title: Optional[str] = None
     notebook_id: Optional[str] = None
 
@@ -445,6 +468,7 @@ async def generate_video_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 Remotion 비디오용 슬라이드+오디오 데이터를 생성."""
+    print(f"[studio] 🚀 동영상 생성 시작 | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -454,7 +478,7 @@ async def generate_video_route(
             doc_ids=req.doc_ids,
             language=req.language,
             length=req.length,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"동영상 스크립트 생성 실패: {str(e)}")
@@ -467,6 +491,7 @@ async def generate_video_route(
         content={"slides": slides},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 동영상 생성 완료 | item_id={item_id} | title={title}")
     return {
         "slides": slides,
         "title": title,
@@ -479,7 +504,7 @@ class InfographicGenerateRequest(BaseModel):
     format: str = "overview"       # overview | process | comparison | statistics | timeline
     language: str = "ko"
     instructions: str = ""
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     notebook_id: Optional[str] = None
 
 
@@ -489,6 +514,7 @@ async def generate_infographic_route(
     user: dict = Depends(get_current_user),
 ):
     """문서 내용을 바탕으로 인포그래픽을 생성."""
+    print(f"[studio] 🚀 인포그래픽 생성 시작 | format={req.format} | docs={req.doc_ids} | user={user['id'][:8]}")
     if not req.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids가 필요합니다.")
 
@@ -499,7 +525,7 @@ async def generate_infographic_route(
             format=req.format,
             language=req.language,
             instructions=req.instructions,
-            model=req.model or "claude-haiku-4-5-20251001",
+            model=req.model or "gpt-4o",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"인포그래픽 생성 실패: {str(e)}")
@@ -512,6 +538,7 @@ async def generate_infographic_route(
         content={"title": title, "description": description, "sections": sections},
         notebook_id=req.notebook_id,
     )
+    print(f"[studio] ✅ 인포그래픽 생성 완료 | item_id={item_id} | title={title} | sections={len(sections)}개")
     return {
         "title": title,
         "description": description,
