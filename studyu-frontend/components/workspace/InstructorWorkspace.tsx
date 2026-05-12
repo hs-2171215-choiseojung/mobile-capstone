@@ -258,6 +258,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   // Studio item viewer
   const [viewerStudioItem, setViewerStudioItem] = useState<any | null>(null);
   const [viewerStudioExpanded, setViewerStudioExpanded] = useState(false);
+  const [viewerStudioSessionState, setViewerStudioSessionState] = useState<any | null>(null);
+  const [viewerStudioSessionItemId, setViewerStudioSessionItemId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceFileInputRef = useRef<HTMLInputElement>(null);
   const [sourceSubmitting, setSourceSubmitting] = useState(false);
@@ -346,6 +348,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     restoreStudyPlanScrollPendingRef.current = true;
     setViewerStudioExpanded(false);
     setViewerStudioItem(null);
+    setViewerStudioSessionState(null);
+    setViewerStudioSessionItemId(null);
   };
 
   // Add Task modal
@@ -466,6 +470,9 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     setViewerUrl(null);
     setViewerText(null);
     setViewerFileUrl(null);
+    setViewerStudioExpanded(false);
+    setViewerStudioSessionState(null);
+    setViewerStudioSessionItemId(item?.id ?? null);
     setViewerStudioItem(item);
   }, [saveStudyPlanScrollPosition]);
 
@@ -2201,39 +2208,52 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* Studio Item Viewer */}
             {viewerStudioItem && !viewerDoc && (
-              (viewerStudioExpanded
+              viewerStudioExpanded
                 ? createPortal(
                     <div className="fixed inset-0 z-[9999] bg-white">
                       <button
                         onClick={() => setViewerStudioExpanded(false)}
                         title="축소"
-                        className="absolute top-14 right-3 z-20 p-1.5 rounded-lg bg-white/90 border border-gray-200 shadow-sm hover:bg-gray-50 text-gray-400 hover:text-gray-600 transition-colors"
+                        className="absolute top-3 right-3 z-20 p-1.5 rounded-lg bg-white/90 border border-gray-200 shadow-sm hover:bg-gray-50 text-gray-400 hover:text-gray-600 transition-colors"
                       >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9V4.5M15 9h4.5M15 9l5.25-5.25M15 15v4.5M15 15h4.5M15 15l5.25 5.25" />
                         </svg>
                       </button>
                       <div className="h-full overflow-hidden">
-                        <StudioItemViewer item={viewerStudioItem} onClose={closeStudioViewer} />
+                        <StudioItemViewer
+                          key={viewerStudioItem?.id ?? "studio-viewer"}
+                          item={viewerStudioItem}
+                          onClose={closeStudioViewer}
+                          sessionState={viewerStudioSessionItemId === viewerStudioItem?.id ? viewerStudioSessionState : null}
+                          onSessionStateChange={setViewerStudioSessionState}
+                        />
                       </div>
                     </div>,
                     document.body
                   )
-                : <div className="flex-1 flex flex-col overflow-hidden bg-white relative">
-                    <button
-                      onClick={() => setViewerStudioExpanded(true)}
-                      title="전체화면"
-                      className="absolute top-14 right-3 z-20 p-1.5 rounded-lg bg-white/90 border border-gray-200 shadow-sm hover:bg-gray-50 text-gray-400 hover:text-gray-600 transition-colors"
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-                      </svg>
-                    </button>
-                    <div className="flex-1 overflow-hidden">
-                      <StudioItemViewer item={viewerStudioItem} onClose={closeStudioViewer} />
+                : (
+                    <div className="flex-1 flex flex-col overflow-hidden bg-white relative">
+                      <button
+                        onClick={() => setViewerStudioExpanded(true)}
+                        title="전체화면"
+                        className="absolute top-14 right-3 z-20 p-1.5 rounded-lg bg-white/90 border border-gray-200 shadow-sm hover:bg-gray-50 text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                        </svg>
+                      </button>
+                      <div className="flex-1 overflow-hidden">
+                        <StudioItemViewer
+                          key={viewerStudioItem?.id ?? "studio-viewer"}
+                          item={viewerStudioItem}
+                          onClose={closeStudioViewer}
+                          sessionState={viewerStudioSessionItemId === viewerStudioItem?.id ? viewerStudioSessionState : null}
+                          onSessionStateChange={setViewerStudioSessionState}
+                        />
+                      </div>
                     </div>
-                  </div>
-              )
+                  )
             )}
 
             {/* Document Viewer */}

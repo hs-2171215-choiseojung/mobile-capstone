@@ -13,6 +13,8 @@ interface Props {
   nodes: MindmapNode[];
   title: string;
   onBack: () => void;
+  initialState?: { expandedNodeIds?: string[] };
+  onStateChange?: (state: { expandedNodeIds: string[] }) => void;
 }
 
 function buildTree(flatNodes: MindmapNode[]): MindmapNode[] {
@@ -80,8 +82,10 @@ function NodeItem({
   );
 }
 
-export default function MindMapView({ nodes, title, onBack }: Props) {
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(["root"]));
+export default function MindMapView({ nodes, title, onBack, initialState, onStateChange }: Props) {
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(
+    () => new Set(initialState?.expandedNodeIds?.length ? initialState.expandedNodeIds : ["root"])
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const [lines, setLines] = useState<string[]>([]);
   const [isGrabbing, setIsGrabbing] = useState(false);
@@ -129,6 +133,10 @@ export default function MindMapView({ nodes, title, onBack }: Props) {
       window.removeEventListener("resize", updateLines);
     };
   }, [updateLines]);
+
+  useEffect(() => {
+    onStateChange?.({ expandedNodeIds: Array.from(expandedNodes) });
+  }, [expandedNodes, onStateChange]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {

@@ -36,9 +36,11 @@ const normalizeStudioType = (rawType: string) => {
 interface StudioItemViewerProps {
   item: any;
   onClose: () => void;
+  sessionState?: any;
+  onSessionStateChange?: (state: any) => void;
 }
 
-export function StudioItemViewer({ item, onClose }: StudioItemViewerProps) {
+export function StudioItemViewer({ item, onClose, sessionState, onSessionStateChange }: StudioItemViewerProps) {
   if (!item) return null;
 
   const toText = (value: unknown, fallback = ""): string => {
@@ -66,6 +68,8 @@ export function StudioItemViewer({ item, onClose }: StudioItemViewerProps) {
           }
         }
         onBack={onClose}
+        initialState={sessionState ?? undefined}
+        onStateChange={onSessionStateChange}
       />
     );
   }
@@ -87,7 +91,15 @@ export function StudioItemViewer({ item, onClose }: StudioItemViewerProps) {
   }
 
   if (t === "mindmap") {
-    return <MindMapView nodes={c.nodes || item.mindmap?.nodes || []} title={toText(item.title, "마인드맵")} onBack={onClose} />;
+    return (
+      <MindMapView
+        nodes={c.nodes || item.mindmap?.nodes || []}
+        title={toText(item.title, "마인드맵")}
+        onBack={onClose}
+        initialState={sessionState ?? undefined}
+        onStateChange={onSessionStateChange}
+      />
+    );
   }
 
   if (t === "memo") {
@@ -99,12 +111,22 @@ export function StudioItemViewer({ item, onClose }: StudioItemViewerProps) {
         onBack={onClose}
         onSave={async () => ""}
         readOnly
+        initialState={sessionState ?? undefined}
+        onStateChange={onSessionStateChange}
       />
     );
   }
 
   if (t === "flashcard") {
-    return <FlashcardView cards={c.cards || item.flashcard?.cards || []} title={toText(item.title, "플래시카드")} onBack={onClose} />;
+    return (
+      <FlashcardView
+        cards={c.cards || item.flashcard?.cards || []}
+        title={toText(item.title, "플래시카드")}
+        onBack={onClose}
+        initialState={sessionState ?? undefined}
+        onStateChange={onSessionStateChange}
+      />
+    );
   }
 
   if (t === "slides") {
@@ -114,6 +136,8 @@ export function StudioItemViewer({ item, onClose }: StudioItemViewerProps) {
         title={toText(item.title, "슬라이드")}
         coverImageB64={c.cover_image_b64 || item.slides?.cover_image_b64 || ""}
         onBack={onClose}
+        initialState={sessionState ?? undefined}
+        onStateChange={onSessionStateChange}
       />
     );
   }
