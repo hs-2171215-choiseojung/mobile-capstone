@@ -257,6 +257,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [viewerLoading, setViewerLoading] = useState(false);
   // Studio item viewer
   const [viewerStudioItem, setViewerStudioItem] = useState<any | null>(null);
+  const [viewerStudioExpanded, setViewerStudioExpanded] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceFileInputRef = useRef<HTMLInputElement>(null);
   const [sourceSubmitting, setSourceSubmitting] = useState(false);
@@ -269,6 +270,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [collapsedWeekIds, setCollapsedWeekIds] = useState<Set<number>>(new Set());
 
   const studyPlanScrollRef = useRef<HTMLDivElement>(null);
+  const studyPlanScrollTopRef = useRef(0);
+  const restoreStudyPlanScrollPendingRef = useRef(false);
   const weekCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const pendingScrollWeekIdRef = useRef<number | null>(null);
 
@@ -283,6 +286,32 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       }
     }, 50);
   };
+
+  const saveStudyPlanScrollPosition = useCallback(() => {
+    if (studyPlanScrollRef.current) {
+      studyPlanScrollTopRef.current = studyPlanScrollRef.current.scrollTop;
+    }
+  }, []);
+
+  const restoreStudyPlanScrollPosition = useCallback(() => {
+    if (!restoreStudyPlanScrollPendingRef.current) return;
+    const container = studyPlanScrollRef.current;
+    if (!container) return;
+    container.scrollTop = studyPlanScrollTopRef.current;
+    restoreStudyPlanScrollPendingRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    if (!viewerStudioItem) setViewerStudioExpanded(false);
+  }, [viewerStudioItem]);
+
+  useEffect(() => {
+    if (!viewerDoc && !viewerStudioItem) {
+      window.requestAnimationFrame(() => {
+        restoreStudyPlanScrollPosition();
+      });
+    }
+  }, [viewerDoc, viewerStudioItem, restoreStudyPlanScrollPosition]);
 
   useEffect(() => {
     const pendingWeekId = pendingScrollWeekIdRef.current;
@@ -312,6 +341,12 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       window.cancelAnimationFrame(frameId);
     };
   }, [weeks]);
+
+  const closeStudioViewer = () => {
+    restoreStudyPlanScrollPendingRef.current = true;
+    setViewerStudioExpanded(false);
+    setViewerStudioItem(null);
+  };
 
   // Add Task modal
   const [openPickerWeekId, setOpenPickerWeekId] = useState<number | null>(null);
@@ -415,6 +450,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   }, [profileMenuOpen]);
 
   const resetViewerState = useCallback((nextDocs: Doc[] = docs) => {
+    restoreStudyPlanScrollPendingRef.current = true;
     setViewerDoc(null);
     setViewerUrl(null);
     setViewerFileUrl(null);
@@ -423,6 +459,15 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     setActiveDocIds(nextDocs.map((doc) => doc.id));
     setActiveChunkDocIds(new Set(nextDocs.map((doc) => doc.id)));
   }, [docs]);
+
+  const openStudioViewer = useCallback((item: any) => {
+    saveStudyPlanScrollPosition();
+    setViewerDoc(null);
+    setViewerUrl(null);
+    setViewerText(null);
+    setViewerFileUrl(null);
+    setViewerStudioItem(item);
+  }, [saveStudyPlanScrollPosition]);
 
   const assignedStudioItemIds = new Set(
     weeks.flatMap((week) => week.tasks.map((task) => task.itemId).filter(Boolean) as string[])
@@ -573,6 +618,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       ? { id: resolvedDoc.id, name: resolvedDoc.name ?? doc.name, type: resolvedDoc.type ?? doc.type }
       : doc;
 
+    saveStudyPlanScrollPosition();
     setViewerStudioItem(null);
     setViewerDoc(effectiveDoc);
     setActiveDocIds([effectiveDoc.id]);
@@ -2063,10 +2109,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                 }}
                                 onClick={() => {
                                   if (item.generating || item.generatingError) return;
-                                  setViewerDoc(null);
-                                  setViewerUrl(null);
-                                  setViewerText(null);
-                                  setViewerStudioItem(item);
+                                  openStudioViewer(item);
                                 }}
                               >
                                 <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
@@ -2101,10 +2144,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setViewerDoc(null);
-                                        setViewerUrl(null);
-                                        setViewerText(null);
-                                        setViewerStudioItem(item);
+                                        openStudioViewer(item);
                                       }}
                                       className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-600 text-[11px] font-semibold"
                                     >
@@ -2161,24 +2201,39 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* Studio Item Viewer */}
             {viewerStudioItem && !viewerDoc && (
-              <div className="flex-1 flex flex-col overflow-hidden bg-white">
-                <div className="h-10 border-b border-gray-100 flex items-center gap-3 px-4 shrink-0">
-                  <button
-                    onClick={() => setViewerStudioItem(null)}
-                    className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 transition-colors"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M19 12H5M12 5l-7 7 7 7"/>
-                    </svg>
-                    돌아가기
-                  </button>
-                  <span className="text-gray-300">|</span>
-                  <span className="text-xs text-gray-600 font-medium truncate">{viewerStudioItem.title}</span>
-                </div>
-                <div className="flex-1 overflow-hidden">
-                  <StudioItemViewer item={viewerStudioItem} onClose={() => setViewerStudioItem(null)} />
-                </div>
-              </div>
+              (viewerStudioExpanded
+                ? createPortal(
+                    <div className="fixed inset-0 z-[9999] bg-white">
+                      <button
+                        onClick={() => setViewerStudioExpanded(false)}
+                        title="축소"
+                        className="absolute top-14 right-3 z-20 p-1.5 rounded-lg bg-white/90 border border-gray-200 shadow-sm hover:bg-gray-50 text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9V4.5M15 9h4.5M15 9l5.25-5.25M15 15v4.5M15 15h4.5M15 15l5.25 5.25" />
+                        </svg>
+                      </button>
+                      <div className="h-full overflow-hidden">
+                        <StudioItemViewer item={viewerStudioItem} onClose={closeStudioViewer} />
+                      </div>
+                    </div>,
+                    document.body
+                  )
+                : <div className="flex-1 flex flex-col overflow-hidden bg-white relative">
+                    <button
+                      onClick={() => setViewerStudioExpanded(true)}
+                      title="전체화면"
+                      className="absolute top-14 right-3 z-20 p-1.5 rounded-lg bg-white/90 border border-gray-200 shadow-sm hover:bg-gray-50 text-gray-400 hover:text-gray-600 transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                      </svg>
+                    </button>
+                    <div className="flex-1 overflow-hidden">
+                      <StudioItemViewer item={viewerStudioItem} onClose={closeStudioViewer} />
+                    </div>
+                  </div>
+              )
             )}
 
             {/* Document Viewer */}
@@ -2300,8 +2355,18 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                               <button
                                 onClick={() => setCollapsedWeekIds(prev => { const next = new Set(prev); next.has(week.id) ? next.delete(week.id) : next.add(week.id); return next; })}
                                 className="flex items-center justify-center shrink-0 hover:bg-gray-100 rounded transition-colors p-0.5"
+                                title={collapsedWeekIds.has(week.id) ? "펼치기" : "접기"}
                               >
-                                <svg width="18" height="18" viewBox="0 0 20 20" fill="none" className="transition-transform" style={{ transform: collapsedWeekIds.has(week.id) ? "rotate(-90deg)" : "rotate(0deg)" }}><path d="M5 7.5L10 12.5L15 7.5" stroke="#4A5565" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.667"/></svg>
+                                <svg
+                                  width="18"
+                                  height="18"
+                                  viewBox="0 0 20 20"
+                                  fill="none"
+                                  className="transition-transform duration-200"
+                                  style={{ transform: collapsedWeekIds.has(week.id) ? "rotate(-90deg)" : "rotate(0deg)" }}
+                                >
+                                  <path d="M5 7.5L10 12.5L15 7.5" stroke="#4A5565" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.667"/>
+                                </svg>
                               </button>
                               <h2 className="truncate" style={{ fontFamily:"Manrope,sans-serif", fontSize:"19px", fontWeight:500, color:"#001c39", letterSpacing:"-0.4px" }}>
                                 {week.title}
@@ -2561,7 +2626,14 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                               {/* 완료 아이템: 시작하기 버튼 */}
                               {!task.generating && !task.generatingError && task.itemId && (
                                 <button
-                                  onClick={() => { setStudioOpenItemId(task.itemId!); }}
+                                  onClick={() => {
+                                    const studioItem = studioItems.find((item) => item.id === task.itemId);
+                                    if (studioItem) {
+                                      openStudioViewer(studioItem);
+                                      return;
+                                    }
+                                    setStudioOpenItemId(task.itemId!);
+                                  }}
                                   className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
                                   style={{ background: "#1d4ed8", color: "white", fontSize: "12px" }}
                                 >
@@ -2743,7 +2815,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
           openMemoRequest={studioMemoRequest}
           onOpenMemoHandled={() => setStudioMemoRequest(0)}
           forcePortalSubviews={true}
-          onViewItem={(item) => { setViewerDoc(null); setViewerUrl(null); setViewerText(null); setViewerStudioItem(item); }}
+          onViewItem={(item) => { openStudioViewer(item); }}
         />
       </div>
 

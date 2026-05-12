@@ -17,12 +17,16 @@ interface Props {
 
 function buildTree(flatNodes: MindmapNode[]): MindmapNode[] {
   const map: Record<string, MindmapNode & { children: MindmapNode[] }> = {};
-  flatNodes.forEach((n) => (map[n.id] = { ...n, children: [] }));
-  const roots: MindmapNode[] = [];
-  flatNodes.forEach((n) => {
-    if (n.parent && map[n.parent]) map[n.parent].children.push(map[n.id]);
-    else roots.push(map[n.id]);
+  flatNodes.forEach((node) => {
+    map[node.id] = { ...node, children: [] };
   });
+
+  const roots: MindmapNode[] = [];
+  flatNodes.forEach((node) => {
+    if (node.parent && map[node.parent]) map[node.parent].children.push(map[node.id]);
+    else roots.push(map[node.id]);
+  });
+
   return roots;
 }
 
@@ -39,13 +43,12 @@ function NodeItem({
 }) {
   const isExpanded = expandedNodes.has(node.id);
   const hasChildren = (node.children?.length ?? 0) > 0;
-
   const colorClass =
     level === 0
       ? "bg-indigo-100 text-indigo-700 border-indigo-300 font-black text-sm"
       : level === 1
-      ? "bg-blue-50 text-blue-700 border-blue-200 font-bold text-sm"
-      : "bg-emerald-50 text-emerald-700 border-emerald-200 text-xs font-medium";
+        ? "bg-blue-50 text-blue-700 border-blue-200 font-bold text-sm"
+        : "bg-emerald-50 text-emerald-700 border-emerald-200 text-xs font-medium";
 
   return (
     <div className="flex items-center">
@@ -57,9 +60,7 @@ function NodeItem({
         }`}
       >
         <span className="break-words leading-snug block">{node.text}</span>
-        {hasChildren && (
-          <span className="opacity-30 text-[9px] ml-1">{isExpanded ? "◀" : "▶"}</span>
-        )}
+        {hasChildren && <span className="opacity-30 text-[9px] ml-1">{isExpanded ? "-" : "+"}</span>}
       </div>
 
       {isExpanded && hasChildren && (
@@ -86,36 +87,38 @@ export default function MindMapView({ nodes, title, onBack }: Props) {
   const [isGrabbing, setIsGrabbing] = useState(false);
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
-
   const treeData = buildTree(nodes);
 
   const updateLines = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
+
     const containerRect = container.getBoundingClientRect();
-    const newLines: string[] = [];
+    const nextLines: string[] = [];
 
     expandedNodes.forEach((parentId) => {
       const parentEl = document.getElementById(`node-${parentId}`);
       if (!parentEl) return;
-      const pr = parentEl.getBoundingClientRect();
-      const px = pr.right - containerRect.left + container.scrollLeft;
-      const py = pr.top + pr.height / 2 - containerRect.top + container.scrollTop;
+
+      const parentRect = parentEl.getBoundingClientRect();
+      const px = parentRect.right - containerRect.left + container.scrollLeft;
+      const py = parentRect.top + parentRect.height / 2 - containerRect.top + container.scrollTop;
 
       nodes
-        .filter((n) => n.parent === parentId)
+        .filter((node) => node.parent === parentId)
         .forEach((child) => {
           const childEl = document.getElementById(`node-${child.id}`);
           if (!childEl) return;
-          const cr = childEl.getBoundingClientRect();
-          const cx = cr.left - containerRect.left + container.scrollLeft;
-          const cy = cr.top + cr.height / 2 - containerRect.top + container.scrollTop;
+
+          const childRect = childEl.getBoundingClientRect();
+          const cx = childRect.left - containerRect.left + container.scrollLeft;
+          const cy = childRect.top + childRect.height / 2 - containerRect.top + container.scrollTop;
           const cpx = px + (cx - px) / 2;
-          newLines.push(`M ${px} ${py} C ${cpx} ${py}, ${cpx} ${cy}, ${cx} ${cy}`);
+          nextLines.push(`M ${px} ${py} C ${cpx} ${py}, ${cpx} ${cy}, ${cx} ${cy}`);
         });
     });
 
-    setLines(newLines);
+    setLines(nextLines);
   }, [expandedNodes, nodes]);
 
   useEffect(() => {
@@ -127,7 +130,6 @@ export default function MindMapView({ nodes, title, onBack }: Props) {
     };
   }, [updateLines]);
 
-  // 드래그 패닝
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDragging.current || !containerRef.current) return;
@@ -136,12 +138,13 @@ export default function MindMapView({ nodes, title, onBack }: Props) {
       containerRef.current.scrollLeft = dragStart.current.scrollLeft - dx;
       containerRef.current.scrollTop = dragStart.current.scrollTop - dy;
     };
+
     const handleMouseUp = () => {
-      if (isDragging.current) {
-        isDragging.current = false;
-        setIsGrabbing(false);
-      }
+      if (!isDragging.current) return;
+      isDragging.current = false;
+      setIsGrabbing(false);
     };
+
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseup", handleMouseUp);
     return () => {
@@ -151,7 +154,6 @@ export default function MindMapView({ nodes, title, onBack }: Props) {
   }, []);
 
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    // 노드 클릭은 드래그로 처리하지 않음
     if ((e.target as HTMLElement).closest('[id^="node-"]')) return;
     isDragging.current = true;
     setIsGrabbing(true);
@@ -175,11 +177,10 @@ export default function MindMapView({ nodes, title, onBack }: Props) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-2 shrink-0">
+      <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-3 shrink-0">
         <button
           onClick={onBack}
-          className="text-sm text-gray-500 hover:text-blue-600 flex items-center gap-1 transition-colors"
+          className="shrink-0 flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-blue-600 transition-colors"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
             <path
@@ -190,13 +191,12 @@ export default function MindMapView({ nodes, title, onBack }: Props) {
               strokeLinejoin="round"
             />
           </svg>
-          스튜디오
+          돌아가기
         </button>
-        <span className="text-gray-300">›</span>
-        <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
+        <div className="h-4 w-px bg-gray-200 shrink-0" />
+        <span className="text-sm font-medium text-gray-700 truncate min-w-0">{title}</span>
       </div>
 
-      {/* Mind map canvas */}
       <div
         ref={containerRef}
         className="flex-1 overflow-auto bg-white p-12 flex items-start relative"
@@ -208,9 +208,9 @@ export default function MindMapView({ nodes, title, onBack }: Props) {
           className="absolute top-0 left-0 pointer-events-none z-0"
           style={{ width: "100%", height: "100%" }}
         >
-          {lines.map((path, i) => (
+          {lines.map((path, index) => (
             <path
-              key={i}
+              key={index}
               d={path}
               fill="none"
               stroke="#cbd5e1"

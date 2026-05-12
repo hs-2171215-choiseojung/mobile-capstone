@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, type ReactNode } from "react";
 
 
 type Doc = { id: string; name?: string; filename?: string; type?: string };
@@ -33,7 +33,50 @@ export const STUDIO_TASK_ITEMS: StudioTaskItem[] = [
   { id: "table", label: "데이터 표", icon: "T", presets: ["비교 분석 표", "개념 정리 표", "요약 표", "항목 분류 표", "체크리스트 표", "학습 계획 표"] },
 ];
 
-const END_STUDY_BTN_CLASS = "text-sm font-semibold text-red-500 hover:text-red-600";
+const HEADER_TITLE_CLASS = "text-sm font-medium text-gray-700 truncate";
+
+function BackHeaderButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="shrink-0 flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-blue-600 transition-colors"
+    >
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
+        <path
+          d="M19 12H5M12 5l-7 7 7 7"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+      돌아가기
+    </button>
+  );
+}
+
+function StudioHeader({
+  title,
+  onBack,
+  actions,
+  titleClassName = HEADER_TITLE_CLASS,
+}: {
+  title: ReactNode;
+  onBack: () => void;
+  actions?: ReactNode;
+  titleClassName?: string;
+}) {
+  return (
+    <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-4 shrink-0">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        <BackHeaderButton onClick={onBack} />
+        <div className="h-4 w-px bg-gray-200 shrink-0" />
+        <div className={`min-w-0 ${titleClassName}`}>{title}</div>
+      </div>
+      {actions ? <div className="flex items-center gap-2 shrink-0">{actions}</div> : null}
+    </div>
+  );
+}
 
 // ── Download utilities ─────────────────────────────────────────────────────
 function downloadText(text: string, filename: string) {
@@ -292,13 +335,11 @@ export function UnifiedGenerateModal({
 export function SummaryView({ content, onBack }: { content: string; onBack: () => void }) {
   return (
     <div className="flex flex-col h-full overflow-y-auto">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <span className="text-sm font-medium text-gray-700">요약</span>
-        <div className="flex items-center gap-2">
-          <DownloadBtn onClick={() => downloadText(content, "요약.txt")} />
-          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
-        </div>
-      </div>
+      <StudioHeader
+        title="요약"
+        onBack={onBack}
+        actions={<DownloadBtn onClick={() => downloadText(content, "요약.txt")} />}
+      />
       <div className="p-5">
         <div className="rounded-2xl p-4 bg-white border border-gray-200 text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
           {content}
@@ -339,22 +380,24 @@ export function MemoView({
 
   return (
     <div className="flex flex-col h-full bg-white">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 shrink-0">
-        <span className="text-sm font-medium text-gray-700">메모</span>
-        <div className="flex items-center gap-2">
-          <DownloadBtn onClick={() => downloadText(`${title}\n\n${content}`, `${title || "메모"}.txt`)} />
-          {!readOnly && (
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="px-4 py-1.5 rounded-full text-xs font-semibold bg-blue-600 text-white disabled:opacity-60"
-            >
-              {saving ? "저장 중..." : "저장"}
-            </button>
-          )}
-          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
-        </div>
-      </div>
+      <StudioHeader
+        title="메모"
+        onBack={onBack}
+        actions={
+          <>
+            <DownloadBtn onClick={() => downloadText(`${title}\n\n${content}`, `${title || "메모"}.txt`)} />
+            {!readOnly && (
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-4 py-1.5 rounded-full text-xs font-semibold bg-blue-600 text-white disabled:opacity-60"
+              >
+                {saving ? "저장 중..." : "저장"}
+              </button>
+            )}
+          </>
+        }
+      />
 
       <input
         type="text"
@@ -416,9 +459,7 @@ export function QuizView({ quiz, onBack }: { quiz: any; onBack: () => void }) {
   if (total === 0 || !q) {
     return (
       <div className="h-full bg-white p-6">
-        <div className="flex justify-end">
-          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
-        </div>
+        <StudioHeader title={toText(quiz?.title, "퀴즈")} onBack={onBack} />
         <p className="mt-6 text-gray-500">퀴즈 문항이 없습니다.</p>
       </div>
     );
@@ -428,10 +469,7 @@ export function QuizView({ quiz, onBack }: { quiz: any; onBack: () => void }) {
     const pct = Math.round((score / total) * 100);
     return (
       <div className="flex flex-col h-full bg-white">
-        <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-          <span className="text-sm font-medium text-gray-700">퀴즈 결과</span>
-          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
-        </div>
+        <StudioHeader title="퀴즈 결과" onBack={onBack} />
         <div className="flex flex-col items-center justify-center flex-1 gap-5 px-6 text-center">
           <div
             className="w-24 h-24 rounded-full flex items-center justify-center text-3xl font-bold"
@@ -477,13 +515,11 @@ export function QuizView({ quiz, onBack }: { quiz: any; onBack: () => void }) {
 
   return (
     <div className="h-full bg-white flex flex-col">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <span className="text-sm font-medium text-gray-700">{toText(quiz?.title, "퀴즈")} {idx + 1}/{total}</span>
-        <div className="flex items-center gap-2">
-          <DownloadBtn onClick={quizDownload} />
-          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
-        </div>
-      </div>
+      <StudioHeader
+        title={`${toText(quiz?.title, "퀴즈")} ${idx + 1}/${total}`}
+        onBack={onBack}
+        actions={<DownloadBtn onClick={quizDownload} />}
+      />
       <div className="p-4 flex-1 overflow-y-auto">
         <div className="rounded-2xl p-4 mb-3 bg-white border border-gray-200">
         <h3 className="text-base font-semibold text-gray-900">{toText(q.question, "문항")}</h3>
@@ -574,39 +610,41 @@ export function AudioView({ audioBase64, audioUrl: propAudioUrl, script, title, 
 
   return (
     <div className="flex flex-col h-full overflow-y-auto bg-white">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
-        <div className="flex items-center gap-2">
-          {(audioBase64 || propAudioUrl) && (
-            <button
-              onClick={() => {
-                if (audioBase64) downloadBase64(audioBase64, `${title || "오디오"}.mp3`, "audio/mpeg");
-                else if (propAudioUrl) downloadUrl(propAudioUrl, `${title || "오디오"}.mp3`);
-              }}
-              title="오디오 다운로드"
-              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-              오디오
-            </button>
-          )}
-          {script && (
-            <button
-              onClick={() => downloadText(script, `${title || "오디오"}_스크립트.txt`)}
-              title="스크립트 다운로드"
-              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-              스크립트
-            </button>
-          )}
-          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
-        </div>
-      </div>
+      <StudioHeader
+        title={title}
+        onBack={onBack}
+        actions={
+          <>
+            {(audioBase64 || propAudioUrl) && (
+              <button
+                onClick={() => {
+                  if (audioBase64) downloadBase64(audioBase64, `${title || "오디오"}.mp3`, "audio/mpeg");
+                  else if (propAudioUrl) downloadUrl(propAudioUrl, `${title || "오디오"}.mp3`);
+                }}
+                title="오디오 다운로드"
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                오디오
+              </button>
+            )}
+            {script && (
+              <button
+                onClick={() => downloadText(script, `${title || "오디오"}_스크립트.txt`)}
+                title="스크립트 다운로드"
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 transition-colors text-xs"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                스크립트
+              </button>
+            )}
+          </>
+        }
+      />
       <div className="p-4 space-y-4">
         <div className="rounded-2xl p-4 bg-gradient-to-br from-teal-50 to-cyan-50 border border-teal-100">
           <div className="flex items-center gap-3 mb-3">
@@ -713,10 +751,7 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
     const pct = Math.round((knownCount / total) * 100);
     return (
       <div className="flex flex-col h-full bg-white">
-        <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-          <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
-          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
-        </div>
+        <StudioHeader title={title} onBack={onBack} />
         <div className="flex flex-col items-center justify-center flex-1 gap-5 px-6 text-center">
           <div
             className="w-24 h-24 rounded-full flex items-center justify-center text-3xl font-bold"
@@ -750,13 +785,11 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
 
   return (
     <div className="h-full bg-white flex flex-col">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <span className="text-sm font-medium text-gray-700">{title}</span>
-        <div className="flex items-center gap-2">
-          <DownloadBtn onClick={() => downloadText(cards.map((c, i) => `[카드 ${i + 1}]\n앞면: ${toText(c.front)}\n뒷면: ${toText(c.back)}${toText(c.hint) ? `\n힌트: ${toText(c.hint)}` : ""}`).join("\n\n"), `${title || "플래시카드"}.txt`)} />
-          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
-        </div>
-      </div>
+      <StudioHeader
+        title={title}
+        onBack={onBack}
+        actions={<DownloadBtn onClick={() => downloadText(cards.map((c, i) => `[카드 ${i + 1}]\n앞면: ${toText(c.front)}\n뒷면: ${toText(c.back)}${toText(c.hint) ? `\n힌트: ${toText(c.hint)}` : ""}`).join("\n\n"), `${title || "플래시카드"}.txt`)} />}
+      />
       <div className="px-4 pt-3 pb-1 shrink-0">
         <div className="flex justify-between text-xs text-gray-400 mb-1.5">
           <span>{Math.min(idx + 1, Math.max(total, 1))} / {total}</span>
@@ -886,20 +919,22 @@ export function SlideView({ slides, title, coverImageB64, onBack }: { slides: an
 
   return (
     <div className="h-full bg-[#f1f3f4] flex flex-col">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <span className="text-sm font-medium text-gray-700 truncate max-w-[280px]">{title}</span>
-        <div className="flex items-center gap-3">
-          <DownloadBtn onClick={() => downloadText(slides.map((s, i) => `[슬라이드 ${i + 1}] ${toText(s.title)}\n${(s.bullets || []).join("\n")}${toText(s.speaker_notes) ? `\n[발표자 노트] ${toText(s.speaker_notes)}` : ""}`).join("\n\n"), `${title || "슬라이드"}.txt`)} />
-          <button
-            onClick={() => setShowNotes((v) => !v)}
-            className="text-xs px-2.5 py-1 rounded-full border transition-colors"
-            style={showNotes ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { color: "#6b7280", borderColor: "#e5e7eb" }}
-          >
-            발표자 노트
-          </button>
-          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
-        </div>
-      </div>
+      <StudioHeader
+        title={title}
+        onBack={onBack}
+        actions={
+          <>
+            <DownloadBtn onClick={() => downloadText(slides.map((s, i) => `[슬라이드 ${i + 1}] ${toText(s.title)}\n${(s.bullets || []).join("\n")}${toText(s.speaker_notes) ? `\n[발표자 노트] ${toText(s.speaker_notes)}` : ""}`).join("\n\n"), `${title || "슬라이드"}.txt`)} />
+            <button
+              onClick={() => setShowNotes((v) => !v)}
+              className="text-xs px-2.5 py-1 rounded-full border transition-colors"
+              style={showNotes ? { background: "#fef0da", color: "#d97706", borderColor: "#d97706" } : { color: "#6b7280", borderColor: "#e5e7eb" }}
+            >
+              발표자 노트
+            </button>
+          </>
+        }
+      />
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-4 gap-4 overflow-hidden">
         {total === 0 ? (
           <p className="text-sm text-gray-500">슬라이드 데이터가 없습니다.</p>
@@ -1200,13 +1235,11 @@ export function MindMapView({ nodes, title, onBack }: { nodes: any[]; title: str
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-white">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between shrink-0">
-        <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
-        <div className="flex items-center gap-2">
-          <DownloadBtn onClick={() => downloadJson(nodes, `${title || "마인드맵"}.json`)} />
-          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
-        </div>
-      </div>
+      <StudioHeader
+        title={title}
+        onBack={onBack}
+        actions={<DownloadBtn onClick={() => downloadJson(nodes, `${title || "마인드맵"}.json`)} />}
+      />
 
       <div
         ref={containerRef}
@@ -1259,13 +1292,11 @@ export function ReportView({ sections, title, format, onBack }: { sections: any[
 
   return (
     <div className="h-full bg-white flex flex-col overflow-y-auto">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <p className="text-sm font-medium text-gray-700 truncate">{title}</p>
-        <div className="flex items-center gap-2">
-          <DownloadBtn onClick={() => downloadText([title, "", ...sections.map((s, i) => `[${i + 1}. ${toText(s.heading)}]\n${toText(s.content)}`)].join("\n\n"), `${title || "보고서"}.txt`)} />
-          <button onClick={onBack} className={END_STUDY_BTN_CLASS}>학습 종료</button>
-        </div>
-      </div>
+      <StudioHeader
+        title={title}
+        onBack={onBack}
+        actions={<DownloadBtn onClick={() => downloadText([title, "", ...sections.map((s, i) => `[${i + 1}. ${toText(s.heading)}]\n${toText(s.content)}`)].join("\n\n"), `${title || "보고서"}.txt`)} />}
+      />
       <div className="p-4 space-y-4">
         <div className="rounded-2xl p-4 bg-gradient-to-br from-green-50 to-emerald-50 border border-green-100">
           <div className="flex items-start gap-3">

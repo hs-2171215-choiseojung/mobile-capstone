@@ -163,7 +163,7 @@ export function StudioItemViewer({ item, onClose }: StudioItemViewerProps) {
     <div className="p-10 flex flex-col items-center justify-center h-full text-center">
       <p className="text-gray-500 mb-4">현재 화면에서 지원하지 않는 항목입니다.</p>
       <button onClick={onClose} className="px-4 py-2 bg-gray-100 rounded-lg text-sm text-gray-700 hover:bg-gray-200">
-        학습 종료
+        돌아가기
       </button>
     </div>
   );
@@ -196,9 +196,24 @@ function VideoItemViewer({ item, c, toText, onClose }: { item: any; c: any; toTe
 
   return (
     <div className="h-full bg-white flex flex-col overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between shrink-0">
-        <span className="text-sm font-medium text-gray-700 truncate">{title}</span>
-        <button onClick={onClose} className="text-sm font-semibold text-red-500 hover:text-red-600">학습 종료</button>
+      <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-3 shrink-0">
+        <button
+          onClick={onClose}
+          className="shrink-0 flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-blue-600 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
+            <path
+              d="M19 12H5M12 5l-7 7 7 7"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          돌아가기
+        </button>
+        <div className="h-4 w-px bg-gray-200 shrink-0" />
+        <span className="text-sm font-medium text-gray-700 truncate min-w-0">{title}</span>
       </div>
 
       <div className="flex-1 flex items-center justify-center bg-black">

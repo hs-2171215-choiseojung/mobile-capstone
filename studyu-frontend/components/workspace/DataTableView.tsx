@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useMemo } from 'react';
-import { ChevronUp, ChevronDown, Download } from 'lucide-react';
+import { useState, useMemo } from "react";
+import { ChevronUp, ChevronDown, Download } from "lucide-react";
 
 interface Column {
   id: string;
   title: string;
-  type: 'text' | 'number' | 'date';
+  type: "text" | "number" | "date";
 }
 
 interface Row {
@@ -26,48 +26,44 @@ interface DataTableViewProps {
 
 export function DataTableView({ data, onBack }: DataTableViewProps) {
   const [sortColumn, setSortColumn] = useState<string | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
-  const [searchTerm, setSearchTerm] = useState('');
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [searchTerm, setSearchTerm] = useState("");
   const [pageSize, setPageSize] = useState(10);
   const [currentPage, setCurrentPage] = useState(1);
 
-  // 정렬 및 필터링된 데이터
   const filteredAndSortedData = useMemo(() => {
     let result = [...(data.rows || [])];
 
-    // 검색 필터링
     if (searchTerm) {
-      result = result.filter(row =>
-        Object.values(row).some(val =>
-          String(val).toLowerCase().includes(searchTerm.toLowerCase())
+      result = result.filter((row) =>
+        Object.values(row).some((value) =>
+          String(value).toLowerCase().includes(searchTerm.toLowerCase())
         )
       );
     }
 
-    // 정렬
     if (sortColumn) {
       result.sort((a, b) => {
-        const aVal = a[sortColumn];
-        const bVal = b[sortColumn];
+        const aValue = a[sortColumn];
+        const bValue = b[sortColumn];
 
-        if (aVal === null || aVal === undefined) return 1;
-        if (bVal === null || bVal === undefined) return -1;
+        if (aValue === null || aValue === undefined) return 1;
+        if (bValue === null || bValue === undefined) return -1;
 
         let comparison = 0;
-        if (typeof aVal === 'number' && typeof bVal === 'number') {
-          comparison = aVal - bVal;
+        if (typeof aValue === "number" && typeof bValue === "number") {
+          comparison = aValue - bValue;
         } else {
-          comparison = String(aVal).localeCompare(String(bVal));
+          comparison = String(aValue).localeCompare(String(bValue));
         }
 
-        return sortDirection === 'asc' ? comparison : -comparison;
+        return sortDirection === "asc" ? comparison : -comparison;
       });
     }
 
     return result;
   }, [data.rows, sortColumn, sortDirection, searchTerm]);
 
-  // 페이지네이션
   const totalPages = Math.ceil(filteredAndSortedData.length / pageSize);
   const paginatedData = filteredAndSortedData.slice(
     (currentPage - 1) * pageSize,
@@ -76,20 +72,22 @@ export function DataTableView({ data, onBack }: DataTableViewProps) {
 
   const handleSort = (columnId: string) => {
     if (sortColumn === columnId) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+      setSortDirection(sortDirection === "asc" ? "desc" : "asc");
     } else {
       setSortColumn(columnId);
-      setSortDirection('asc');
+      setSortDirection("asc");
     }
   };
 
   const downloadCSV = () => {
-    const headers = data.columns.map(col => col.title).join(',');
-    const rows = filteredAndSortedData.map(row =>
-      data.columns.map(col => {
-        const val = row[col.id];
-        return typeof val === 'string' && val.includes(',') ? `"${val}"` : val ?? '';
-      }).join(',')
+    const headers = data.columns.map((col) => col.title).join(",");
+    const rows = filteredAndSortedData.map((row) =>
+      data.columns
+        .map((col) => {
+          const value = row[col.id];
+          return typeof value === "string" && value.includes(",") ? `"${value}"` : value ?? "";
+        })
+        .join(",")
     );
 
     const csv = '﻿' + [headers, ...rows].join('\n');
@@ -97,9 +95,9 @@ export function DataTableView({ data, onBack }: DataTableViewProps) {
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
 
-    link.setAttribute('href', url);
-    link.setAttribute('download', `${data.title}.csv`);
-    link.style.visibility = 'hidden';
+    link.setAttribute("href", url);
+    link.setAttribute("download", `${data.title}.csv`);
+    link.style.visibility = "hidden";
 
     document.body.appendChild(link);
     link.click();
@@ -108,27 +106,47 @@ export function DataTableView({ data, onBack }: DataTableViewProps) {
 
   return (
     <div className="flex flex-col h-full">
-      {/* 헤더 */}
-      <div className="px-6 py-6 border-b border-gray-200 shrink-0">
-        {onBack && (
-          <button onClick={onBack} className="text-sm text-gray-500 hover:text-blue-600 flex items-center gap-1 mb-3">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-            스튜디오
+      <div className="px-6 py-4 border-b border-gray-200 shrink-0">
+        <div className="flex items-center justify-between gap-4 mb-4">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            {onBack && (
+              <>
+                <button
+                  onClick={onBack}
+                  className="shrink-0 flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-blue-600 transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
+                    <path
+                      d="M19 12H5M12 5l-7 7 7 7"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  돌아가기
+                </button>
+                <div className="h-4 w-px bg-gray-200 shrink-0" />
+              </>
+            )}
+            <h2 className="text-sm font-medium text-gray-700 truncate">{data.title}</h2>
+          </div>
+          <button
+            onClick={downloadCSV}
+            className="shrink-0 flex items-center gap-2 px-3 py-1.5 bg-gray-100 text-gray-500 text-xs rounded-lg hover:bg-blue-50 hover:text-blue-600 transition-colors"
+          >
+            <Download size={14} />
+            저장
           </button>
-        )}
-        <div className="mb-4">
-          <h2 className="text-2xl font-bold text-gray-900">{data.title}</h2>
-          {data.description && (
-            <p className="text-sm text-gray-600 mt-2">{data.description}</p>
-          )}
         </div>
 
-        {/* 검색 및 도구 */}
+        {data.description && <p className="text-sm text-gray-600 mb-4">{data.description}</p>}
+
         <div className="flex gap-3 items-center">
           <div className="flex-1 relative">
             <input
               type="text"
-              placeholder="표에서 검색..."
+              placeholder="표 안에서 검색..."
               value={searchTerm}
               onChange={(e) => {
                 setSearchTerm(e.target.value);
@@ -137,22 +155,14 @@ export function DataTableView({ data, onBack }: DataTableViewProps) {
               className="w-full px-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
-          <button
-            onClick={downloadCSV}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            <Download size={16} />
-            CSV 다운로드
-          </button>
         </div>
       </div>
 
-      {/* 테이블 */}
       <div className="flex-1 overflow-auto">
         <table className="w-full text-sm border-collapse">
           <thead className="bg-gray-50 sticky top-0 z-10">
             <tr>
-              {data.columns.map(col => (
+              {data.columns.map((col) => (
                 <th
                   key={col.id}
                   onClick={() => handleSort(col.id)}
@@ -160,11 +170,13 @@ export function DataTableView({ data, onBack }: DataTableViewProps) {
                 >
                   <div className="flex items-center gap-2">
                     <span>{col.title}</span>
-                    {sortColumn === col.id && (
-                      sortDirection === 'asc' ?
-                        <ChevronUp size={16} className="text-blue-600" /> :
+                    {sortColumn === col.id ? (
+                      sortDirection === "asc" ? (
+                        <ChevronUp size={16} className="text-blue-600" />
+                      ) : (
                         <ChevronDown size={16} className="text-blue-600" />
-                    )}
+                      )
+                    ) : null}
                   </div>
                 </th>
               ))}
@@ -174,18 +186,18 @@ export function DataTableView({ data, onBack }: DataTableViewProps) {
             {paginatedData.length === 0 ? (
               <tr>
                 <td colSpan={data.columns.length} className="px-6 py-8 text-center text-gray-500">
-                  {searchTerm ? '검색 결과가 없습니다.' : '데이터가 없습니다.'}
+                  {searchTerm ? "검색 결과가 없습니다." : "데이터가 없습니다."}
                 </td>
               </tr>
             ) : (
-              paginatedData.map((row, idx) => (
-                <tr key={idx} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                  {data.columns.map(col => (
+              paginatedData.map((row, index) => (
+                <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                  {data.columns.map((col) => (
                     <td key={col.id} className="px-6 py-4 text-gray-700">
-                      {col.type === 'number' ? (
+                      {col.type === "number" ? (
                         <span className="font-semibold">{row[col.id]}</span>
-                      ) : col.type === 'date' ? (
-                        new Date(row[col.id]).toLocaleDateString('ko-KR')
+                      ) : col.type === "date" ? (
+                        new Date(row[col.id]).toLocaleDateString("ko-KR")
                       ) : (
                         row[col.id]
                       )}
@@ -198,13 +210,10 @@ export function DataTableView({ data, onBack }: DataTableViewProps) {
         </table>
       </div>
 
-      {/* 페이지네이션 */}
       {totalPages > 1 && (
         <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">
-              페이지 크기:
-            </span>
+            <span className="text-sm text-gray-600">페이지 크기:</span>
             <select
               value={pageSize}
               onChange={(e) => {
@@ -220,11 +229,11 @@ export function DataTableView({ data, onBack }: DataTableViewProps) {
             </select>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+              onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
               disabled={currentPage === 1}
-              className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-50"
             >
               이전
             </button>
@@ -232,16 +241,12 @@ export function DataTableView({ data, onBack }: DataTableViewProps) {
               {currentPage} / {totalPages}
             </span>
             <button
-              onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+              onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
               disabled={currentPage === totalPages}
-              className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-50"
             >
               다음
             </button>
-          </div>
-
-          <div className="text-sm text-gray-600">
-            총 {filteredAndSortedData.length}개 행
           </div>
         </div>
       )}
