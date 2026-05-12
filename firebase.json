@@ -9,7 +9,7 @@
       },
       {
         "source": "**",
-        "run": { "serviceId": "studyu-frontend", "region": "asia-northeast3" }
+        "run": { "serviceId": "studyu-frontend", "region": "asia-east1" }
       }
     ]
   }
