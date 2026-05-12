@@ -4344,7 +4344,6 @@ def generate_content(
         messages=[{"role": "user", "content": prompt}],
         model=model,
         temperature=0.4,
-        max_tokens=4096,
         json_mode=(gen_type == "quiz"),
         max_tokens=4000,
     )
