@@ -293,22 +293,34 @@ def _generate_and_upload_slides(file_bytes: bytes, doc_id: str) -> tuple[int, di
                 # Vision AI로 슬라이드 시각 요소 분석
                 try:
                     b64 = base64.b64encode(webp_bytes).decode()
-                    desc = _call_llm_vision(
-                        image_b64=b64,
-                        mime_type="image/webp",
-                        prompt=(
-                            "이 PPT 슬라이드에서 텍스트 외의 시각적 요소를 분석해주세요.\n"
-                            "- 이미지/사진: 무엇을 나타내는지, 어떤 장면인지\n"
-                            "- 차트/그래프: 종류, 데이터 값, 추세, 축 레이블\n"
-                            "- 다이어그램/흐름도: 구조, 관계, 흐름\n"
-                            "- 표: 항목과 값\n"
-                            "- 코드/스크린샷: 내용 요약\n"
-                            "시각적 요소가 없고 텍스트만 있으면 정확히 '없음'이라고만 답하세요.\n"
-                            "한국어로 상세하게 설명하세요."
-                        ),
-                        model="claude-sonnet-4-6",
+                    desc = client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": f"data:image/webp;base64,{b64}"},
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "이 PPT 슬라이드에서 텍스트 외의 시각적 요소를 분석해주세요.\n"
+                                            "- 이미지/사진: 무엇을 나타내는지, 어떤 장면인지\n"
+                                            "- 차트/그래프: 종류, 데이터 값, 추세, 축 레이블\n"
+                                            "- 다이어그램/흐름도: 구조, 관계, 흐름\n"
+                                            "- 표: 항목과 값\n"
+                                            "- 코드/스크린샷: 내용 요약\n"
+                                            "시각적 요소가 없고 텍스트만 있으면 정확히 '없음'이라고만 답하세요.\n"
+                                            "한국어로 상세하게 설명하세요."
+                                        ),
+                                    },
+                                ],
+                            }
+                        ],
                         max_tokens=800,
-                    ).strip()
+                    ).choices[0].message.content.strip()
                     if desc and desc != "없음":
                         existing = vision_descriptions.get(i, "")
                         vision_descriptions[i] = (existing + f"\n[시각 자료] {desc}").strip()
@@ -391,13 +403,25 @@ def _analyze_pdf_images(file_bytes: bytes) -> dict:
                     "- 표: 항목과 값\n"
                     "설명은 문서 전체 흐름과 연결지어 학생이 이해할 수 있게 한국어로 작성하세요."
                 )
-                desc = _call_llm_vision(
-                    image_b64=b64,
-                    mime_type="image/webp",
-                    prompt=prompt,
-                    model="claude-sonnet-4-6",
+                desc = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:image/webp;base64,{b64}"},
+                                },
+                                {
+                                    "type": "text",
+                                    "text": prompt,
+                                },
+                            ],
+                        }
+                    ],
                     max_tokens=1000,
-                ).strip()
+                ).choices[0].message.content.strip()
                 if desc:
                     vision_descriptions[page_idx] = desc
                     print(f"[pdf_vision] 페이지 {page_idx} Vision 분석 완료")
