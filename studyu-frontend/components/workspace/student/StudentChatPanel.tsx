@@ -913,17 +913,28 @@ export function StudentChatPanel({
 
     const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
     const applyNewSuggestions = (newQuestions: string[]) => {
-      const newChips = newQuestions.slice(0, 3).map((text, i) => ({
+      const seenTexts = new Set(suggestionsRef.current.map((s) => s.text.trim()));
+      const newChips = newQuestions
+        .map((text) => text.trim())
+        .filter(Boolean)
+        .filter((text) => {
+          if (seenTexts.has(text)) return false;
+          seenTexts.add(text);
+          return true;
+        })
+        .slice(0, 3)
+        .map((text, i) => ({
         text,
         category: CATS[i % 3],
         isOld: false,
       })) as Suggestion[];
-      const nextSuggestions = [...suggestionsRef.current, ...newChips];
+      const nextSuggestions = newChips;
       setSuggestions(nextSuggestions);
       try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(nextSuggestions)); } catch {}
       if (newChips.length > 0) {
         setMessages(prev => [...prev, { type: 'suggestions', items: newChips } as any]);
       }
+      return newChips.length;
     };
 
     try {
@@ -938,6 +949,31 @@ export function StudentChatPanel({
         .filter(m => m.type === 'user' || m.type === 'ai')
         .slice(-10)
         .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }));
+      const currentSuggestionTexts = suggestionsRef.current.map((s) => s.text);
+      const askedQuestionTexts = [...askedQuestionsRef.current, ...currentSuggestionTexts, userMessage].slice(-12);
+      const fetchMoreSuggestions = () =>
+        getToken().then((t) =>
+          fetch(`${API}/api/chat/suggestions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+            body: JSON.stringify({
+              doc_ids: targetDocIds,
+              asked_questions: [...askedQuestionsRef.current, ...suggestionsRef.current.map((s) => s.text)],
+              last_answer: lastAnswerRef.current,
+            }),
+          })
+            .then((r) => r.json())
+            .then((d) => {
+              if (d.questions?.length) {
+                const texts = (d.questions as Array<string | Suggestion>).map((q) =>
+                  typeof q === "string" ? q : q.text
+                );
+                return applyNewSuggestions(texts);
+              }
+              return 0;
+            })
+            .catch(() => 0)
+        );
 
       // 스트리밍 AI 메시지 자리 잡기
       setMessages(prev => [...prev, { type: 'ai', content: '', references: [], sources: [] }]);
@@ -953,6 +989,7 @@ export function StudentChatPanel({
           session_id: notebookId,
           current_slide: currentSlide ?? null,
           chat_history: chatHistory,
+          asked_questions: askedQuestionTexts,
         }),
       });
 
@@ -1032,6 +1069,7 @@ export function StudentChatPanel({
             level: selectedDifficulty || "normal",
             session_id: notebookId,
             current_slide: currentSlide ?? null,
+            asked_questions: askedQuestionTexts,
           }),
         });
         if (!fallbackRes.ok) throw new Error("AI 응답을 가져오는데 실패했습니다.");
@@ -1072,30 +1110,12 @@ export function StudentChatPanel({
 
       // 추천 질문: done 이벤트에 포함된 경우 즉시 적용, 없으면 별도 fetch
       if (finalSuggestions.length > 0) {
-        applyNewSuggestions(finalSuggestions);
+        const addedCount = applyNewSuggestions(finalSuggestions);
+        if (addedCount < 3) {
+          fetchMoreSuggestions().catch(() => {});
+        }
       } else {
-        const currentTexts = suggestionsRef.current.map((s) => s.text);
-        getToken().then((t) =>
-          fetch(`${API}/api/chat/suggestions`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
-            body: JSON.stringify({
-              doc_ids: targetDocIds,
-              asked_questions: [...askedQuestionsRef.current, ...currentTexts],
-              last_answer: lastAnswerRef.current,
-            }),
-          })
-            .then((r) => r.json())
-            .then((d) => {
-              if (d.questions?.length) {
-                const texts = (d.questions as Array<string | Suggestion>).map((q) =>
-                  typeof q === "string" ? q : q.text
-                );
-                applyNewSuggestions(texts);
-              }
-            })
-            .catch(() => {})
-        );
+        fetchMoreSuggestions().catch(() => {});
       }
     } catch (error: any) {
       // 스트리밍 중 오류 시 플레이스홀더를 오류 메시지로 교체

@@ -5330,7 +5330,16 @@ JSON 형식으로만 응답:
             claude_resp = claude_client.messages.create(
                 model=model,
                 max_tokens=512,
-                system="당신은 학습 내용을 깊이 이해하도록 돕는 전문 교육 튜터입니다. 자료의 실제 내용에 기반한 구체적이고 통찰력 있는 질문을 생성합니다. 반드시 JSON 형식으로만 응답하세요.",
+                system=(
+                    "당신은 학습 내용을 깊이 이해하도록 돕는 전문 교육 튜터입니다. "
+                    "자료의 실제 내용에 기반한 구체적이고 통찰력 있는 질문을 생성합니다. "
+                    "반드시 JSON 형식으로만 응답하세요. "
+                    "질문은 짧고 간결하게 작성하세요. "
+                    "각 질문은 가능하면 15자 안팎의 짧은 한 문장으로 만들고, "
+                    "배경 설명이나 조건을 길게 덧붙이지 말고 핵심만 물으세요. "
+                    "한 질문에 여러 조건을 과도하게 묶지 마세요."
+                    "너무 세부적인 조건 하나를 파고들기보다, 전체 흐름·핵심 차이·실제 활용처럼 범위를 넓혀 질문하세요. "
+                ),
                 messages=[{"role": "user", "content": anthropic_content}],
             )
             raw = claude_resp.content[0].text if claude_resp.content else "{}"
