@@ -92,7 +92,7 @@ export function DataTableView({ data, onBack }: DataTableViewProps) {
       }).join(',')
     );
 
-    const csv = [headers, ...rows].join('\n');
+    const csv = '﻿' + [headers, ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
