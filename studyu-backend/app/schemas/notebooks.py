@@ -23,7 +23,7 @@ class NotebookCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200, examples=["운영체제 기말고사 준비"])
     description: str | None = Field(None, max_length=1000, examples=["OS 강의자료 정리"])
     default_model: str = Field("openai", examples=["openai", "claude"])
-    difficulty: str = Field("normal", examples=["easy", "normal", "brief"])
+    difficulty: str = Field("intermediate", examples=["easy", "intermediate", "hard"])
     notebook_type: str = Field("student", examples=["student", "instructor"])
 
 
