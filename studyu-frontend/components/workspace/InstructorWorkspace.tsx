@@ -889,6 +889,92 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     };
   }
 
+  function mapStudioRowsToSavedItems(rows: Array<{
+    id: string;
+    type: string;
+    title: string;
+    subtitle?: string;
+    created_at: string;
+    content: Record<string, unknown>;
+    audio_url?: string;
+  }>): SavedItem[] {
+    return rows.map((item) => ({
+      id: item.id,
+      type: item.type as SavedItem["type"],
+      title: item.title,
+      subtitle: item.subtitle || "",
+      createdAt: new Date(item.created_at),
+      summaryContent: item.type === "summary" ? (item.content?.text as string) : undefined,
+      quiz: item.type === "quiz" ? {
+        id: item.id,
+        title: item.title,
+        questions: ((item.content?.questions as unknown[]) || []).map((q: unknown) => {
+          const qq = q as {
+            question: string;
+            type?: "multiple_choice" | "ox" | "short_answer";
+            options?: string[];
+            answerIndex?: number;
+            answer?: number;
+            answerText?: string;
+            hint?: string;
+            explanation?: string;
+          };
+          return {
+            question: qq.question,
+            type: qq.type ?? "multiple_choice",
+            options: qq.options ?? [],
+            answer: qq.answerIndex ?? qq.answer ?? 0,
+            answerText: qq.answerText,
+            hint: qq.hint || "",
+            explanation: qq.explanation || "",
+          };
+        }),
+        createdAt: new Date(item.created_at),
+        difficulty: (item.content?.difficulty as string) || "intermediate",
+      } : undefined,
+      audio: item.type === "audio" ? { script: (item.content?.script as string) || "" } : undefined,
+      audioUrl: item.audio_url,
+      mindmap: item.type === "mindmap" ? { nodes: (item.content?.nodes as any[]) || [] } : undefined,
+      memoContent: item.type === "memo" ? (item.content?.text as string) || "" : undefined,
+      flashcard: item.type === "flashcard" ? {
+        cards: (item.content?.cards as any[]) || [],
+        difficulty: (item.content?.difficulty as string) || "intermediate",
+      } : undefined,
+      slides: item.type === "slides" ? {
+        slides: (item.content?.slides as any[]) || [],
+        format: (item.content?.format as string) || "presenter",
+        cover_image_b64: (item.content?.cover_image_b64 as string) || "",
+      } : undefined,
+      report: item.type === "report" ? {
+        sections: (item.content?.sections as any[]) || [],
+        format: (item.content?.format as string) || "briefing",
+      } : undefined,
+      dataTable: item.type === "data" ? {
+        title: (item.content?.title as string) || item.title,
+        description: (item.content?.description as string) || "",
+        columns: (item.content?.columns as any[]) || (item.content?.headers as any[]) || [],
+        rows: (item.content?.rows as any[]) || (item.content?.data as any[]) || [],
+      } : undefined,
+      infographic: item.type === "infographic" ? {
+        title: (item.content?.title as string) || item.title,
+        description: (item.content?.description as string) || "",
+        sections: (item.content?.sections as any[]) || [],
+      } : undefined,
+      videoData: item.type === "video" ? { slides: (item.content?.slides as any[]) || [] } : undefined,
+      content: item.content,
+    }));
+  }
+
+  async function refreshStudioItems() {
+    const token = await getToken();
+    const res = await fetch(`${API}/api/studio?notebook_id=${notebook.id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return;
+    const rows = await res.json();
+    setStudioItems(mapStudioRowsToSavedItems(Array.isArray(rows) ? rows : []));
+  }
+
   function handleConfirmDocPick(weekId: number) {
     if (pickedDocIds.length === 0) return;
     setWeeks((prev) => prev.map((w) => {
@@ -1359,11 +1445,22 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       studioType: item.id,
       generating: true,
     };
+    const tempStudioItemId = `pending-${item.id}-${tempNumId}`;
+    const pendingStudioItem: SavedItem = {
+      id: tempStudioItemId,
+      type: (item.id === "table" ? "data" : item.id) as SavedItem["type"],
+      title: `${typeLabel[item.id] || item.label} 생성 중...`,
+      subtitle: `기반:소스 ${effectiveDocIds.length}개`,
+      createdAt: new Date(),
+      generating: true,
+    };
     if (weekId !== null) {
       setWeeks((prev) => prev.map((w) => {
         if (w.id !== weekId) return w;
         return { ...w, tasks: [...w.tasks, pendingTask] };
       }));
+    } else {
+      setStudioItems((prev) => [pendingStudioItem, ...prev]);
     }
 
     // 2. 모달 즉시 닫기
@@ -1474,6 +1571,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
           if (w.id !== weekId) return w;
           return { ...w, tasks: w.tasks.map((t) => t.id === tempNumId ? realTask : t) };
         }));
+      } else {
+        await refreshStudioItems();
       }
       console.log(`[studio] ✅ ${item.id} 생성 완료 | item_id=${data?.item_id} | title="${taskTitle}"`);
     } catch (e) {
@@ -1484,6 +1583,12 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
           if (w.id !== weekId) return w;
           return { ...w, tasks: w.tasks.map((t) => t.id === tempNumId ? { ...t, generating: false, generatingError: errMsg } : t) };
         }));
+      } else {
+        setStudioItems((prev) => prev.map((studioItem) => (
+          studioItem.id === tempStudioItemId
+            ? { ...studioItem, generating: false, generatingError: errMsg }
+            : studioItem
+        )));
       }
     }
     })();
@@ -1909,7 +2014,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                         </>
                                       )}
                                     </div>
-                                    <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                    <div className="hidden items-center shrink-0 group-hover:flex">
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
@@ -1995,63 +2100,87 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                             unassignedStudioItems.map((item) => (
                               <div
                                 key={item.id}
-                                className="flex items-center gap-2 px-2 py-2 rounded-[10px] hover:bg-gray-50 transition-colors group cursor-pointer"
-                                draggable
+                                className={`flex items-center gap-2 px-2 py-2 rounded-[10px] transition-colors group ${
+                                  item.generating || item.generatingError ? "cursor-default" : "cursor-pointer hover:bg-gray-50"
+                                }`}
+                                draggable={!item.generating && !item.generatingError}
                                 onDragStart={(e) => {
+                                  if (item.generating || item.generatingError) {
+                                    e.preventDefault();
+                                    return;
+                                  }
                                   e.dataTransfer.setData("application/studio-item", JSON.stringify(item));
                                   e.dataTransfer.effectAllowed = "move";
                                 }}
-                                onClick={() => { setViewerDoc(null); setViewerUrl(null); setViewerText(null); setViewerStudioItem(item); }}
+                                onClick={() => {
+                                  if (item.generating || item.generatingError) return;
+                                  setViewerDoc(null);
+                                  setViewerUrl(null);
+                                  setViewerText(null);
+                                  setViewerStudioItem(item);
+                                }}
                               >
-                                <div className="w-7 h-7 rounded-lg bg-[#EFF6FF] flex items-center justify-center shrink-0 text-blue-500">
-                                  <span style={{ fontSize: "0.9rem" }}>
-                                    {item.type === "audio" ? "🎧" :
-                                     item.type === "slides" ? "📊" :
-                                     item.type === "video" ? "🎬" :
-                                     item.type === "mindmap" ? "🗺️" :
-                                     item.type === "report" ? "📝" :
-                                     item.type === "flashcard" ? "🃏" :
-                                     item.type === "quiz" ? "❓" :
-                                     item.type === "infographic" ? "📈" :
-                                     item.type === "data" ? "📋" : "📄"}
-                                  </span>
+                                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                                  item.generatingError ? "bg-red-50 text-red-500" : "bg-[#EFF6FF] text-blue-500"
+                                }`}>
+                                  {item.generating ? (
+                                    <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40" strokeDashoffset="10" />
+                                    </svg>
+                                  ) : (
+                                    <span style={{ fontSize: "0.9rem" }}>
+                                      {item.type === "audio" ? "🎧" :
+                                       item.type === "slides" ? "📊" :
+                                       item.type === "video" ? "🎬" :
+                                       item.type === "mindmap" ? "🗺️" :
+                                       item.type === "report" ? "📝" :
+                                       item.type === "flashcard" ? "🃏" :
+                                       item.type === "quiz" ? "❓" :
+                                       item.type === "infographic" ? "📈" :
+                                       item.type === "data" ? "📋" : "📄"}
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   <p className="text-[#364153] truncate" style={{ fontSize: "12.8px", fontWeight: 500 }}>{item.title}</p>
-                                  <p className="text-[#99a1af]" style={{ fontSize: "11.2px" }}>{item.subtitle || "스튜디오 생성물"}</p>
+                                  <p className={`${item.generatingError ? "text-red-400" : "text-[#99a1af]"}`} style={{ fontSize: "11.2px" }}>
+                                    {item.generating ? "생성 중..." : item.generatingError || item.subtitle || "스튜디오 생성물"}
+                                  </p>
                                 </div>
-                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setViewerDoc(null);
-                                    setViewerUrl(null);
-                                    setViewerText(null);
-                                    setViewerStudioItem(item);
-                                  }}
-                                  className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-600 text-[11px] font-semibold"
-                                >
-                                  보기
-                                </button>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setStudioItems((prev) => prev.filter((i) => i.id !== item.id));
-                                    getToken().then((token) => {
-                                      fetch(`${API}/api/studio/${item.id}`, {
-                                        method: "DELETE",
-                                        headers: { Authorization: `Bearer ${token}` },
-                                      }).catch(() => {});
-                                    });
-                                  }}
-                                  className="w-6 h-6 rounded-lg bg-red-50 text-red-500 flex items-center justify-center"
-                                  title="삭제"
-                                >
-                                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                                    <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
-                                  </svg>
-                                </button>
-                              </div>
+                                {!item.generating && !item.generatingError && (
+                                  <div className="hidden items-center gap-1 shrink-0 group-hover:flex">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setViewerDoc(null);
+                                        setViewerUrl(null);
+                                        setViewerText(null);
+                                        setViewerStudioItem(item);
+                                      }}
+                                      className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-600 text-[11px] font-semibold"
+                                    >
+                                      보기
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setStudioItems((prev) => prev.filter((i) => i.id !== item.id));
+                                        getToken().then((token) => {
+                                          fetch(`${API}/api/studio/${item.id}`, {
+                                            method: "DELETE",
+                                            headers: { Authorization: `Bearer ${token}` },
+                                          }).catch(() => {});
+                                        });
+                                      }}
+                                      className="w-6 h-6 rounded-lg bg-red-50 text-red-500 flex items-center justify-center"
+                                      title="삭제"
+                                    >
+                                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
+                                      </svg>
+                                    </button>
+                                  </div>
+                                )}
                               </div>
                             ))
                           )}
