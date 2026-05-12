@@ -4234,7 +4234,7 @@ def generate_content(
         model=model,
         temperature=0.4,
         json_mode=(gen_type == "quiz"),
-        max_tokens=4000,
+        max_tokens=8000,
     )
 
 

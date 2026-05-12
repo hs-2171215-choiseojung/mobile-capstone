@@ -86,6 +86,8 @@ async def generate(
     if not doc_ids:
         raise HTTPException(status_code=400, detail="doc_id 또는 doc_ids가 필요합니다.")
 
+    print(f"[DEBUG] 요청된 doc_ids: {doc_ids}")
+
     try:
         result = generate_content(
             doc_ids=doc_ids,
@@ -96,6 +98,9 @@ async def generate(
             topic=req.topic or "",
             difficulty=req.difficulty or "intermediate",
         )
+        print(f"[DEBUG] generate_content 결과 길이: {len(result)}")
+        if not result or len(result.strip()) < 50:
+            print(f"[WARNING] 응답이 너무 짧음: {result[:100]}")
     except Exception as e:
         print(f"[ERROR] generate_content 실패: {str(e)}")
         import traceback
@@ -104,9 +109,17 @@ async def generate(
 
     if req.type == "quiz":
         try:
-            parsed = json.loads(result)
+            # 마크다운 코드블록 제거 (```json ... ``` 형식)
+            cleaned = result.strip()
+            if cleaned.startswith("```"):
+                # ```json 또는 ``` 로 시작하는 경우
+                cleaned = cleaned.split("```")[1]
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:]  # "json" 제거
+                cleaned = cleaned.strip()
+            parsed = json.loads(cleaned)
         except (json.JSONDecodeError, ValueError) as e:
-            print(f"[ERROR] JSON 파싱 실패. 결과: {result[:200]}")
+            print(f"[ERROR] JSON 파싱 실패. 결과: {result[:300]}")
             raise HTTPException(status_code=500, detail=f"퀴즈 JSON 파싱 실패: {str(e)}")
         quiz_title = parsed.get("title", "퀴즈")
         item_id = _save_studio_item(
