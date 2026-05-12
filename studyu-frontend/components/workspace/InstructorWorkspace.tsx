@@ -84,19 +84,6 @@ export interface Week {
   tasks: WeekTask[];
 }
 
-interface SourceChunk {
-  doc_id: string;
-  filename: string;
-  chunk_index: number;
-  text: string;
-}
-
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-  sources?: SourceChunk[];
-}
-
 interface StudioTaskItem {
   id: string;
   label: string;
@@ -279,16 +266,8 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [dropTargetWeekId, setDropTargetWeekId] = useState<number | null>(null);
   const [draggingCard, setDraggingCard] = useState<{ weekId: number; cardType: "source" | "task"; cardId: number } | null>(null);
   const [dragOverCard, setDragOverCard] = useState<{ weekId: number; cardType: "source" | "task"; cardId: number; half: "top" | "bottom" } | null>(null);
+  const [collapsedWeekIds, setCollapsedWeekIds] = useState<Set<number>>(new Set());
 
-  // Chat
-  const [chatOpen, setChatOpen] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([{
-    role: "assistant",
-    content: "안녕하세요! 강의 설계를 도와드릴 AI 어시스턴트입니다. 퀴즈 생성, 콘텐츠 요약, 학습 계획 개선 등 무엇이든 물어보세요.",
-  }]);
-  const [chatInput, setChatInput] = useState("");
-  const [chatLoading, setChatLoading] = useState(false);
-  const chatBottomRef = useRef<HTMLDivElement>(null);
   const studyPlanScrollRef = useRef<HTMLDivElement>(null);
   const weekCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const pendingScrollWeekIdRef = useRef<number | null>(null);
@@ -479,10 +458,6 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
   }, [leftSidebarWidth]);
-
-  useEffect(() => {
-    if (chatOpen) chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, chatLoading, chatOpen]);
 
   useEffect(() => {
     if (!showAddSourceMenu) return;
@@ -1594,32 +1569,6 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     })();
   }
 
-  // ── Chat ──────────────────────────────────────────────────────────
-  async function handleSendChat() {
-    const q = chatInput.trim();
-    if (!q) return;
-    setChatInput("");
-    setMessages((prev) => [...prev, { role: "user", content: q }]);
-    setChatLoading(true);
-    try {
-      const token = await getToken();
-      const activeDocs = docs.filter((d) => activeDocIds.includes(d.id));
-      const docNames = Object.fromEntries(activeDocs.map((d) => [d.id, d.name]));
-      const res = await fetch(`${API}/api/chat`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ doc_ids: activeDocIds, doc_names: docNames, question: q, model: "gpt-4o-mini", level: "intermediate" }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail ?? "오류");
-      setMessages((prev) => [...prev, { role: "assistant", content: data.answer, sources: data.sources ?? [] }]);
-    } catch (e) {
-      setMessages((prev) => [...prev, { role: "assistant", content: `오류가 발생했습니다: ${e instanceof Error ? e.message : "알 수 없는 오류"}` }]);
-    } finally {
-      setChatLoading(false);
-    }
-  }
-
   // ── Helpers ───────────────────────────────────────────────────────
   function getIconBg(iconBg: string) {
     if (iconBg.includes("blue")) return "rgba(0,93,167,0.1)";
@@ -2348,7 +2297,12 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                             </div>
                           ) : (
                             <>
-                              <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M5 7.5L10 12.5L15 7.5" stroke="#4A5565" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.667"/></svg>
+                              <button
+                                onClick={() => setCollapsedWeekIds(prev => { const next = new Set(prev); next.has(week.id) ? next.delete(week.id) : next.add(week.id); return next; })}
+                                className="flex items-center justify-center shrink-0 hover:bg-gray-100 rounded transition-colors p-0.5"
+                              >
+                                <svg width="18" height="18" viewBox="0 0 20 20" fill="none" className="transition-transform" style={{ transform: collapsedWeekIds.has(week.id) ? "rotate(-90deg)" : "rotate(0deg)" }}><path d="M5 7.5L10 12.5L15 7.5" stroke="#4A5565" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.667"/></svg>
+                              </button>
                               <h2 className="truncate" style={{ fontFamily:"Manrope,sans-serif", fontSize:"19px", fontWeight:500, color:"#001c39", letterSpacing:"-0.4px" }}>
                                 {week.title}
                               </h2>
@@ -2383,7 +2337,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                       </div>
 
                       {/* Cards */}
-                      <div className="space-y-3">
+                      {!collapsedWeekIds.has(week.id) && <div className="space-y-3">
                         {/* Source cards */}
                         {week.sources.map((source) => {
                           const isDraggingThis = draggingCard?.weekId === week.id && draggingCard?.cardType === "source" && draggingCard?.cardId === source.id;
@@ -2674,7 +2628,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                             </>
                           )}
                         </div>
-                      </div>
+                      </div>}
                     </div>
                   ))}
 
@@ -2693,134 +2647,6 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
               </div>
             </div>}
 
-            {/* AI Chat Bar (collapsed) */}
-            {!chatOpen && !viewerDoc && !viewerStudioItem && (
-              <div className="shrink-0 flex items-center justify-between px-6 py-3 bg-white border-t border-gray-100 shadow-sm">
-                <span className="text-gray-400" style={{ fontSize: "0.82rem" }}>AI에게 강의 설계 도움 요청...</span>
-                <button
-                  onClick={() => setChatOpen(true)}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-white shadow-sm hover:shadow-md transition-all"
-                  style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", fontSize: "0.82rem", fontWeight: 600 }}
-                >
-                  <svg className="w-3 h-3 text-blue-200" fill="none" viewBox="0 0 24 24"><path d="M12 3l1.2 3.6L17 8.4l-3.8 2.4L12 14.4l-1.2-3.6L7 8.4l3.8-2.4z" fill="currentColor"/></svg>
-                  Ask AI
-                </button>
-              </div>
-            )}
-
-            {/* AI Chat Panel (expanded) */}
-            {chatOpen && !viewerDoc && !viewerStudioItem && (
-              <div className="shrink-0 flex flex-col border-t border-gray-200" style={{ height: "48%", background: "#f7f9fc" }}>
-                {/* Chat header */}
-                <div className="shrink-0 flex items-center justify-between px-6 py-2.5 border-b" style={{ background: "#f7f9fc", borderColor: "#e9edf4" }}>
-                  <div className="flex items-center gap-2">
-                    <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center">
-                      <svg className="w-2.5 h-2.5 text-blue-500" fill="none" viewBox="0 0 24 24"><path d="M12 3l1.2 3.6L17 8.4l-3.8 2.4L12 14.4l-1.2-3.6L7 8.4l3.8-2.4z" fill="currentColor"/></svg>
-                    </div>
-                    <span className="text-gray-600 font-semibold" style={{ fontSize: "0.8rem" }}>Ask AI</span>
-                    <span className="px-1.5 py-0.5 rounded-full bg-green-50 text-green-500" style={{ fontSize: "0.62rem", fontWeight: 600 }}>● 온라인</span>
-                    {activeDocIds.length > 0 && (
-                      <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-500" style={{ fontSize: "0.62rem" }}>{activeDocIds.length}개 소스 활성</span>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => setChatOpen(false)}
-                    className="w-6 h-6 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-400"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
-                  </button>
-                </div>
-
-                {/* Messages */}
-                <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3 min-h-0">
-                  {messages.map((msg, i) =>
-                    msg.role === "user" ? (
-                      <div key={i} className="flex justify-end">
-                        <div className="max-w-[72%] px-4 py-2.5 rounded-2xl rounded-tr-sm text-white" style={{ background: "linear-gradient(135deg, #60a5fa, #2563eb)", fontSize: "0.84rem" }}>
-                          {msg.content}
-                        </div>
-                      </div>
-                    ) : (
-                      <div key={i} className="flex gap-2 items-start">
-                        <div className="w-6 h-6 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center shrink-0 mt-0.5">
-                          <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24"><path d="M12 3l1.2 3.6L17 8.4l-3.8 2.4L12 14.4l-1.2-3.6L7 8.4l3.8-2.4z" fill="currentColor"/></svg>
-                        </div>
-                        <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-2.5 max-w-[72%] border border-gray-100 shadow-sm">
-                          <MarkdownPreview
-                            content={msg.content}
-                            className="text-gray-700"
-                          />
-                          {msg.sources && msg.sources.length > 0 && (
-                            <div className="mt-2 pt-2 border-t border-gray-100 flex flex-wrap gap-1">
-                              {msg.sources.map((src, idx) => (
-                                <button
-                                  key={idx}
-                                  onClick={() => {
-                                    const doc = docs.find((d) => d.id === src.doc_id);
-                                    if (doc) handleViewDoc({ id: doc.id, name: doc.name ?? "", type: doc.type ?? "" });
-                                  }}
-                                  className="text-[11px] px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full border border-blue-100 hover:bg-blue-100 transition-colors max-w-[180px] truncate"
-                                  title={src.text}
-                                >
-                                  📄 {src.filename}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )
-                  )}
-                  {chatLoading && (
-                    <div className="flex gap-2 items-start">
-                      <div className="w-6 h-6 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center shrink-0">
-                        <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24"><path d="M12 3l1.2 3.6L17 8.4l-3.8 2.4L12 14.4l-1.2-3.6L7 8.4l3.8-2.4z" fill="currentColor"/></svg>
-                      </div>
-                      <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-2.5 border border-gray-100 shadow-sm">
-                        <div className="flex gap-1 items-center h-4">
-                          {[0,1,2].map((i) => <span key={i} className="w-1.5 h-1.5 bg-blue-300 rounded-full animate-bounce" style={{ animationDelay:`${i*0.15}s` }}/>)}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  <div ref={chatBottomRef} />
-                </div>
-
-                {/* Suggestions + Input */}
-                <div className="shrink-0 px-6 pb-4 pt-3 space-y-2 border-t" style={{ borderColor: "#e9edf4", background: "#f7f9fc" }}>
-                  <div className="flex gap-1.5 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
-                    {["퀴즈 만들어줘", "요약해줘", "학습 계획 개선"].map((s, i) => (
-                      <button key={i} onClick={() => setChatInput(s)}
-                        className="shrink-0 px-3 py-1 rounded-full bg-white text-gray-500 border border-gray-200 hover:border-blue-300 hover:text-blue-500 transition-colors whitespace-nowrap"
-                        style={{ fontSize: "0.73rem" }}
-                      >{s}</button>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-2 bg-white rounded-2xl border border-gray-200 px-4 py-2.5 focus-within:border-blue-300 focus-within:shadow-sm transition-all">
-                    <input
-                      type="text"
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && handleSendChat()}
-                      placeholder="AI에게 강의 설계 도움 요청..."
-                      className="flex-1 outline-none bg-transparent text-gray-700 placeholder-gray-400 min-w-0"
-                      style={{ fontSize: "0.84rem" }}
-                    />
-                    <button
-                      onClick={handleSendChat}
-                      disabled={!chatInput.trim() || chatLoading}
-                      className="w-7 h-7 rounded-xl flex items-center justify-center transition-all shrink-0"
-                      style={{
-                        background: (chatInput.trim() && !chatLoading) ? "#2563eb" : "#f1f3f4",
-                        color: (chatInput.trim() && !chatLoading) ? "white" : "#9aa0a6",
-                      }}
-                    >
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         </main>
 
