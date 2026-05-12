@@ -4189,6 +4189,10 @@ def generate_content(
     quiz_count: int = 5,
     topic: str = "",
     difficulty: str = "intermediate",
+    quiz_style: str = "multiple_choice",
+    language: str = "ko",
+    tone: str = "formal",
+    instructions: str = "",
 ) -> str:
     """요약 / 퀴즈 / 학습 계획 생성. 결과 문자열 반환."""
     context = _get_context(doc_ids, max_chars=10000)
@@ -4196,13 +4200,20 @@ def generate_content(
     normalized_level = normalize_learning_level(level)
     level_map = {"beginner": "쉽게", "intermediate": "보통", "advanced": "간략하게"}
     difficulty_map = {"easy": "쉬운", "intermediate": "중간", "hard": "어려운"}
-    level_ko = level_map.get(level, "중급")
+    language_map = {"ko": "한국어", "en": "영어", "ja": "일본어", "zh": "중국어"}
+    tone_map = {"formal": "격식체", "casual": "친근한 구어체", "academic": "학술적 문체"}
+    level_ko = level_map.get(level, "보통")
     difficulty_ko = difficulty_map.get(difficulty, "중간")
+    language_ko = language_map.get(language, "한국어")
+    tone_ko = tone_map.get(tone, "격식체")
+
+    instructions_block = f"\n추가 지시사항: {instructions}" if instructions else ""
 
     if gen_type == "summary":
         prompt = f"""아래는 학습 문서의 내용입니다.
-이 내용을 바탕으로 핵심 개념과 주요 내용을 {level_ko} 수준에 맞게 요약해주세요.
-마크다운 형식으로 작성해주세요.
+이 내용을 바탕으로 핵심 개념과 주요 내용을 {level_ko} 수준에 맞게 {language_ko}로 요약해주세요.
+문체는 {tone_ko}로 작성해주세요.
+마크다운 형식으로 작성해주세요.{instructions_block}
 
 문서 내용:
 {context}"""
@@ -4211,9 +4222,23 @@ def generate_content(
         topic_instruction = (
             f"특히 '{topic}' 주제와 관련된 내용으로 퀴즈를 만들어주세요." if topic else ""
         )
+
+        if quiz_style == "ox":
+            style_instruction = "O/X 퀴즈로 만들어주세요. 각 문제는 O 또는 X로만 답할 수 있는 참/거짓 형식이어야 합니다."
+            options_format = '"options": ["O", "X"]'
+            options_rule = "- options는 반드시 [\"O\", \"X\"] 두 개"
+        elif quiz_style == "short_answer":
+            style_instruction = "주관식 단답형 퀴즈로 만들어주세요. 각 문제의 정답은 단어 또는 짧은 구로 답할 수 있어야 합니다."
+            options_format = '"options": []'
+            options_rule = "- options는 빈 배열 [], answerIndex 대신 answerText(정답 문자열) 사용"
+        else:
+            style_instruction = "4지선다 객관식 퀴즈로 만들어주세요."
+            options_format = '"options": ["선택지1", "선택지2", "선택지3", "선택지4"]'
+            options_rule = "- options는 반드시 4개"
+
         prompt = f"""아래는 학습 문서의 내용입니다.
-이 내용을 바탕으로 {difficulty_ko} 난이도의 4지선다 퀴즈 {quiz_count}개를 만들어주세요.
-{topic_instruction}
+이 내용을 바탕으로 {difficulty_ko} 난이도의 {style_instruction} 퀴즈 {quiz_count}개를 {language_ko}로 만들어주세요.
+{topic_instruction}{instructions_block}
 
 반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 절대 포함하지 마세요:
 
@@ -4223,7 +4248,7 @@ def generate_content(
     {{
       "id": 1,
       "question": "질문 내용",
-      "options": ["선택지1", "선택지2", "선택지3", "선택지4"],
+      {options_format},
       "answerIndex": 0,
       "hint": "정답을 직접 언급하지 않고 방향만 제시하는 힌트",
       "explanation": "정답인 이유를 설명하는 해설"
@@ -4233,7 +4258,7 @@ def generate_content(
 
 규칙:
 - answerIndex는 정답 options의 0부터 시작하는 인덱스
-- options는 반드시 4개
+{options_rule}
 - hint는 정답을 직접 언급하지 말 것
 - questions 배열에 정확히 {quiz_count}개의 항목 포함
 - title은 문서 내용을 구체적으로 반영할 것
@@ -4243,8 +4268,9 @@ def generate_content(
 
     elif gen_type == "plan":
         prompt = f"""아래는 학습 문서의 내용입니다.
-이 내용을 바탕으로 {level_ko} 학습자를 위한 주간 학습 계획을 작성해주세요.
-마크다운 형식으로 Day별 목표와 학습 내용을 구체적으로 작성해주세요.
+이 내용을 바탕으로 {level_ko} 학습자를 위한 주간 학습 계획을 {language_ko}로 작성해주세요.
+문체는 {tone_ko}로 작성해주세요.
+마크다운 형식으로 Day별 목표와 학습 내용을 구체적으로 작성해주세요.{instructions_block}
 
 문서 내용:
 {context}"""
