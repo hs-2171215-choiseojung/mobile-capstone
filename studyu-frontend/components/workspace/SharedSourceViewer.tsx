@@ -420,6 +420,7 @@ export function SharedSourceViewer({
   const hasBothViews = Boolean(
     (sourceUrl || customViewer) && transcriptText !== undefined && !isImage && !isVideo && !isAudio && !isEmbeddableYoutube && !isUrlSource
   );
+  const showHeaderActions = !loading;
 
   // 탭바: 하이라이트 점 표시 여부 (DOCX/HWP/HWPX)
   const hasHighlight = Boolean(highlightRange && highlightRange.start >= 0);
@@ -432,42 +433,36 @@ export function SharedSourceViewer({
           <h2 className="text-[17px] font-bold text-gray-900 truncate leading-tight">{source.filename}</h2>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-4">
-          {isMediaLike && hasMediaTranscript ? (
-            <button
-              type="button"
-              onClick={() => setShowMediaTranscript((prev) => !prev)}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200"
-            >
-              {showMediaTranscript ? "자막 숨기기" : "자막 보기"}
-            </button>
-          ) : null}
-          {(sourceFileUrl && !isEmbeddableYoutube && lowerType !== "url") ? (
-            <button onClick={() => downloadUrl(sourceFileUrl, source.filename)} title="다운로드"
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200">
-              <Download className="w-4 h-4" /> 저장
-            </button>
-          ) : null}
-          {!mediaUrl && transcriptText && (
-            <button
-              onClick={() => downloadText(transcriptText, `${source.filename}.txt`)}
-              title="텍스트 다운로드"
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200"
-            >
-              <Download className="w-4 h-4" />
-              저장
-            </button>
-          )}
-          {(!sourceUrl && transcriptText) ? (
-            <button onClick={() => downloadText(transcriptText, `${source.filename}.txt`)} title="텍스트 다운로드"
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200">
-              <Download className="w-4 h-4" /> 저장
-            </button>
-          ) : null}
-          {sourceFileUrl ? (
-            <a href={sourceFileUrl} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200">
-              <ExternalLink className="w-4 h-4" /> 새 탭
-            </a>
+          {showHeaderActions ? (
+            <>
+              {isMediaLike && hasMediaTranscript ? (
+                <button
+                  type="button"
+                  onClick={() => setShowMediaTranscript((prev) => !prev)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200"
+                >
+                  {showMediaTranscript ? "자막 숨기기" : "자막 보기"}
+                </button>
+              ) : null}
+              {(sourceFileUrl && !isEmbeddableYoutube && lowerType !== "url") ? (
+                <button onClick={() => downloadUrl(sourceFileUrl, source.filename)} title="다운로드"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200">
+                  <Download className="w-4 h-4" /> 다운로드
+                </button>
+              ) : null}
+              {!mediaUrl && transcriptText ? (
+                <button onClick={() => downloadText(transcriptText, `${source.filename}.txt`)} title="텍스트 다운로드"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200">
+                  <Download className="w-4 h-4" /> 다운로드
+                </button>
+              ) : null}
+              {sourceFileUrl ? (
+                <a href={sourceFileUrl} target="_blank" rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200">
+                  <ExternalLink className="w-4 h-4" /> 새 탭
+                </a>
+              ) : null}
+            </>
           ) : null}
           <button onClick={handleClose} className="px-2.5 py-1 rounded-lg bg-gray-100 text-[13px] text-gray-700 hover:bg-gray-200">
             <X className="w-4 h-4" />

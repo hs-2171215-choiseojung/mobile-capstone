@@ -14,9 +14,6 @@ from app.services.rag import chat_with_docs, generate_suggestions
 
 router = APIRouter()
 
-# 세션별 대화 히스토리 (in-memory 프로토타입용)
-_history_cache: dict[str, list] = {}
-
 
 class ChatRequest(BaseModel):
     doc_id: Optional[str] = None
@@ -28,6 +25,7 @@ class ChatRequest(BaseModel):
     level: Optional[str] = "intermediate"
     current_slide: Optional[int] = None
     asked_questions: Optional[list[str]] = []
+    chat_history: Optional[list] = []
 
 
 class ChatResponse(BaseModel):
@@ -48,22 +46,14 @@ async def chat(
     if not doc_ids:
         raise HTTPException(status_code=400, detail="doc_id 또는 doc_ids가 필요합니다.")
 
-    session_key = f"{user['id']}:{','.join(sorted(doc_ids))}:{req.session_id or 'default'}"
-    if session_key not in _history_cache:
-        _history_cache[session_key] = []
-    chat_history = _history_cache[session_key]
-
     answer, sources, references, suggested_questions = chat_with_docs(
         doc_ids=doc_ids,
         question=req.question,
         model=req.model or "claude-haiku-4-5-20251001",
         level=req.level or "intermediate",
-        chat_history=chat_history,
+        chat_history=req.chat_history or [],
         current_slide=req.current_slide,
     )
-
-    chat_history.append({"role": "user", "content": req.question})
-    chat_history.append({"role": "assistant", "content": answer})
 
     return ChatResponse(
         answer=answer,
@@ -84,27 +74,26 @@ async def chat_stream(
     if not doc_ids:
         raise HTTPException(status_code=400, detail="doc_id 또는 doc_ids가 필요합니다.")
 
-    session_key = f"{user['id']}:{','.join(sorted(doc_ids))}:{req.session_id or 'default'}"
-    if session_key not in _history_cache:
-        _history_cache[session_key] = []
-    chat_history = _history_cache[session_key]
-
     generator, _, _ = chat_with_docs(
         doc_ids=doc_ids,
         question=req.question,
         model=req.model or "claude-haiku-4-5-20251001",
         level=req.level or "intermediate",
-        chat_history=chat_history,
+        chat_history=req.chat_history or [],
         current_slide=req.current_slide,
         stream=True,
         asked_questions=req.asked_questions or [],
     )
 
-    # 히스토리는 스트리밍이 끝난 뒤 프론트에서 완성된 텍스트로 업데이트하므로
-    # 여기서는 user 메시지만 미리 추가
-    chat_history.append({"role": "user", "content": req.question})
-
-    return StreamingResponse(generator, media_type="text/event-stream")
+    return StreamingResponse(
+        generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 class SuggestionsRequest(BaseModel):

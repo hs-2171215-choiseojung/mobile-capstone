@@ -13,6 +13,7 @@ RAG 파이프라인 (Supabase 영속 저장, pdfplumber + OpenAI)
 
 import io
 import json
+import random
 import re
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -86,7 +87,7 @@ def _convert_messages_for_anthropic(messages: list[dict]) -> tuple[str, list[dic
 # 통합 LLM 호출 유틸리티
 # ─────────────────────────────────────────────
 
-_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+_DEFAULT_MODEL = "gpt-4o"
 
 # sentence-transformers 모델 싱글톤 (첫 호출 시 다운로드)
 import threading as _threading
@@ -232,7 +233,7 @@ def _format_media_timestamp(total_seconds: int | float) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-_WHISPER_SUPPORTED_MEDIA_EXTENSIONS = {"flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"}
+_WHISPER_SUPPORTED_MEDIA_EXTENSIONS = {"flac", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"}
 
 
 def _find_ffmpeg_binary() -> str | None:
@@ -247,6 +248,8 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
     import tempfile
 
     normalized_ext = (original_ext or "").lower().lstrip(".")
+    # Some .m4a files are accepted by extension but rejected by the transcription API
+    # depending on the actual container/codec. Converting them to wav first is safer.
     if normalized_ext in _WHISPER_SUPPORTED_MEDIA_EXTENSIONS:
         return input_path, False
 
@@ -257,7 +260,7 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
             "서버에 ffmpeg를 설치하면 자동으로 wav로 변환해서 처리할 수 있습니다."
         )
 
-    converted_fd, converted_path = tempfile.mkstemp(suffix=".wav")
+    converted_fd, converted_path = tempfile.mkstemp(suffix=".m4a")
     os.close(converted_fd)
 
     try:
@@ -272,6 +275,10 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
                 "1",
                 "-ar",
                 "16000",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
                 converted_path,
             ],
             check=False,
@@ -281,7 +288,7 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
         if completed.returncode != 0:
             stderr = (completed.stderr or "").strip()
             raise ValueError(
-                f".{normalized_ext} 파일을 전사용 wav로 변환하지 못했습니다."
+                f".{normalized_ext} 파일을 전사용 m4a로 변환하지 못했습니다."
                 + (f" ffmpeg 오류: {stderr[:240]}" if stderr else "")
             )
         return converted_path, True
@@ -1363,7 +1370,7 @@ def _compress_image_to_base64(img_bytes: bytes, max_width: int = 800, quality: i
 
     처리 흐름:
       1. Pillow로 이미지 열기
-      2. 투명 채널(RGBA/PA/LA) → 흰 배경 RGB 합성 (JPEG는 알파 미지원)
+      2. 투명 채널(RGBA/PURLA/LA) → 흰 배경 RGB 합성 (JPEG는 알파 미지원)
       3. 가로가 max_width(기본 800px) 초과 시 비율 유지 축소
       4. JPEG 품질 quality(기본 75)로 저장해 파일 크기 대폭 감소
       5. Base64 인코딩 후 (base64_str, "image/jpeg") 반환
@@ -1942,7 +1949,7 @@ def _extract_markdown_from_hwpx(file_bytes: bytes) -> str:
 
 
 def _extract_text_from_image(file_bytes: bytes, filename: str) -> tuple[str, int]:
-    """이미지에서 GPT-4o Vision으로 텍스트/내용 + 구조화 메타데이터 추출.
+    """이미지에서 Claude Sonnet 4.6 Vision으로 텍스트/내용 + 구조화 메타데이터 추출.
     메타데이터는 [IMAGE_META]...[/IMAGE_META] 태그로 텍스트 앞에 삽입된다.
     Returns: (text_with_meta, 0)
     """
@@ -1951,6 +1958,33 @@ def _extract_text_from_image(file_bytes: bytes, filename: str) -> tuple[str, int
     mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                 "gif": "image/gif", "webp": "image/webp"}
     mime_type = mime_map.get(ext, "image/jpeg")
+
+    # Claude Vision API 5MB 제한 확인 및 자동 압축
+    MAX_IMAGE_SIZE = 5 * 1024 * 1024
+    if len(file_bytes) > MAX_IMAGE_SIZE:
+        try:
+            from PIL import Image
+            import io as _io
+            img = Image.open(_io.BytesIO(file_bytes))
+            if img.mode == "RGBA":
+                img = img.convert("RGB")
+            compressed_buf = _io.BytesIO()
+            quality = 85
+            while quality >= 60:
+                compressed_buf.seek(0)
+                compressed_buf.truncate(0)
+                img.save(compressed_buf, format="JPEG", quality=quality, optimize=True)
+                if compressed_buf.tell() <= MAX_IMAGE_SIZE:
+                    break
+                quality -= 5
+            file_bytes = compressed_buf.getvalue()
+            ext = "jpg"
+            mime_type = "image/jpeg"
+            print(f"[Image Vision] 자동 압축: {len(file_bytes)} bytes")
+        except Exception as e:
+            print(f"[Image Vision] 압축 실패: {e}")
+            raise ValueError(f"이미지 압축 실패: {str(e)}")
+
     b64 = _base64.b64encode(file_bytes).decode("utf-8")
 
     prompt = """이 이미지를 분석하여 아래 JSON 형식으로 응답하세요.
@@ -2241,13 +2275,37 @@ def _is_youtube_url(url: str) -> bool:
     return _extract_youtube_video_id(url) is not None
 
 
+def _build_youtube_transcript_api():
+    """Create a YouTubeTranscriptApi client with an optional rotating proxy."""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        from youtube_transcript_api.proxies import GenericProxyConfig
+    except ImportError as e:
+        raise ValueError("유튜브 자막 추출 기능이 서버에 설치되어 있지 않습니다. youtube-transcript-api를 설치해주세요.") from e
+
+    proxy_id = (settings.PROXY_USER_ID or "").strip()
+    proxy_pw = (settings.PROXY_USER_PW or "").strip()
+    if not proxy_id or not proxy_pw:
+        return YouTubeTranscriptApi()
+
+    proxies = [
+        f"http://{proxy_id}:{proxy_pw}_country-kr_city-seoul_session-gqwgIjJa_lifetime-10m@geo.iproyal.com:12321",
+        f"http://{proxy_id}:{proxy_pw}_country-kr_city-seoul_session-rbVhtO9v_lifetime-10m@geo.iproyal.com:12321",
+        f"http://{proxy_id}:{proxy_pw}_country-kr_city-seoul_session-xVd28AYq_lifetime-10m@geo.iproyal.com:12321",
+        f"http://{proxy_id}:{proxy_pw}_country-kr_city-seoul_session-Wj0p3nd3_lifetime-10m@geo.iproyal.com:12321",
+        f"http://{proxy_id}:{proxy_pw}_country-kr_city-seoul_session-800uCR8L_lifetime-10m@geo.iproyal.com:12321",
+    ]
+    proxy = random.choice(proxies)
+    return YouTubeTranscriptApi(proxy_config=GenericProxyConfig(http_url=proxy))
+
+
 def _fetch_youtube_transcript(video_id: str) -> str:
     """youtube_transcript_api로 자막 텍스트 추출 (한국어 → 영어 순)."""
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+        from youtube_transcript_api import NoTranscriptFound, TranscriptsDisabled
     except ImportError as e:
         raise ValueError("유튜브 자막 추출 기능이 서버에 설치되어 있지 않습니다. youtube-transcript-api를 설치해주세요.") from e
-    api = YouTubeTranscriptApi()
+    api = _build_youtube_transcript_api()
     try:
         transcript = api.fetch(video_id, languages=["ko", "ko-KR", "en", "en-US"])
     except NoTranscriptFound:
@@ -2271,11 +2329,11 @@ def _fetch_youtube_transcript(video_id: str) -> str:
 def _fetch_youtube_transcript_segments(video_id: str) -> list[dict[str, Any]]:
     """youtube_transcript_api로 자막 세그먼트 추출."""
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+        from youtube_transcript_api import NoTranscriptFound, TranscriptsDisabled
     except ImportError as e:
         raise ValueError("유튜브 자막 추출 기능이 서버에 설치되어 있지 않습니다. youtube-transcript-api를 설치해주세요.") from e
 
-    api = YouTubeTranscriptApi()
+    api = _build_youtube_transcript_api()
     try:
         transcript = api.fetch(video_id, languages=["ko", "ko-KR", "en", "en-US"])
     except NoTranscriptFound:
@@ -3094,6 +3152,16 @@ LEVEL_PROMPTS = {
 }
 
 
+SUGGESTION_BLOCK = """【추천 질문 — 필수 출력】
+- 답변을 마친 후, 이 대화의 흐름에서 학생이 자연스럽게 궁금해할 만한 질문 2~3개를 제안하세요.
+- 반드시 아래 마커 형식으로 답변 맨 끝에 추가하세요 (답변 본문과 반드시 분리):
+[SUGGESTED_QUESTIONS]
+- (방금 답변한 내용과 직접 이어지는 심화 질문 1)
+- (방금 답변한 내용과 직접 이어지는 심화 질문 2)
+- (방금 답변한 내용과 직접 이어지는 심화 질문 3, 선택)
+[/SUGGESTED_QUESTIONS]"""
+
+
 _IMAGE_MIME_MAP = {
     "jpg": "image/jpeg", "jpeg": "image/jpeg",
     "png": "image/png", "gif": "image/gif", "webp": "image/webp",
@@ -3555,6 +3623,8 @@ def chat_with_docs(
 {type_guide}
 불명확한 부분은 "이미지에서 명확히 확인되지 않습니다"라고 솔직히 말하세요.
 
+{SUGGESTION_BLOCK}
+
 답변 시 {level_hint}"""
         if ocr_text:
             system_msg += f"\n\n【이미지 내 텍스트(OCR)】\n{ocr_text}"
@@ -3623,15 +3693,7 @@ def chat_with_docs(
 - "이어서", "계속", "다음" 등의 요청이 오면 이전 대화에서 이미 설명한 내용은 반복하지 말고, 아직 다루지 않은 슬라이드나 개념부터 이어서 설명하세요.
 - 전체 요약·정리를 요청받은 경우, 앞 슬라이드에만 치우치지 말고 처음부터 끝 슬라이드까지 균형 있게 커버하세요. 슬라이드별로 핵심 키워드 위주로 간결하게 정리하여 전체를 빠짐없이 다루는 것을 우선하세요.
 
-【추천 질문】
-- 답변을 마친 후, 이 대화의 흐름에서 학생이 자연스럽게 궁금해할 만한 질문 2~3개를 제안하세요.
-- 반드시 아래 마커 형식으로 답변 맨 끝에 추가하세요 (답변 본문과 분리):
-[SUGGESTED_QUESTIONS]
-- (질문 1)
-- (질문 2)
-- (질문 3, 선택)
-[/SUGGESTED_QUESTIONS]
-- 질문은 지금 답변한 내용과 직접 이어지는 심화·응용 질문으로 구성하세요.
+{SUGGESTION_BLOCK}
 
 답변 시 {level_hint}
 
@@ -3669,13 +3731,7 @@ def chat_with_docs(
 - 설명이 길어질 경우 절대 중간에 끊지 마세요. 시작한 설명은 반드시 완결하세요.
 - "이어서", "계속", "다음" 등의 요청이 오면 이미 설명한 내용은 반복하지 말고 아직 다루지 않은 부분부터 이어서 설명하세요.
 
-【추천 질문 — 필수 출력】
-답변 본문 작성 후, 반드시 아래 형식을 답변 맨 끝에 추가하세요. 생략하면 안 됩니다.
-[SUGGESTED_QUESTIONS]
-- (방금 답변한 내용과 직접 이어지는 심화 질문 1)
-- (방금 답변한 내용과 직접 이어지는 심화 질문 2)
-- (방금 답변한 내용과 직접 이어지는 심화 질문 3, 선택)
-[/SUGGESTED_QUESTIONS]
+{SUGGESTION_BLOCK}
 
 답변 시 {level_hint}
 
@@ -3703,13 +3759,7 @@ def chat_with_docs(
 - "이어서", "계속", "다음" 등의 요청이 오면 이미 설명한 내용은 반복하지 말고 아직 다루지 않은 부분부터 이어서 설명하세요.
 - 전체 요약·정리를 요청받은 경우, 앞 페이지에만 치우치지 말고 처음부터 끝 페이지까지 균형 있게 커버하세요.
 
-【추천 질문 — 필수 출력】
-답변 본문 작성 후, 반드시 아래 형식을 답변 맨 끝에 추가하세요. 생략하면 안 됩니다.
-[SUGGESTED_QUESTIONS]
-- (방금 답변한 내용과 직접 이어지는 심화 질문 1)
-- (방금 답변한 내용과 직접 이어지는 심화 질문 2)
-- (방금 답변한 내용과 직접 이어지는 심화 질문 3, 선택)
-[/SUGGESTED_QUESTIONS]
+{SUGGESTION_BLOCK}
 
 답변 시 {level_hint}
 
@@ -3737,13 +3787,7 @@ def chat_with_docs(
 - "이어서", "계속", "다음" 등의 요청이 오면 이미 설명한 내용은 반복하지 말고 아직 다루지 않은 부분부터 이어서 설명하세요.
 - 전체 요약·정리를 요청받은 경우, 앞 페이지에만 치우치지 말고 처음부터 끝 페이지까지 균형 있게 커버하세요.
 
-【추천 질문 — 필수 출력】
-답변 본문 작성 후, 반드시 아래 형식을 답변 맨 끝에 추가하세요. 생략하면 안 됩니다.
-[SUGGESTED_QUESTIONS]
-- (방금 답변한 내용과 직접 이어지는 심화 질문 1)
-- (방금 답변한 내용과 직접 이어지는 심화 질문 2)
-- (방금 답변한 내용과 직접 이어지는 심화 질문 3, 선택)
-[/SUGGESTED_QUESTIONS]
+{SUGGESTION_BLOCK}
 
 답변 시 {level_hint}
 
@@ -3867,6 +3911,7 @@ def chat_with_docs(
                         doc_ids=_stream_meta["doc_ids"],
                         asked_questions=_stream_meta["asked_questions"],
                         model=safe_model,
+                        question=_stream_meta["question"],
                     ))
                 except Exception:
                     pass
@@ -5034,9 +5079,11 @@ def generate_suggestions(
     asked_questions: list[str] = [],
     model: str = _DEFAULT_MODEL,
     last_answer: str = "",
+    question: str = "",
 ) -> list[dict]:
     """문서 타입과 내용 기반으로 카테고리별 추천 질문 3개를 생성한다.
     이미지 소스는 실제 이미지를 Vision API에 직접 전달.
+    last_answer가 있으면 답변 기반, 없고 question만 있으면 사용자 질문 기반 추천 생성.
     반환: [{"text": "...", "category": "이해|분석|적용"}]
     """
     import base64
@@ -5093,65 +5140,41 @@ def generate_suggestions(
             f"- {q}" for q in asked_questions[-6:]
         )
 
-    # 이미지 전용 프롬프트
-    if image_parts and not non_image_ids:
-        image_names = ", ".join(f"'{img['filename']}'" for img in image_docs)
-        # 이미지 타입별 질문 가이드
-        img_type_hint = {
-            "photo":        "피사체([{subjects}])의 외형·행동·습성·생태 등 다양한 각도의 질문 포함.",
-            "chart":        "축 값, 데이터 수치, 추세, 비교 포인트를 구체적으로 언급하는 질문 포함.",
-            "diagram":      "구성 요소 간 관계, 흐름 순서, 핵심 노드에 관한 질문 포함.",
-            "screenshot":   "코드 로직, UI 요소, 오류 원인, 설정 의미에 관한 기술적 질문 포함.",
-            "document":     "문서에 적힌 특정 항목, 조항, 수치를 직접 인용하는 질문 포함.",
-            "illustration": "그림이 표현하는 개념, 메시지, 상징적 의미에 관한 질문 포함.",
-        }.get(primary_img_type, "이미지에서 보이는 구체적 요소를 언급하는 질문 포함.").format(subjects=subjects_str)
+    # 통합 프롬프트 — 이미지/문서/혼합 모두 동일한 규칙 적용
+    type_guidance = ""
+    if "image" in file_types:
+        img_meta_str = f" (유형: {primary_img_type}, 등장 대상: {subjects_str})" if subjects_str else ""
+        type_guidance += f"\n[이미지 포함]{img_meta_str} 이미지에서 보이는 시각적 요소, 차트 수치, 다이어그램을 직접 언급하는 질문 포함."
+    if "video_audio" in file_types:
+        type_guidance += "\n[영상/음성 포함] 영상에서 언급된 발언, 수치, 설명된 개념에 관한 질문 포함."
+    if "ppt" in file_types:
+        type_guidance += "\n[PPT 포함] 슬라이드 흐름, 핵심 주장, 데이터에 관한 질문 포함."
 
-        meta_hint = f"\n[사전 분석 결과] 이미지 유형: {primary_img_type} / 등장 대상: {subjects_str}" if subjects_str else ""
-
-        prompt_text = f"""당신은 이미지 기반 학습을 돕는 전문 비주얼 튜터입니다.
-첨부된 이미지({image_names})를 직접 분석하여, 학습자가 이 이미지를 완전히 이해하기 위해 반드시 물어봐야 할 핵심 질문 3개를 생성하세요.
-{meta_hint}
-{asked_block}
-
-[질문 생성 규칙]
-{img_type_hint}
-
-1. 이미지에서 실제로 보이는 구체적 요소(수치, 대상, 색상, 구조, 텍스트)를 질문에 직접 언급할 것
-   ✗ "이미지가 무엇을 나타내나요?" (너무 일반적)
-   ✓ "그래프에서 2023년 매출이 급등한 원인은 무엇인가요?" (구체적)
-
-2. 카테고리별 1개씩:
-   - "이해": 이미지의 특정 요소·대상·수치를 확인하는 질문
-   - "분석": 이미지 전체 의미, 패턴, 시사점을 파악하는 질문
-   - "적용": 이미지 내용을 실제 상황이나 다른 개념에 연결하는 질문
-
-3. 각 질문은 완전한 문장, 40자 이내
-
-JSON 형식으로만 응답:
-{{"questions": [{{"text": "질문", "category": "이해"}}, {{"text": "질문", "category": "분석"}}, {{"text": "질문", "category": "적용"}}]}}"""
-
-        user_content: list[dict] = [{"type": "text", "text": prompt_text}] + image_parts
-
+    answer_block = f"\n\n[방금 AI가 답변한 내용 — 이 내용을 기반으로 질문을 생성하세요]\n{last_answer[:2000]}" if last_answer else ""
+    question_block = f"\n\n[학습자가 방금 한 질문 — 이 질문의 흐름을 이어가는 방향으로 추천하세요]\n{question[:500]}" if (question and not last_answer) else ""
+    if last_answer:
+        context_block = ""
+    elif context:
+        context_block = f"\n══════════════════════════════\n[문서 내용]\n{context[:4000]}\n══════════════════════════════"
+    elif image_parts:
+        context_block = "\n[자료] 첨부된 이미지를 직접 분석하여 질문을 생성하세요."
     else:
-        # 텍스트 문서 (+ 선택적으로 이미지 혼합) 프롬프트
-        type_guidance = ""
-        if "image" in file_types:
-            type_guidance += "\n[이미지 포함] 이미지에서 보이는 시각적 요소, 차트 수치, 다이어그램을 직접 언급하는 질문 포함."
-        if "video_audio" in file_types:
-            type_guidance += "\n[영상/음성 포함] 영상에서 언급된 발언, 수치, 설명된 개념에 관한 질문 포함."
-        if "ppt" in file_types:
-            type_guidance += "\n[PPT 포함] 슬라이드 흐름, 핵심 주장, 데이터에 관한 질문 포함."
+        context_block = ""
 
-        answer_block = f"\n\n[방금 AI가 답변한 내용 — 이 내용을 기반으로 질문을 생성하세요]\n{last_answer[:2000]}" if last_answer else ""
-        context_block = f"\n══════════════════════════════\n[문서 내용]\n{context[:4000]}\n══════════════════════════════" if not last_answer else ""
+    if last_answer:
+        intro = "방금 AI가 답변한 내용을 바탕으로, 학습자가 자연스럽게 이어서 궁금해할 심화 질문 3개를 생성하세요."
+    elif question:
+        intro = "학습자가 방금 한 질문의 흐름과 맥락을 이어가는, 자연스럽게 다음으로 궁금해할 심화 질문 3개를 생성하세요."
+    else:
+        intro = "아래 자료 내용을 분석하여, 학습자가 반드시 짚고 넘어가야 할 핵심 질문 3개를 생성하세요."
 
-        prompt_text = f"""당신은 학습 내용을 깊이 이해하도록 돕는 전문 튜터입니다.
-{"방금 AI가 답변한 내용을 바탕으로, 학습자가 자연스럽게 이어서 궁금해할 심화 질문 3개를 생성하세요." if last_answer else "아래 문서 내용을 분석하여, 학습자가 반드시 짚고 넘어가야 할 핵심 질문 3개를 생성하세요."}
-{type_guidance}{answer_block}{context_block}
+    prompt_text = f"""당신은 학습 내용을 깊이 이해하도록 돕는 전문 튜터입니다.
+{intro}
+{type_guidance}{answer_block}{question_block}{context_block}
 {asked_block}
 
 [생성 규칙 - 반드시 준수]
-1. 각 질문은 문서에 실제로 등장하는 용어, 수치, 개념을 반드시 포함할 것
+1. 각 질문은 자료에 실제로 등장하는 용어, 수치, 개념을 반드시 포함할 것
    ✗ "핵심 개념이 무엇인가요?" → ✓ "SHA-256이 MD5보다 안전한 이유는?"
 
 2. 카테고리별 1개씩:
@@ -5164,10 +5187,10 @@ JSON 형식으로만 응답:
 JSON 형식으로만 응답:
 {{"questions": [{{"text": "질문", "category": "이해"}}, {{"text": "질문", "category": "분석"}}, {{"text": "질문", "category": "적용"}}]}}"""
 
-        if image_parts:
-            user_content = [{"type": "text", "text": prompt_text}] + image_parts
-        else:
-            user_content = [{"type": "text", "text": prompt_text}]
+    if image_parts:
+        user_content: list[dict] = [{"type": "text", "text": prompt_text}] + image_parts
+    else:
+        user_content = [{"type": "text", "text": prompt_text}]
 
     try:
         _CLAUDE_MODELS = ("claude-opus", "claude-sonnet", "claude-haiku")

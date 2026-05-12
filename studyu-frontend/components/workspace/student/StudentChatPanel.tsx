@@ -925,6 +925,12 @@ export function StudentChatPanel({
       if (targetDocIds.length === 0)
         throw new Error("학습할 소스(문서)가 없습니다. 강사님께 자료 업로드를 요청해 주세요.");
 
+      // 최근 대화 히스토리 구성 (user/ai 메시지만, 최대 10개)
+      const chatHistory = messagesRef.current
+        .filter(m => m.type === 'user' || m.type === 'ai')
+        .slice(-10)
+        .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }));
+
       // 스트리밍 AI 메시지 자리 잡기
       setMessages(prev => [...prev, { type: 'ai', content: '', references: [], sources: [] }]);
 
@@ -938,6 +944,7 @@ export function StudentChatPanel({
           level: selectedDifficulty || "intermediate",
           session_id: notebookId,
           current_slide: currentSlide ?? null,
+          chat_history: chatHistory,
         }),
       });
 
@@ -1742,7 +1749,7 @@ export function StudentChatPanel({
             </button>
           </div>
         )}
-        <div className={`relative flex items-end gap-2 rounded-xl p-1.5 border shadow-sm transition-all ${
+        <div className={`relative flex items-center gap-2 rounded-xl p-1.5 border shadow-sm transition-all ${
           isRecording
             ? 'bg-red-50 border-red-300 ring-2 ring-red-200/50'
             : 'bg-[#f8f9fb] border-[#e7e9ed] focus-within:ring-2 focus-within:ring-[#155dfc]/20 focus-within:border-[#155dfc]/30'
@@ -1755,7 +1762,7 @@ export function StudentChatPanel({
             onChange={e => { if (!isRecording) setInputValue(e.target.value); }}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
             rows={1}
-            className={`flex-1 max-h-[100px] min-h-[40px] py-2 bg-transparent text-[13px] placeholder-[#99a1af] focus:outline-none resize-none self-center ${
+            className={`flex-1 max-h-[100px] min-h-[40px] py-2 leading-5 bg-transparent text-[13px] placeholder-[#99a1af] focus:outline-none resize-none self-center ${
               isRecording && interimText ? 'text-red-500 italic' : 'text-[#1a1d26]'
             }`}
             placeholder={isRecording ? "말씀해 주세요..." : "학습 내용에 대해 무엇이든 물어보세요..."}

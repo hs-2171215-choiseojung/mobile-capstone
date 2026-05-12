@@ -1,13 +1,15 @@
 ﻿"use client";
 
+import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import StudyULogo from "@/components/StudyULogo";
 
 interface TopNavBarProps {
   title?: string;
+  rightSlot?: ReactNode;
 }
 
-export function TopNavBar({ title }: TopNavBarProps) {
+export function TopNavBar({ title, rightSlot }: TopNavBarProps) {
   const router = useRouter();
 
   return (
@@ -32,8 +34,9 @@ export function TopNavBar({ title }: TopNavBarProps) {
         </span>
         <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-600">학생</span>
       </div>
-
-
+      <div className="flex items-center gap-2 shrink-0">
+        {rightSlot}
+      </div>
     </header>
   );
 }
