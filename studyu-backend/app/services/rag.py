@@ -3146,10 +3146,32 @@ def _get_youtube_doc_ids(doc_ids: list[str]) -> list[str]:
 # ─────────────────────────────────────────────
 
 LEVEL_PROMPTS = {
-    "beginner": "쉽고 친절하게, 예시를 들어 입문자 수준으로 설명해주세요.",
-    "intermediate": "핵심 개념 위주로 중급 학습자에게 적합하게 설명해주세요.",
-    "advanced": "심화 분석과 비판적 관점을 포함하여 전문가 수준으로 설명해주세요.",
+    "beginner": (
+        "반드시 쉬운 설명 모드로 답변하세요. 어려운 용어는 일상적인 말로 풀어쓰고, "
+        "필요하면 용어 뜻을 한 번 더 짧게 설명하세요. 답변 길이는 보통 5~8문장 또는 3~4개 불릿으로 유지하고, "
+        "가능하면 짧은 예시를 1개 포함하세요. 전문적인 배경지식을 이미 안다고 가정하지 마세요."
+    ),
+    "intermediate": (
+        "반드시 보통 설명 모드로 답변하세요. 핵심 개념을 중심으로 자세함과 간결함의 균형을 맞춰 설명하세요. "
+        "답변 길이는 보통 4~7문장 또는 2~4개 불릿으로 유지하고, 필요한 경우에만 예시를 덧붙이세요."
+    ),
+    "advanced": (
+        "반드시 간략 설명 모드로 답변하세요. 가장 중요한 내용만 추려서 짧고 압축적으로 답하세요. "
+        "가능하면 2~4문장 또는 2~3개 불릿 이내로 끝내고, 배경 설명·부연 설명·예시는 꼭 필요할 때만 최소화하세요."
+    ),
 }
+
+
+def normalize_learning_level(level: str | None) -> str:
+    mapping = {
+        "beginner": "beginner",
+        "easy": "beginner",
+        "intermediate": "intermediate",
+        "normal": "intermediate",
+        "advanced": "advanced",
+        "brief": "advanced",
+    }
+    return mapping.get((level or "").strip().lower(), "intermediate")
 
 
 SUGGESTION_BLOCK = """【추천 질문 — 필수 출력】
@@ -4171,7 +4193,8 @@ def generate_content(
     """요약 / 퀴즈 / 학습 계획 생성. 결과 문자열 반환."""
     context = _get_context(doc_ids, max_chars=10000)
 
-    level_map = {"beginner": "입문", "intermediate": "중급", "advanced": "심화"}
+    normalized_level = normalize_learning_level(level)
+    level_map = {"beginner": "쉽게", "intermediate": "보통", "advanced": "간략하게"}
     difficulty_map = {"easy": "쉬운", "intermediate": "중간", "hard": "어려운"}
     level_ko = level_map.get(level, "중급")
     difficulty_ko = difficulty_map.get(difficulty, "중간")

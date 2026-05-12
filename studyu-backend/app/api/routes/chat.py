@@ -22,7 +22,7 @@ class ChatRequest(BaseModel):
     question: str
     session_id: Optional[str] = None
     model: Optional[str] = "claude-haiku-4-5-20251001"
-    level: Optional[str] = "normal"
+    level: Optional[str] = "intermediate"
     current_slide: Optional[int] = None
     asked_questions: Optional[list[str]] = []
     chat_history: Optional[list] = []
@@ -50,7 +50,7 @@ async def chat(
         doc_ids=doc_ids,
         question=req.question,
         model=req.model or "claude-haiku-4-5-20251001",
-        level=req.level or "normal",
+        level=req.level or "intermediate",
         chat_history=req.chat_history or [],
         current_slide=req.current_slide,
     )
@@ -78,7 +78,7 @@ async def chat_stream(
         doc_ids=doc_ids,
         question=req.question,
         model=req.model or "claude-haiku-4-5-20251001",
-        level=req.level or "normal",
+        level=req.level or "intermediate",
         chat_history=req.chat_history or [],
         current_slide=req.current_slide,
         stream=True,

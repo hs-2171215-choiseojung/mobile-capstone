@@ -144,7 +144,7 @@ def _generate_media_summary_via_chat(document_id: str) -> dict[str, Any]:
             "추천 질문은 넣지 말아줘."
         ),
         model=_DEFAULT_MODEL,
-        level="normal",
+        level="intermediate",
         chat_history=[],
     )
     return _markdown_summary_to_media_payload(answer)
