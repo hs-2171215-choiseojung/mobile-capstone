@@ -33,10 +33,25 @@ const MODEL_OPTIONS = [
   { value: "gpt-4o", label: "GPT-4o · 높은 품질" },
 ];
 
+function normalizeLearningLevel(value: string | null | undefined): "easy" | "normal" | "brief" {
+  switch (value) {
+    case "beginner":
+    case "easy":
+      return "easy";
+    case "advanced":
+    case "brief":
+      return "brief";
+    case "intermediate":
+    case "normal":
+    default:
+      return "normal";
+  }
+}
+
 const LEVEL_OPTIONS = [
-  { value: "beginner", label: "초급" },
-  { value: "intermediate", label: "중급" },
-  { value: "advanced", label: "고급" },
+  { value: "easy", label: "쉽게" },
+  { value: "normal", label: "보통" },
+  { value: "brief", label: "간략하게" },
 ];
 
 const PLAYBACK_OPTIONS = ["0.75", "1", "1.25", "1.5", "1.75", "2"];
@@ -85,14 +100,14 @@ export default function MyPageClient({ email, createdAt, displayName, avatarUrl,
   const [pwMsg, setPwMsg] = useState<Status>(null);
 
   // ── 학습 기본값 (localStorage) ──────────────────
-  const [level, setLevel] = useState("intermediate");
+  const [level, setLevel] = useState<"easy" | "normal" | "brief">("normal");
   const [voice, setVoice] = useState("sarah");
   const [model, setModel] = useState("claude-haiku-4-5-20251001");
   const [playbackRate, setPlaybackRate] = useState("1");
   const [settingsMsg, setSettingsMsg] = useState<Status>(null);
 
   useEffect(() => {
-    setLevel(readLS("studyu_default_level", "intermediate"));
+    setLevel(normalizeLearningLevel(readLS("studyu_default_level", "normal")));
     setVoice(readLS("studyu_default_voice", "sarah"));
     setModel(readLS("studyu_default_model", "claude-haiku-4-5-20251001"));
     setPlaybackRate(readLS("studyu_playback_rate", "1"));

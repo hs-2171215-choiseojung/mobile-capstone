@@ -19,6 +19,21 @@ const MODEL_STORAGE_KEY = "studyu_default_model";
 const LEVEL_STORAGE_KEY = "studyu_default_level";
 const LEGACY_MODEL_KEY = "student-selected-llm";
 
+function normalizeLearningLevel(value: string | null | undefined): "easy" | "normal" | "brief" {
+  switch (value) {
+    case "beginner":
+    case "easy":
+      return "easy";
+    case "advanced":
+    case "brief":
+      return "brief";
+    case "intermediate":
+    case "normal":
+    default:
+      return "normal";
+  }
+}
+
 interface WeekTask {
   itemId?: string;
 }
@@ -139,7 +154,7 @@ export default function StudentWorkspacePage() {
   }, [selectedSource?.id]);
 
   const [selectedLLM, setSelectedLLM] = useState('claude-haiku-4-5-20251001');
-  const [selectedDifficulty, setSelectedDifficulty] = useState('intermediate');
+  const [selectedDifficulty, setSelectedDifficulty] = useState<'easy' | 'normal' | 'brief'>('normal');
   const [prefsHydrated, setPrefsHydrated] = useState(false);
   useEffect(() => {
     try {
@@ -152,7 +167,7 @@ export default function StudentWorkspacePage() {
       const savedModel = localStorage.getItem(MODEL_STORAGE_KEY);
       if (savedModel) setSelectedLLM(savedModel);
       const savedLevel = localStorage.getItem(LEVEL_STORAGE_KEY);
-      if (savedLevel) setSelectedDifficulty(savedLevel);
+      if (savedLevel) setSelectedDifficulty(normalizeLearningLevel(savedLevel));
     } catch {
       // ignore storage errors
     } finally {
@@ -699,10 +714,10 @@ export default function StudentWorkspacePage() {
         <ChevronDown className="w-3.5 h-3.5 text-[#99a1af] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
       </div>
       <div className="relative">
-        <select value={selectedDifficulty} onChange={(e) => setSelectedDifficulty(e.target.value)} className="appearance-none bg-[#f8f9fb] border border-[#e7e9ed] hover:bg-[#e7e9ed] text-[#414751] text-[12px] font-medium pl-4 pr-8 py-1.5 rounded-full focus:outline-none focus:ring-2 focus:ring-[#155dfc]/20 transition-colors cursor-pointer shadow-sm">
-          <option value="beginner">초급</option>
-          <option value="intermediate">중급</option>
-          <option value="advanced">고급</option>
+        <select value={selectedDifficulty} onChange={(e) => setSelectedDifficulty(normalizeLearningLevel(e.target.value))} className="appearance-none bg-[#f8f9fb] border border-[#e7e9ed] hover:bg-[#e7e9ed] text-[#414751] text-[12px] font-medium pl-4 pr-8 py-1.5 rounded-full focus:outline-none focus:ring-2 focus:ring-[#155dfc]/20 transition-colors cursor-pointer shadow-sm">
+          <option value="easy">쉽게</option>
+          <option value="normal">보통</option>
+          <option value="brief">간략하게</option>
         </select>
         <ChevronDown className="w-3.5 h-3.5 text-[#99a1af] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
       </div>
@@ -771,6 +786,7 @@ export default function StudentWorkspacePage() {
                     notebookId={notebookId}
                     selectedLLM={selectedLLM}
                     selectedDifficulty={selectedDifficulty}
+                    difficultyReady={prefsHydrated}
                     activeSourceId={selectedSource.id}
                     activeSourceMediaType={selectedSourceMediaType}
                     activeSourceMediaDuration={selectedSourceMediaDuration}
@@ -840,7 +856,7 @@ export default function StudentWorkspacePage() {
                 handleComponent={{ left: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
                 className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
               >
-                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} onCitationClick={handleCitationClick} />
+                <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} difficultyReady={prefsHydrated} onCitationClick={handleCitationClick} />
               </Resizable>
             </div>
           );
@@ -1022,7 +1038,7 @@ export default function StudentWorkspacePage() {
                   }}
                   className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
                 >
-                  <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} onClose={() => setIsChatOpen(false)} onCitationClick={handleCitationClick} />
+                  <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} difficultyReady={prefsHydrated} onClose={() => setIsChatOpen(false)} onCitationClick={handleCitationClick} />
                 </Resizable>
               )}
             </div>

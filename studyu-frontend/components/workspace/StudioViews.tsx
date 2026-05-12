@@ -29,7 +29,7 @@ export const STUDIO_TASK_ITEMS: StudioTaskItem[] = [
   { id: "mindmap", label: "마인드맵", icon: "M", presets: ["개념 구조도", "인과관계 맵", "비교 분석 맵", "학습 흐름도", "키워드 맵", "프로세스 맵"] },
   { id: "report", label: "보고서", icon: "R", presets: ["학습 가이드", "블로그 게시물", "제품 요구사항 정의서", "기술 개념 설명서", "학습 활용 가이드", "사례 분석 보고서"] },
   { id: "flashcard", label: "플래시카드", icon: "F", presets: ["단어·정의 카드", "Q&A 카드", "빈칸 채우기 카드", "이미지 연상 카드", "공식 암기 카드", "사례 카드"] },
-  { id: "quiz", label: "퀴즈", icon: "Q", presets: ["객관식 퀴즈", "O/X 퀴즈", "단답형 퀴즈", "빈칸 채우기", "서술형 퀴즈", "사례 분석 퀴즈"] },
+  { id: "quiz", label: "퀴즈", icon: "Q", presets: ["객관식 퀴즈", "O/X 퀴즈"] },
   { id: "table", label: "데이터 표", icon: "T", presets: ["비교 분석 표", "개념 정리 표", "요약 표", "항목 분류 표", "체크리스트 표", "학습 계획 표"] },
 ];
 
@@ -666,6 +666,32 @@ export function FlashcardView({ cards, title, onBack }: { cards: any[]; title: s
   const [done, setDone] = useState(false);
   const card = cards[idx];
   const total = cards.length;
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === " " || e.key === "Spacebar") {
+        e.preventDefault();
+        setFlipped((v) => !v);
+        setShowHint(false);
+      } else if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        setFlipped(false);
+        setShowHint(false);
+        setIdx((i) => (i + 1 < total ? i + 1 : i));
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setFlipped(false);
+        setShowHint(false);
+        setIdx((i) => (i > 0 ? i - 1 : i));
+      } else if (e.key === "1") {
+        if (flipped) { setKnown((prev) => { const n = [...prev]; n[idx] = false; return n; }); setIdx((i) => (i + 1 < total ? i + 1 : i)); setFlipped(false); setShowHint(false); }
+      } else if (e.key === "2") {
+        if (flipped) { setKnown((prev) => { const n = [...prev]; n[idx] = true; return n; }); setIdx((i) => (i + 1 < total ? i + 1 : i)); setFlipped(false); setShowHint(false); }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [total, flipped, idx]);
 
   function handleKnow(isKnown: boolean) {
     setKnown((prev) => {

@@ -28,6 +28,7 @@ interface StudentChatPanelProps {
   docs: Doc[];
   selectedLLM?: string;
   selectedDifficulty?: string;
+  difficultyReady?: boolean;
   activeSourceId?: string;
   activeSourceMediaType?: "audio" | "video" | null;
   activeSourceMediaDuration?: number;
@@ -288,6 +289,10 @@ function normalizeInlineListMarkers(content: string) {
     .replace(/([.!?])\s+(\d+\.\s+(?=\S))/g, "$1\n$2");
 }
 
+function containsMarkdownTable(content: string) {
+  return /(^|\n)\|.*\|\n\|[-:\s|]+\|/m.test(content);
+}
+
 const mdContentRegex = /^[ \t]*[#\-*>|]|^[ \t]*\d+\. |[가-힣]/;
 function fixMarkdownCodeFences(text: string): string {
   const lines = text.split('\n');
@@ -453,6 +458,7 @@ export function StudentChatPanel({
   notebookId,
   selectedLLM,
   selectedDifficulty,
+  difficultyReady = true,
   activeSourceId,
   activeSourceMediaType,
   activeSourceMediaDuration,
@@ -530,6 +536,7 @@ export function StudentChatPanel({
   const showSummaryButton = canOpenSummary || hasMediaSummary || activeSourceSummaryLoading;
   const summaryButtonLabel = activeSourceSummaryLoading && !hasMediaSummary ? "요약 준비 중" : "요약";
   const summaryButtonTitle = activeSourceSummaryLoading && !hasMediaSummary ? "요약을 준비하고 있어요" : "요약 보기";
+  const sendDisabled = !difficultyReady || isLoading || !inputValue.trim();
   const summaryReportMarkdown = hasMediaSummary
     ? [
         activeSourceSummary?.title?.trim() ? `# ${activeSourceSummary.title.trim()}` : "# 자료 요약",
@@ -893,7 +900,7 @@ export function StudentChatPanel({
   // ── 채팅 전송 ─────────────────────────────────────────────
   const handleSendMessage = async (textOverride?: string) => {
     const userMessage = (textOverride ?? inputValue).trim();
-    if (!userMessage || isLoading) return;
+    if (!difficultyReady || !userMessage || isLoading) return;
 
     setMessages(prev => [...prev, { type: 'user', content: userMessage }]);
     if (!textOverride) setInputValue('');
@@ -902,20 +909,32 @@ export function StudentChatPanel({
     // 스트리밍 AI 메시지 플레이스홀더 추가
     const aiMsgIndex = -1; // setMessages 후 계산
     let streamingContent = '';
+    let sawRewrite = false;
 
     const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
     const applyNewSuggestions = (newQuestions: string[]) => {
-      const newChips = newQuestions.slice(0, 3).map((text, i) => ({
+      const seenTexts = new Set(suggestionsRef.current.map((s) => s.text.trim()));
+      const newChips = newQuestions
+        .map((text) => text.trim())
+        .filter(Boolean)
+        .filter((text) => {
+          if (seenTexts.has(text)) return false;
+          seenTexts.add(text);
+          return true;
+        })
+        .slice(0, 3)
+        .map((text, i) => ({
         text,
         category: CATS[i % 3],
         isOld: false,
       })) as Suggestion[];
-      const nextSuggestions = [...suggestionsRef.current, ...newChips];
+      const nextSuggestions = newChips;
       setSuggestions(nextSuggestions);
       try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(nextSuggestions)); } catch {}
       if (newChips.length > 0) {
         setMessages(prev => [...prev, { type: 'suggestions', items: newChips } as any]);
       }
+      return newChips.length;
     };
 
     try {
@@ -930,6 +949,31 @@ export function StudentChatPanel({
         .filter(m => m.type === 'user' || m.type === 'ai')
         .slice(-10)
         .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }));
+      const currentSuggestionTexts = suggestionsRef.current.map((s) => s.text);
+      const askedQuestionTexts = [...askedQuestionsRef.current, ...currentSuggestionTexts, userMessage].slice(-12);
+      const fetchMoreSuggestions = () =>
+        getToken().then((t) =>
+          fetch(`${API}/api/chat/suggestions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+            body: JSON.stringify({
+              doc_ids: targetDocIds,
+              asked_questions: [...askedQuestionsRef.current, ...suggestionsRef.current.map((s) => s.text)],
+              last_answer: lastAnswerRef.current,
+            }),
+          })
+            .then((r) => r.json())
+            .then((d) => {
+              if (d.questions?.length) {
+                const texts = (d.questions as Array<string | Suggestion>).map((q) =>
+                  typeof q === "string" ? q : q.text
+                );
+                return applyNewSuggestions(texts);
+              }
+              return 0;
+            })
+            .catch(() => 0)
+        );
 
       // 스트리밍 AI 메시지 자리 잡기
       setMessages(prev => [...prev, { type: 'ai', content: '', references: [], sources: [] }]);
@@ -941,10 +985,11 @@ export function StudentChatPanel({
           doc_ids: targetDocIds,
           question: userMessage,
           model: selectedLLM || "gpt-4o-mini",
-          level: selectedDifficulty || "intermediate",
+          level: selectedDifficulty || "normal",
           session_id: notebookId,
           current_slide: currentSlide ?? null,
           chat_history: chatHistory,
+          asked_questions: askedQuestionTexts,
         }),
       });
 
@@ -987,6 +1032,7 @@ export function StudentChatPanel({
                 return next;
               });
             } else if (parsed.rewrite) {
+              sawRewrite = true;
               streamingContent = parsed.rewrite;
               setMessages(prev => {
                 const next = [...prev];
@@ -1020,9 +1066,10 @@ export function StudentChatPanel({
             doc_ids: targetDocIds,
             question: userMessage,
             model: selectedLLM || "gpt-4o-mini",
-            level: selectedDifficulty || "intermediate",
+            level: selectedDifficulty || "normal",
             session_id: notebookId,
             current_slide: currentSlide ?? null,
+            asked_questions: askedQuestionTexts,
           }),
         });
         if (!fallbackRes.ok) throw new Error("AI 응답을 가져오는데 실패했습니다.");
@@ -1032,11 +1079,15 @@ export function StudentChatPanel({
         finalReferences = fallbackData.references ?? [];
       }
 
-      const normalizedAnswer = normalizeInlineListMarkers(
-        normalizeDetachedPageRefs(
-          collapseNearbyTimestampLists(streamingContent)
-        )
-      );
+      const normalizedAnswer = containsMarkdownTable(streamingContent)
+        ? streamingContent
+        : sawRewrite
+        ? streamingContent
+        : normalizeInlineListMarkers(
+            normalizeDetachedPageRefs(
+              collapseNearbyTimestampLists(streamingContent)
+            )
+          );
 
       // 스트리밍 완료 후 메타데이터(sources, references) 반영
       setMessages(prev => {
@@ -1059,30 +1110,12 @@ export function StudentChatPanel({
 
       // 추천 질문: done 이벤트에 포함된 경우 즉시 적용, 없으면 별도 fetch
       if (finalSuggestions.length > 0) {
-        applyNewSuggestions(finalSuggestions);
+        const addedCount = applyNewSuggestions(finalSuggestions);
+        if (addedCount < 3) {
+          fetchMoreSuggestions().catch(() => {});
+        }
       } else {
-        const currentTexts = suggestionsRef.current.map((s) => s.text);
-        getToken().then((t) =>
-          fetch(`${API}/api/chat/suggestions`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
-            body: JSON.stringify({
-              doc_ids: targetDocIds,
-              asked_questions: [...askedQuestionsRef.current, ...currentTexts],
-              last_answer: lastAnswerRef.current,
-            }),
-          })
-            .then((r) => r.json())
-            .then((d) => {
-              if (d.questions?.length) {
-                const texts = (d.questions as Array<string | Suggestion>).map((q) =>
-                  typeof q === "string" ? q : q.text
-                );
-                applyNewSuggestions(texts);
-              }
-            })
-            .catch(() => {})
-        );
+        fetchMoreSuggestions().catch(() => {});
       }
     } catch (error: any) {
       // 스트리밍 중 오류 시 플레이스홀더를 오류 메시지로 교체
@@ -1322,7 +1355,7 @@ export function StudentChatPanel({
           {onPageClick && !onSlideClick && currentSlide != null && (
             <button
               onClick={() => handleSendMessage(`[페이지 ${currentSlide}]의 내용을 자세히 설명해줘.`)}
-              disabled={isLoading}
+                    disabled={!difficultyReady || isLoading}
               className="text-[11px] text-[#155dfc] font-medium bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full hover:bg-blue-100 disabled:opacity-40 transition-colors"
               title="현재 페이지 설명 요청"
             >
@@ -1592,7 +1625,7 @@ export function StudentChatPanel({
                 <button
                   key={q}
                   onClick={() => handleInitialQuestionClick(i, q)}
-                  disabled={isLoading}
+                  disabled={!difficultyReady || isLoading}
                   className="px-4 py-2 rounded-full border border-[#e7e9ed] bg-white text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm text-right disabled:opacity-40"
                 >
                   {q}
@@ -1610,7 +1643,7 @@ export function StudentChatPanel({
                   <button
                     key={s.text}
                     onClick={() => handleSuggestionClick(index, si, s.text)}
-                    disabled={isLoading}
+                    disabled={!difficultyReady || isLoading}
                     className="px-4 py-2 rounded-full border border-[#e7e9ed] bg-white text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm disabled:opacity-40 text-right max-w-[82%]"
                   >
                     {s.text}
@@ -1759,14 +1792,14 @@ export function StudentChatPanel({
           </button>
           <textarea
             value={isRecording && interimText ? interimText : inputValue}
-            onChange={e => { if (!isRecording) setInputValue(e.target.value); }}
+            onChange={e => { if (!isRecording && difficultyReady) setInputValue(e.target.value); }}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
             rows={1}
             className={`flex-1 max-h-[100px] min-h-[40px] py-2 leading-5 bg-transparent text-[13px] placeholder-[#99a1af] focus:outline-none resize-none self-center ${
               isRecording && interimText ? 'text-red-500 italic' : 'text-[#1a1d26]'
             }`}
-            placeholder={isRecording ? "말씀해 주세요..." : "학습 내용에 대해 무엇이든 물어보세요..."}
-            readOnly={isRecording}
+            placeholder={difficultyReady ? (isRecording ? "말씀해 주세요..." : "학습 내용에 대해 무엇이든 물어보세요...") : "설명 방식 설정을 불러오는 중이에요..."}
+            readOnly={isRecording || !difficultyReady}
           />
           <div className="flex items-center gap-1 shrink-0">
             <button
@@ -1782,7 +1815,7 @@ export function StudentChatPanel({
             </button>
             <button
               onClick={() => handleSendMessage()}
-              disabled={!inputValue.trim()}
+              disabled={sendDisabled}
               className="p-2 text-white bg-[#155dfc] hover:bg-[#0d4ac4] rounded-lg disabled:opacity-50 disabled:bg-[#99a1af] transition-colors shadow-sm"
             >
               <Send className="w-4 h-4 ml-0.5" />

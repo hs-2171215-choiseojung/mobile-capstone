@@ -72,6 +72,8 @@ export interface WeekTask {
   subtitle: string;
   itemId?: string;
   studioType?: string;
+  generating?: boolean;
+  generatingError?: string;
 }
 
 export interface Week {
@@ -141,11 +143,11 @@ const studioTaskItems: StudioTaskItem[] = [
   { id:"flashcard",  label:"플래시카드",      icon:"🃏", iconBg:"bg-pink-50",    subtitle:"핵심 개념 플래시카드",
     presets:["단어·정의 카드","Q&A 카드","빈칸 채우기 카드","이미지 연상 카드","공식 암기 카드","사례 카드"] },
   { id:"quiz",       label:"퀴즈",            icon:"✅", iconBg:"bg-emerald-50", subtitle:"이해도 확인 퀴즈",
-    presets:["객관식 퀴즈","O/X 퀴즈","단답형 퀴즈","빈칸 채우기","서술형 퀴즈","사례 분석 퀴즈"] },
+    presets:["객관식 퀴즈","O/X 퀴즈"] },
   { id:"infographic",label:"인포그래픽",     icon:"📈", iconBg:"bg-orange-50",  subtitle:"시각화 인포그래픽",
-    presets:["프로세스 인포그래픽","비교 인포그래픽","타임라인 인포그래픽","통계 시각화","지도 인포그래픽","목록형 인포그래픽"] },
+    presets:["개요형","프로세스형","비교형","통계형","타임라인형"] },
   { id:"table",      label:"데이터 표",       icon:"📋", iconBg:"bg-slate-50",   subtitle:"정형화된 데이터 표",
-    presets:["비교 분석 표","일정 계획 표","평가 기준 표","개념 정리 표","통계 데이터 표","체크리스트 표"] },
+    presets:["핵심 내용 정리표","비교 분석 표","개념 정의 표","학습 점검표","진도 추적 표"] },
 ];
 
 const sourceTypes: SourceType[] = [
@@ -336,7 +338,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [openPickerWeekId, setOpenPickerWeekId] = useState<number | null>(null);
   const [selectedPickerItem, setSelectedPickerItem] = useState<StudioTaskItem | null>(null);
   const [detailConfig, setDetailConfig] = useState({
-    format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체",
+    format: "", instructions: "", length: "10문제", language: "한국어", style: "격식체",
     selectedSources: [] as number[],
   });
   const [pickerSelectedWeekId, setPickerSelectedWeekId] = useState<number | null>(null);
@@ -1282,7 +1284,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     setPickerSelectedWeekId(null);
     setPickerOpenedFromStudioMenu(true);
     setPickerSourcesCollapsed(false);
-    setDetailConfig({ format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체", selectedSources: [] });
+    setDetailConfig({ format: item.id === "quiz" ? (item.presets[0] ?? "") : "", instructions: "", length: "10문제", language: "한국어", style: "격식체", selectedSources: [] });
     setStudioMenuOpen(false);
   }
 
@@ -1333,7 +1335,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     const docIds = usedSources.flatMap((s) => (s.docId ? [s.docId] : []));
     const effectiveDocIds = docIds.length > 0 ? docIds : activeDocIds;
 
-    if (["video", "infographic", "table"].includes(item.id)) {
+    if (["video"].includes(item.id)) {
       setOpenPickerWeekId(null);
       setSelectedPickerItem(null);
       setStudioCreateType(item.id);
@@ -1342,13 +1344,44 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
     }
 
     setGeneratingTask(true);
+    console.log(`[studio] 🚀 ${item.id} 생성 시작 | format="${detailConfig.format}" | docs=${JSON.stringify(effectiveDocIds)} | lang=${detailConfig.language}`);
+
+    // 1. 주차에 플레이스홀더 즉시 추가
+    const tempNumId = Date.now();
+    const typeLabel: Record<string, string> = {
+      audio: "AI 오디오 오버뷰", quiz: "퀴즈", mindmap: "마인드맵", flashcard: "플래시카드",
+      slides: "슬라이드 자료", report: "보고서", table: "데이터 표", infographic: "인포그래픽",
+    };
+    const pendingTask: WeekTask = {
+      id: tempNumId, icon: item.icon, iconBg: item.iconBg,
+      title: `${typeLabel[item.id] || item.label} 생성 중...`,
+      subtitle: `기반:소스 ${effectiveDocIds.length}개`,
+      studioType: item.id,
+      generating: true,
+    };
+    if (weekId !== null) {
+      setWeeks((prev) => prev.map((w) => {
+        if (w.id !== weekId) return w;
+        return { ...w, tasks: [...w.tasks, pendingTask] };
+      }));
+    }
+
+    // 2. 모달 즉시 닫기
+    closePickerModal();
+    const savedDetailConfig = { ...detailConfig };
+    setDetailConfig({ format: selectedPickerItem?.id === "quiz" ? (selectedPickerItem.presets[0] ?? "") : "", instructions: "", length: "10문제", language: "한국어", style: "격식체", selectedSources: [] });
+    setGeneratingTask(false);
+
+    // 3. 백그라운드 생성
+    (async () => {
     try {
       const token = await getToken();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let data: any;
-      const lengthMap: Record<string, string> = { "간결하게": "short", "기본값": "medium", "상세하게": "long" };
-      const diffMap: Record<string, string> = { "간결하게": "easy", "기본값": "medium", "상세하게": "hard" };
-      const countMap: Record<string, number> = { "간결하게": 3, "기본값": 5, "상세하게": 10 };
+      const lengthMap: Record<string, string> = { "5문제": "short", "10문제": "medium", "15문제": "long" };
+      const diffMap: Record<string, string> = { "5문제": "easy", "10문제": "intermediate", "15문제": "hard" };
+      const countMap: Record<string, string> = { "5문제": "fewer", "10문제": "standard", "15문제": "more" };
+      const countNumMap: Record<string, number> = { "5문제": 5, "10문제": 10, "15문제": 15 };
 
       if (item.id === "audio") {
         const res = await fetch(`${API}/api/generate/audio`, {
@@ -1358,9 +1391,11 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
       } else if (item.id === "quiz") {
+        const quizStyleMap: Record<string, string> = { "객관식 퀴즈": "multiple_choice", "O/X 퀴즈": "ox" };
+        const quizStyle = quizStyleMap[savedDetailConfig.format] || "multiple_choice";
         const res = await fetch(`${API}/api/generate`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, type: "quiz", difficulty: diffMap[detailConfig.length] || "medium", quiz_count: countMap[detailConfig.length] || 5, topic: detailConfig.format || detailConfig.instructions || "", notebook_id: notebook.id }),
+          body: JSON.stringify({ doc_ids: effectiveDocIds, type: "quiz", difficulty: diffMap[savedDetailConfig.length] || "intermediate", quiz_count: countNumMap[savedDetailConfig.length] || 5, quiz_style: quizStyle, topic: savedDetailConfig.instructions || "", notebook_id: notebook.id }),
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
@@ -1369,56 +1404,89 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       } else if (item.id === "mindmap") {
         const res = await fetch(`${API}/api/generate/mindmap`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, language: detailConfig.language, focus: detailConfig.instructions || detailConfig.format, notebook_id: notebook.id }),
+          body: JSON.stringify({ doc_ids: effectiveDocIds, language: savedDetailConfig.language, focus: savedDetailConfig.instructions || savedDetailConfig.format, notebook_id: notebook.id }),
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
       } else if (item.id === "flashcard") {
         const res = await fetch(`${API}/api/generate/flashcard`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, count: countMap[detailConfig.length] || 5, difficulty: diffMap[detailConfig.length] || "medium", topic: detailConfig.format || detailConfig.instructions || "", language: detailConfig.language, item_title: item.label, notebook_id: notebook.id }),
+          body: JSON.stringify({ doc_ids: effectiveDocIds, count: countMap[savedDetailConfig.length] || "standard", difficulty: diffMap[savedDetailConfig.length] || "intermediate", topic: savedDetailConfig.format || savedDetailConfig.instructions || "", language: savedDetailConfig.language, item_title: item.label, notebook_id: notebook.id }),
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
       } else if (item.id === "slides") {
         const res = await fetch(`${API}/api/generate/slides`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, format: detailConfig.format || "lecture", length: lengthMap[detailConfig.length] || "medium", language: detailConfig.language, prompt: detailConfig.instructions, item_title: item.label, notebook_id: notebook.id }),
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: savedDetailConfig.format || "lecture", length: lengthMap[savedDetailConfig.length] || "medium", language: savedDetailConfig.language, prompt: savedDetailConfig.instructions, item_title: item.label, notebook_id: notebook.id }),
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
       } else if (item.id === "report") {
+        const toneMap: Record<string, string> = { "구어체": "casual", "학술체": "academic", "공식체": "formal" };
         const res = await fetch(`${API}/api/generate/report`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, format: detailConfig.format || "report", language: detailConfig.language, length: lengthMap[detailConfig.length] || "medium", tone: detailConfig.style, instructions: detailConfig.instructions, item_title: item.label, notebook_id: notebook.id }),
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: savedDetailConfig.format || "report", language: savedDetailConfig.language, length: lengthMap[savedDetailConfig.length] || "medium", tone: toneMap[savedDetailConfig.style] || "formal", instructions: savedDetailConfig.instructions, item_title: item.label, notebook_id: notebook.id }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      } else if (item.id === "infographic") {
+        const infographicFormatMap: Record<string, string> = {
+          "개요형": "overview", "프로세스형": "process", "비교형": "comparison",
+          "통계형": "statistics", "타임라인형": "timeline",
+        };
+        const infographicFormat = infographicFormatMap[savedDetailConfig.format] || "overview";
+        const res = await fetch(`${API}/api/generate/infographic`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: infographicFormat, language: savedDetailConfig.language || "ko", instructions: savedDetailConfig.instructions || "", notebook_id: notebook.id }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? "생성 실패");
+      } else if (item.id === "table") {
+        const tableFormatMap: Record<string, string> = {
+          "핵심 내용 정리표": "summary_table",
+          "비교 분석 표": "comparison_table",
+          "개념 정의 표": "concept_definition",
+          "학습 점검표": "learning_checklist",
+          "진도 추적 표": "progress_tracking",
+        };
+        const tableFormat = tableFormatMap[savedDetailConfig.format] || "summary_table";
+        const res = await fetch(`${API}/api/generate/data`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: tableFormat, language: savedDetailConfig.language || "ko", instructions: savedDetailConfig.instructions || "", notebook_id: notebook.id }),
         });
         data = await res.json();
         if (!res.ok) throw new Error(data.detail ?? "생성 실패");
       }
 
       const taskTitle = (data?.title as string) || item.label;
-      const formatNote = detailConfig.format ? ` · ${detailConfig.format}` : "";
-      const newTask: WeekTask = {
-        id: 0, icon: item.icon, iconBg: item.iconBg,
+      const formatNote = savedDetailConfig.format ? ` · ${savedDetailConfig.format}` : "";
+      const lengthNote = ["quiz", "flashcard"].includes(item.id) ? ` · ${savedDetailConfig.length}` : "";
+      const realTask: WeekTask = {
+        id: tempNumId, icon: item.icon, iconBg: item.iconBg,
         title: taskTitle,
-        subtitle: `${item.subtitle}${formatNote} · ${detailConfig.length} · ${detailConfig.language}`,
+        subtitle: `${item.subtitle}${formatNote}${lengthNote} · ${savedDetailConfig.language}`,
         itemId: data?.item_id as string | undefined,
         studioType: item.id,
       };
       if (weekId !== null) {
         setWeeks((prev) => prev.map((w) => {
           if (w.id !== weekId) return w;
-          const maxId = w.tasks.length > 0 ? Math.max(...w.tasks.map((t) => t.id)) : 0;
-          return { ...w, tasks: [...w.tasks, { ...newTask, id: maxId + 1 }] };
+          return { ...w, tasks: w.tasks.map((t) => t.id === tempNumId ? realTask : t) };
         }));
       }
-      closePickerModal();
-      setDetailConfig({ format: "", instructions: "", length: "기본값", language: "한국어", style: "격식체", selectedSources: [] });
+      console.log(`[studio] ✅ ${item.id} 생성 완료 | item_id=${data?.item_id} | title="${taskTitle}"`);
     } catch (e) {
-      alert(`생성 실패: ${e instanceof Error ? e.message : "오류가 발생했습니다"}`);
-    } finally {
-      setGeneratingTask(false);
+      console.error(`[studio] ❌ ${item.id} 생성 실패:`, e);
+      const errMsg = e instanceof Error ? e.message : "오류가 발생했습니다";
+      if (weekId !== null) {
+        setWeeks((prev) => prev.map((w) => {
+          if (w.id !== weekId) return w;
+          return { ...w, tasks: w.tasks.map((t) => t.id === tempNumId ? { ...t, generating: false, generatingError: errMsg } : t) };
+        }));
+      }
     }
+    })();
   }
 
   // ── Chat ──────────────────────────────────────────────────────────
@@ -1952,6 +2020,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                   <p className="text-[#364153] truncate" style={{ fontSize: "12.8px", fontWeight: 500 }}>{item.title}</p>
                                   <p className="text-[#99a1af]" style={{ fontSize: "11.2px" }}>{item.subtitle || "스튜디오 생성물"}</p>
                                 </div>
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
@@ -1960,10 +2029,29 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                     setViewerText(null);
                                     setViewerStudioItem(item);
                                   }}
-                                  className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity px-2.5 py-1 rounded-lg bg-blue-50 text-blue-600 text-[11px] font-semibold"
+                                  className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-600 text-[11px] font-semibold"
                                 >
                                   보기
                                 </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setStudioItems((prev) => prev.filter((i) => i.id !== item.id));
+                                    getToken().then((token) => {
+                                      fetch(`${API}/api/studio/${item.id}`, {
+                                        method: "DELETE",
+                                        headers: { Authorization: `Bearer ${token}` },
+                                      }).catch(() => {});
+                                    });
+                                  }}
+                                  className="w-6 h-6 rounded-lg bg-red-50 text-red-500 flex items-center justify-center"
+                                  title="삭제"
+                                >
+                                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
+                                  </svg>
+                                </button>
+                              </div>
                               </div>
                             ))
                           )}
@@ -2296,32 +2384,56 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                             key={task.id}
                             className="relative rounded-[8px] group/task"
                             style={{
-                              background: "#f3f4f5",
+                              background: task.generatingError ? "#FEF2F2" : task.generating ? "#EFF6FF" : "#f3f4f5",
                               opacity: isDraggingThis ? 0.4 : 1,
                               borderTop: isOverTop ? "2px solid #2563eb" : "2px solid transparent",
                               borderBottom: isOverBottom ? "2px solid #2563eb" : "2px solid transparent",
-                              cursor: "grab",
+                              cursor: task.generating || task.generatingError ? "default" : "grab",
                             }}
-                            draggable
+                            draggable={!task.generating && !task.generatingError}
                             onDragStart={(e) => {
+                              if (task.generating || task.generatingError) { e.preventDefault(); return; }
                               setDraggingCard({ weekId: week.id, cardType: "task", cardId: task.id });
                               e.dataTransfer.setData("application/week-card", JSON.stringify({ weekId: week.id, cardType: "task", cardId: task.id }));
                               e.dataTransfer.effectAllowed = "move";
                             }}
                             onDragEnd={() => { setDraggingCard(null); setDragOverCard(null); }}
-                            onDragOver={(e) => handleCardDragOver(e, week.id, "task", task.id)}
+                            onDragOver={(e) => { if (!task.generating && !task.generatingError) handleCardDragOver(e, week.id, "task", task.id); }}
                             onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverCard(null); }}
-                            onDrop={(e) => handleCardDrop(e, week.id, "task", task.id)}
+                            onDrop={(e) => { if (!task.generating && !task.generatingError) handleCardDrop(e, week.id, "task", task.id); }}
                           >
                             <div className="flex items-center px-4 gap-3" style={{ height: 72 }}>
-                              <div className="shrink-0 grid gap-[3px]" style={{ gridTemplateColumns: "repeat(2,4px)", opacity:0.4 }}>
-                                {[...Array(6)].map((_, i) => <div key={i} className="rounded-full" style={{ width:4, height:4, background:"#99A1AF" }}/>)}
-                              </div>
-                              <div className="shrink-0 flex items-center justify-center rounded-[4px] text-xl" style={{ width:38, height:38, background: getIconBg(task.iconBg) }}>
-                                {task.icon}
-                              </div>
+                              {/* drag handle — 생성 중엔 숨김 */}
+                              {!task.generating && !task.generatingError && (
+                                <div className="shrink-0 grid gap-[3px]" style={{ gridTemplateColumns: "repeat(2,4px)", opacity:0.4 }}>
+                                  {[...Array(6)].map((_, i) => <div key={i} className="rounded-full" style={{ width:4, height:4, background:"#99A1AF" }}/>)}
+                                </div>
+                              )}
+                              {/* icon / spinner */}
+                              {task.generating ? (
+                                <div className="shrink-0 flex items-center justify-center rounded-[4px]" style={{ width:38, height:38, background: getIconBg(task.iconBg) }}>
+                                  <svg className="w-5 h-5 text-blue-500 animate-spin" viewBox="0 0 24 24" fill="none">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"/>
+                                  </svg>
+                                </div>
+                              ) : (
+                                <div className="shrink-0 flex items-center justify-center rounded-[4px] text-xl" style={{ width:38, height:38, background: getIconBg(task.iconBg) }}>
+                                  {task.icon}
+                                </div>
+                              )}
                               <div className="flex-1 min-w-0">
-                                {renamingTask?.weekId === week.id && renamingTask?.taskId === task.id ? (
+                                {task.generating ? (
+                                  <>
+                                    <p className="truncate animate-pulse" style={{ fontFamily:"Inter,sans-serif", fontSize:"15px", fontWeight:600, color:"#2563eb" }}>{task.title}</p>
+                                    <p style={{ fontFamily:"Inter,sans-serif", fontSize:"12px", color:"#6b7280" }}>{task.subtitle}</p>
+                                  </>
+                                ) : task.generatingError ? (
+                                  <>
+                                    <p className="truncate" style={{ fontFamily:"Inter,sans-serif", fontSize:"15px", fontWeight:600, color:"#ef4444" }}>생성 실패</p>
+                                    <p className="truncate" style={{ fontFamily:"Inter,sans-serif", fontSize:"12px", color:"#f87171" }}>{task.generatingError}</p>
+                                  </>
+                                ) : renamingTask?.weekId === week.id && renamingTask?.taskId === task.id ? (
                                   <div className="flex items-center gap-1">
                                     <input
                                       autoFocus
@@ -2334,70 +2446,69 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                       className="flex-1 min-w-0 rounded-md border border-blue-400 px-2 py-0.5 text-sm font-semibold outline-none"
                                       style={{ fontFamily:"Inter,sans-serif", fontSize:"15px", color:"#191c1d" }}
                                     />
-                                    <button
-                                      onMouseDown={(e) => e.preventDefault()}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleRenameTaskConfirm();
-                                      }}
-                                      className="w-6 h-6 rounded bg-blue-500 text-white flex items-center justify-center shrink-0"
-                                    >
+                                    <button onMouseDown={(e) => e.preventDefault()} onClick={(e) => { e.stopPropagation(); handleRenameTaskConfirm(); }} className="w-6 h-6 rounded bg-blue-500 text-white flex items-center justify-center shrink-0">
                                       <svg width="10" height="10" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                                     </button>
-                                    <button
-                                      onMouseDown={(e) => e.preventDefault()}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setRenamingTask(null);
-                                        setRenamingTaskTitle("");
-                                      }}
-                                      className="w-6 h-6 rounded bg-gray-100 text-gray-500 flex items-center justify-center shrink-0"
-                                    >
+                                    <button onMouseDown={(e) => e.preventDefault()} onClick={(e) => { e.stopPropagation(); setRenamingTask(null); setRenamingTaskTitle(""); }} className="w-6 h-6 rounded bg-gray-100 text-gray-500 flex items-center justify-center shrink-0">
                                       <svg width="10" height="10" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
                                     </button>
                                   </div>
                                 ) : (
-                                  <div
-                                    className="flex items-center gap-1 group/title cursor-text min-w-0"
-                                    onDoubleClick={() => { setRenamingTask({ weekId: week.id, taskId: task.id }); setRenamingTaskTitle(task.title); }}
-                                  >
-                                    <p
-                                      className="truncate"
-                                      style={{ fontFamily:"Inter,sans-serif", fontSize:"15px", fontWeight:600, color:"#191c1d" }}
+                                  <>
+                                    <div
+                                      className="flex items-center gap-1 group/title cursor-text min-w-0"
+                                      onDoubleClick={() => { setRenamingTask({ weekId: week.id, taskId: task.id }); setRenamingTaskTitle(task.title); }}
                                     >
-                                      {task.title}
+                                      <p className="truncate" style={{ fontFamily:"Inter,sans-serif", fontSize:"15px", fontWeight:600, color:"#191c1d" }}>{task.title}</p>
+                                      <button onClick={(e) => { e.stopPropagation(); setRenamingTask({ weekId: week.id, taskId: task.id }); setRenamingTaskTitle(task.title); }} className="shrink-0 opacity-0 group-hover/task:opacity-100 transition-opacity p-0.5 rounded hover:bg-gray-200" title="이름 변경">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9aa0a6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                        </svg>
+                                      </button>
+                                    </div>
+                                    <p style={{ fontFamily:"Inter,sans-serif", fontSize:"12px", color:"#414751" }}>
+                                      {["quiz", "flashcard"].includes(task.studioType || "")
+                                        ? task.subtitle
+                                        : task.subtitle.replace(/\s·\s\d+문제/g, "")}
                                     </p>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); setRenamingTask({ weekId: week.id, taskId: task.id }); setRenamingTaskTitle(task.title); }}
-                                      className="shrink-0 opacity-0 group-hover/task:opacity-100 transition-opacity p-0.5 rounded hover:bg-gray-200"
-                                      title="이름 변경"
-                                    >
-                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9aa0a6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                                      </svg>
-                                    </button>
-                                  </div>
+                                  </>
                                 )}
-                                <p style={{ fontFamily:"Inter,sans-serif", fontSize:"12px", color:"#414751" }}>{task.subtitle}</p>
                               </div>
-                              {task.itemId && (
+                              {/* 완료 아이템: 시작하기 버튼 */}
+                              {!task.generating && !task.generatingError && task.itemId && (
                                 <button
-                                  onClick={() => {
-                                    setStudioOpenItemId(task.itemId!);
-                                  }}
+                                  onClick={() => { setStudioOpenItemId(task.itemId!); }}
                                   className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
                                   style={{ background: "#1d4ed8", color: "white", fontSize: "12px" }}
                                 >
                                   시작하기
                                 </button>
                               )}
-                              <button
-                                onClick={() => handleDeleteTask(week.id, task.id)}
-                                className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover/task:opacity-100 transition-all"
-                              >
-                                <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
-                              </button>
+                              {/* 생성중/오류: X 버튼 항상 보임 | 완료: hover시 보임 */}
+                              {task.generating ? (
+                                <button
+                                  onClick={() => handleDeleteTask(week.id, task.id)}
+                                  className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-200 transition-all opacity-0 group-hover/task:opacity-100"
+                                  title="취소"
+                                >
+                                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+                                </button>
+                              ) : task.generatingError ? (
+                                <button
+                                  onClick={() => handleDeleteTask(week.id, task.id)}
+                                  className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-red-400 hover:text-red-600 hover:bg-red-100 transition-all"
+                                >
+                                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+                                </button>
+                              ) : !task.generating && (
+                                <button
+                                  onClick={() => handleDeleteTask(week.id, task.id)}
+                                  className="shrink-0 w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover/task:opacity-100 transition-all"
+                                >
+                                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+                                </button>
+                              )}
                             </div>
                           </div>
                         );})}
@@ -2719,7 +2830,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                   {studioTaskItems.map((item) => (
                     <button
                       key={item.id}
-                      onClick={() => { setSelectedPickerItem(item); setPickerSelectedWeekId(openPickerWeekId); setPickerOpenedFromStudioMenu(false); setPickerSourcesCollapsed(false); setDetailConfig({ format:"", instructions:"", length:"기본값", language:"한국어", style:"격식체", selectedSources:[] }); }}
+                      onClick={() => { setSelectedPickerItem(item); setPickerSelectedWeekId(openPickerWeekId); setPickerOpenedFromStudioMenu(false); setPickerSourcesCollapsed(false); setDetailConfig({ format: item.id === "quiz" ? (item.presets[0] ?? "") : "", instructions:"", length:"10문제", language:"한국어", style:"격식체", selectedSources:[] }); }}
                       className="flex flex-col items-center gap-2 p-4 rounded-2xl border-2 border-gray-100 hover:border-blue-300 hover:bg-blue-50 hover:shadow-md transition-all group"
                     >
                       <div className={`w-12 h-12 rounded-2xl ${item.iconBg} flex items-center justify-center text-2xl border border-gray-100 group-hover:scale-110 transition-transform`}>
@@ -2808,14 +2919,16 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                     {/* Format */}
                     <div>
                       <p className="text-gray-700 mb-3 font-bold" style={{ fontSize: "0.88rem" }}>형식</p>
-                      <button
-                        onClick={() => setDetailConfig((c) => ({ ...c, format: "" }))}
-                        className={`w-full flex items-center gap-2 px-4 py-3 rounded-xl border-2 mb-3 transition-all ${detailConfig.format === "" ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}
-                      >
-                        <span className={detailConfig.format === "" ? "text-blue-600 font-semibold" : "text-gray-600 font-semibold"} style={{ fontSize: "0.85rem" }}>직접 만들기</span>
-                        {detailConfig.format === "" && <svg className="ml-auto" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                      </button>
-                      <p className="text-gray-400 mb-2 font-semibold" style={{ fontSize: "0.75rem" }}>추천 형식</p>
+                      {selectedPickerItem?.id !== "quiz" && (
+                        <button
+                          onClick={() => setDetailConfig((c) => ({ ...c, format: "" }))}
+                          className={`w-full flex items-center gap-2 px-4 py-3 rounded-xl border-2 mb-3 transition-all ${detailConfig.format === "" ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}
+                        >
+                          <span className={detailConfig.format === "" ? "text-blue-600 font-semibold" : "text-gray-600 font-semibold"} style={{ fontSize: "0.85rem" }}>직접 만들기</span>
+                          {detailConfig.format === "" && <svg className="ml-auto" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        </button>
+                      )}
+                      {selectedPickerItem?.id !== "quiz" && <p className="text-gray-400 mb-2 font-semibold" style={{ fontSize: "0.75rem" }}>추천 형식</p>}
                       <div className="grid grid-cols-2 gap-2">
                         {selectedPickerItem.presets.map((preset) => (
                           <button key={preset}
@@ -2843,11 +2956,12 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                       />
                     </div>
 
-                    {/* Length */}
+                    {/* Length - 퀴즈/플래시카드만 표시 */}
+                    {["quiz", "flashcard"].includes(selectedPickerItem.id) && (
                     <div>
-                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>길이</p>
+                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>문제 수</p>
                       <div className="flex gap-2">
-                        {["간결하게","기본값","상세하게"].map((opt) => (
+                        {["5문제","10문제","15문제"].map((opt) => (
                           <button key={opt} onClick={() => setDetailConfig((c) => ({ ...c, length: opt }))}
                             className={`flex-1 py-2 rounded-xl border-2 transition-all ${detailConfig.length === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
                             style={{ fontSize: "0.82rem" }}
@@ -2855,32 +2969,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                         ))}
                       </div>
                     </div>
-
-                    {/* Language */}
-                    <div>
-                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>언어</p>
-                      <div className="flex gap-2">
-                        {["한국어","English","日本語","中文"].map((opt) => (
-                          <button key={opt} onClick={() => setDetailConfig((c) => ({ ...c, language: opt }))}
-                            className={`flex-1 py-2 rounded-xl border-2 transition-all ${detailConfig.language === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
-                            style={{ fontSize: "0.8rem" }}
-                          >{opt}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Style */}
-                    <div>
-                      <p className="text-gray-700 mb-2 font-bold" style={{ fontSize: "0.88rem" }}>문체</p>
-                      <div className="flex gap-2">
-                        {["격식체","구어체","학술체"].map((opt) => (
-                          <button key={opt} onClick={() => setDetailConfig((c) => ({ ...c, style: opt }))}
-                            className={`flex-1 py-2 rounded-xl border-2 transition-all ${detailConfig.style === opt ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"}`}
-                            style={{ fontSize: "0.82rem" }}
-                          >{opt}</button>
-                        ))}
-                      </div>
-                    </div>
+                    )}
 
                     {/* Create button */}
                     <button

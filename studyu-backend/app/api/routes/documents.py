@@ -144,7 +144,7 @@ def _generate_media_summary_via_chat(document_id: str) -> dict[str, Any]:
             "추천 질문은 넣지 말아줘."
         ),
         model=_DEFAULT_MODEL,
-        level="intermediate",
+        level="normal",
         chat_history=[],
     )
     return _markdown_summary_to_media_payload(answer)
@@ -453,7 +453,7 @@ def _generate_and_upload_hwpx_pages(file_bytes: bytes, doc_id: str) -> tuple[int
         import pyhwpx
     except ImportError:
         print("[hwpx_pages] pyhwpx 미설치")
-        return 0
+        return 0, None
 
     with tempfile.TemporaryDirectory() as tmpdir:
         hwpx_path = os.path.join(tmpdir, "input.hwpx")
