@@ -60,8 +60,13 @@ class GenerateRequest(BaseModel):
     doc_id: Optional[str] = None
     doc_ids: Optional[list[str]] = None
     type: str  # "summary" | "quiz" | "plan"
+<<<<<<< HEAD
     model: Optional[str] = "gpt-4o"
     level: Optional[str] = "intermediate"
+=======
+    model: Optional[str] = "claude-haiku-4-5-20251001"
+    level: Optional[str] = "normal"
+>>>>>>> 9bffbf9 (feat: 학생 답변 스타입 옵션을 쉽게/보통/간략하게로 변경)
     quiz_count: Optional[int] = 5
     topic: Optional[str] = None
     difficulty: Optional[str] = "intermediate"
@@ -96,7 +101,7 @@ async def generate(
             doc_ids=doc_ids,
             gen_type=req.type,
             model=req.model or "gpt-4o",
-            level=req.level or "intermediate",
+            level=req.level or "normal",
             quiz_count=req.quiz_count or 5,
             topic=req.topic or "",
             difficulty=req.difficulty or "intermediate",
