@@ -19,18 +19,18 @@ const MODEL_STORAGE_KEY = "studyu_default_model";
 const LEVEL_STORAGE_KEY = "studyu_default_level";
 const LEGACY_MODEL_KEY = "student-selected-llm";
 
-function normalizeLearningLevel(value: string | null | undefined): "easy" | "normal" | "brief" {
+function normalizeLearningLevel(value: string | null | undefined): "beginner" | "intermediate" | "advanced" {
   switch (value) {
     case "beginner":
     case "easy":
-      return "easy";
+      return "beginner";
     case "advanced":
     case "brief":
-      return "brief";
+      return "advanced";
     case "intermediate":
     case "normal":
     default:
-      return "normal";
+      return "intermediate";
   }
 }
 
@@ -154,7 +154,7 @@ export default function StudentWorkspacePage() {
   }, [selectedSource?.id]);
 
   const [selectedLLM, setSelectedLLM] = useState('claude-haiku-4-5-20251001');
-  const [selectedDifficulty, setSelectedDifficulty] = useState<'easy' | 'normal' | 'brief'>('normal');
+  const [selectedDifficulty, setSelectedDifficulty] = useState<'beginner' | 'intermediate' | 'advanced'>('intermediate');
   const [prefsHydrated, setPrefsHydrated] = useState(false);
   useEffect(() => {
     try {
@@ -715,9 +715,9 @@ export default function StudentWorkspacePage() {
       </div>
       <div className="relative">
         <select value={selectedDifficulty} onChange={(e) => setSelectedDifficulty(normalizeLearningLevel(e.target.value))} className="appearance-none bg-[#f8f9fb] border border-[#e7e9ed] hover:bg-[#e7e9ed] text-[#414751] text-[12px] font-medium pl-4 pr-8 py-1.5 rounded-full focus:outline-none focus:ring-2 focus:ring-[#155dfc]/20 transition-colors cursor-pointer shadow-sm">
-          <option value="easy">쉽게</option>
-          <option value="normal">보통</option>
-          <option value="brief">간략하게</option>
+          <option value="beginner">쉽게</option>
+          <option value="intermediate">보통</option>
+          <option value="advanced">간략하게</option>
         </select>
         <ChevronDown className="w-3.5 h-3.5 text-[#99a1af] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
       </div>

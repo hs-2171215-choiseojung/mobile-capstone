@@ -127,13 +127,7 @@ def _call_llm(
         if system:
             kwargs["system"] = system
         resp = client.messages.create(**kwargs)
-        text = resp.content[0].text
-        if json_mode:
-            # Claude가 ```json ... ``` 코드블록으로 감싸는 경우 제거
-            import re as _re
-            text = _re.sub(r"^```(?:json)?\s*", "", text.strip())
-            text = _re.sub(r"\s*```$", "", text.strip())
-        return text
+        return resp.content[0].text
     else:
         oai = OpenAI(api_key=settings.OPENAI_API_KEY)
         create_kwargs: dict = {
@@ -3152,16 +3146,16 @@ def _get_youtube_doc_ids(doc_ids: list[str]) -> list[str]:
 # ─────────────────────────────────────────────
 
 LEVEL_PROMPTS = {
-    "easy": (
+    "beginner": (
         "반드시 쉬운 설명 모드로 답변하세요. 어려운 용어는 일상적인 말로 풀어쓰고, "
         "필요하면 용어 뜻을 한 번 더 짧게 설명하세요. 답변 길이는 보통 5~8문장 또는 3~4개 불릿으로 유지하고, "
         "가능하면 짧은 예시를 1개 포함하세요. 전문적인 배경지식을 이미 안다고 가정하지 마세요."
     ),
-    "normal": (
+    "intermediate": (
         "반드시 보통 설명 모드로 답변하세요. 핵심 개념을 중심으로 자세함과 간결함의 균형을 맞춰 설명하세요. "
         "답변 길이는 보통 4~7문장 또는 2~4개 불릿으로 유지하고, 필요한 경우에만 예시를 덧붙이세요."
     ),
-    "brief": (
+    "advanced": (
         "반드시 간략 설명 모드로 답변하세요. 가장 중요한 내용만 추려서 짧고 압축적으로 답하세요. "
         "가능하면 2~4문장 또는 2~3개 불릿 이내로 끝내고, 배경 설명·부연 설명·예시는 꼭 필요할 때만 최소화하세요."
     ),
@@ -3170,14 +3164,14 @@ LEVEL_PROMPTS = {
 
 def normalize_learning_level(level: str | None) -> str:
     mapping = {
-        "beginner": "easy",
-        "easy": "easy",
-        "intermediate": "normal",
-        "normal": "normal",
-        "advanced": "brief",
-        "brief": "brief",
+        "beginner": "beginner",
+        "easy": "beginner",
+        "intermediate": "intermediate",
+        "normal": "intermediate",
+        "advanced": "advanced",
+        "brief": "advanced",
     }
-    return mapping.get((level or "").strip().lower(), "normal")
+    return mapping.get((level or "").strip().lower(), "intermediate")
 
 
 SUGGESTION_BLOCK = """【추천 질문 — 필수 출력】
@@ -3401,7 +3395,7 @@ def chat_with_docs(
     doc_ids: list[str],
     question: str,
     model: str = _DEFAULT_MODEL,
-    level: str = "normal",
+    level: str = "intermediate",
     chat_history: list | None = None,
     current_slide: int | None = None,
     stream: bool = False,
@@ -3412,8 +3406,7 @@ def chat_with_docs(
     import base64
 
     is_multi = len(doc_ids) > 1
-    normalized_level = normalize_learning_level(level)
-    level_hint = LEVEL_PROMPTS.get(normalized_level, LEVEL_PROMPTS["normal"])
+    level_hint = LEVEL_PROMPTS.get(level, LEVEL_PROMPTS["intermediate"])
     filename_map = _get_doc_filename_map(doc_ids)
     doc_filenames = [filename_map.get(doc_id, doc_id) for doc_id in doc_ids]
 
@@ -4192,7 +4185,7 @@ def generate_content(
     doc_ids: list[str],
     gen_type: str,
     model: str = _DEFAULT_MODEL,
-    level: str = "normal",
+    level: str = "intermediate",
     quiz_count: int = 5,
     topic: str = "",
     difficulty: str = "intermediate",
@@ -4205,22 +4198,22 @@ def generate_content(
     context = _get_context(doc_ids, max_chars=10000)
 
     normalized_level = normalize_learning_level(level)
-    level_map = {"easy": "쉽게", "normal": "보통", "brief": "간략하게"}
+    level_map = {"beginner": "쉽게", "intermediate": "보통", "advanced": "간략하게"}
     difficulty_map = {"easy": "쉬운", "intermediate": "중간", "hard": "어려운"}
-    level_ko = level_map.get(normalized_level, "보통")
+    language_map = {"ko": "한국어", "en": "영어", "ja": "일본어", "zh": "중국어"}
+    tone_map = {"formal": "격식체", "casual": "친근한 구어체", "academic": "학술적 문체"}
+    level_ko = level_map.get(level, "보통")
     difficulty_ko = difficulty_map.get(difficulty, "중간")
+    language_ko = language_map.get(language, "한국어")
+    tone_ko = tone_map.get(tone, "격식체")
 
-    lang_map = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
-    tone_map = {"formal": "격식체(공식적이고 정중한 문체)", "casual": "구어체(자연스럽고 친근한 문체)", "academic": "학술체(논문·전문 자료 수준의 문체)"}
-    lang_label = lang_map.get(language, "한국어")
-    tone_label = tone_map.get(tone, "격식체(공식적이고 정중한 문체)")
-
-    instructions_block = f"\n추가 지시사항: {instructions.strip()}" if instructions and instructions.strip() else ""
+    instructions_block = f"\n추가 지시사항: {instructions}" if instructions else ""
 
     if gen_type == "summary":
         prompt = f"""아래는 학습 문서의 내용입니다.
-이 내용을 바탕으로 핵심 개념과 주요 내용을 {level_ko} 수준에 맞게 요약해주세요.
-마크다운 형식으로 작성해주세요.
+이 내용을 바탕으로 핵심 개념과 주요 내용을 {level_ko} 수준에 맞게 {language_ko}로 요약해주세요.
+문체는 {tone_ko}로 작성해주세요.
+마크다운 형식으로 작성해주세요.{instructions_block}
 
 문서 내용:
 {context}"""
@@ -4229,77 +4222,23 @@ def generate_content(
         topic_instruction = (
             f"특히 '{topic}' 주제와 관련된 내용으로 퀴즈를 만들어주세요." if topic else ""
         )
+
         if quiz_style == "ox":
-            prompt = f"""아래는 학습 문서의 내용입니다.
-이 내용을 바탕으로 {difficulty_ko} 난이도의 O/X 참/거짓 퀴즈 {quiz_count}개를 만들어주세요.
-응답 언어: {lang_label} / 문체: {tone_label}{instructions_block}
-{topic_instruction}
-
-반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 절대 포함하지 마세요:
-
-{{
-  "title": "문서 핵심 내용을 반영한 구체적인 퀴즈 제목",
-  "questions": [
-    {{
-      "id": 1,
-      "type": "ox",
-      "question": "O 또는 X로 답할 수 있는 참/거짓 문장",
-      "options": ["O", "X"],
-      "answerIndex": 0,
-      "answerText": "",
-      "hint": "정답 방향만 알려주는 힌트 (정답 직접 언급 금지)",
-      "explanation": "정답인 이유를 설명하는 해설"
-    }}
-  ]
-}}
-
-규칙:
-- question은 반드시 O(참) 또는 X(거짓)로만 답할 수 있는 완전한 문장
-- answerIndex: 0이면 O(참)이 정답, 1이면 X(거짓)이 정답
-- hint는 정답을 직접 언급하지 말 것
-- questions 배열에 정확히 {quiz_count}개의 항목 포함
-- title은 문서 내용을 구체적으로 반영할 것
-
-문서 내용:
-{context}"""
+            style_instruction = "O/X 퀴즈로 만들어주세요. 각 문제는 O 또는 X로만 답할 수 있는 참/거짓 형식이어야 합니다."
+            options_format = '"options": ["O", "X"]'
+            options_rule = "- options는 반드시 [\"O\", \"X\"] 두 개"
         elif quiz_style == "short_answer":
-            prompt = f"""아래는 학습 문서의 내용입니다.
-이 내용을 바탕으로 {difficulty_ko} 난이도의 단답형 퀴즈 {quiz_count}개를 만들어주세요.
-응답 언어: {lang_label} / 문체: {tone_label}{instructions_block}
-{topic_instruction}
-
-반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 절대 포함하지 마세요:
-
-{{
-  "title": "문서 핵심 내용을 반영한 구체적인 퀴즈 제목",
-  "questions": [
-    {{
-      "id": 1,
-      "type": "short_answer",
-      "question": "질문 내용",
-      "options": [],
-      "answerIndex": -1,
-      "answerText": "핵심 키워드 위주의 간결한 정답 (1~5단어)",
-      "hint": "정답 방향만 알려주는 힌트 (정답 직접 언급 금지)",
-      "explanation": "정답인 이유를 설명하는 해설"
-    }}
-  ]
-}}
-
-규칙:
-- answerText는 1~5단어의 간결한 핵심 키워드
-- options는 빈 배열 [], answerIndex는 -1 고정
-- hint는 정답을 직접 언급하지 말 것
-- questions 배열에 정확히 {quiz_count}개의 항목 포함
-- title은 문서 내용을 구체적으로 반영할 것
-
-문서 내용:
-{context}"""
+            style_instruction = "주관식 단답형 퀴즈로 만들어주세요. 각 문제의 정답은 단어 또는 짧은 구로 답할 수 있어야 합니다."
+            options_format = '"options": []'
+            options_rule = "- options는 빈 배열 [], answerIndex 대신 answerText(정답 문자열) 사용"
         else:
-            prompt = f"""아래는 학습 문서의 내용입니다.
-이 내용을 바탕으로 {difficulty_ko} 난이도의 4지선다 퀴즈 {quiz_count}개를 만들어주세요.
-응답 언어: {lang_label} / 문체: {tone_label}{instructions_block}
-{topic_instruction}
+            style_instruction = "4지선다 객관식 퀴즈로 만들어주세요."
+            options_format = '"options": ["선택지1", "선택지2", "선택지3", "선택지4"]'
+            options_rule = "- options는 반드시 4개"
+
+        prompt = f"""아래는 학습 문서의 내용입니다.
+이 내용을 바탕으로 {difficulty_ko} 난이도의 {style_instruction} 퀴즈 {quiz_count}개를 {language_ko}로 만들어주세요.
+{topic_instruction}{instructions_block}
 
 반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 절대 포함하지 마세요:
 
@@ -4308,11 +4247,9 @@ def generate_content(
   "questions": [
     {{
       "id": 1,
-      "type": "multiple_choice",
       "question": "질문 내용",
-      "options": ["선택지1", "선택지2", "선택지3", "선택지4"],
+      {options_format},
       "answerIndex": 0,
-      "answerText": "",
       "hint": "정답을 직접 언급하지 않고 방향만 제시하는 힌트",
       "explanation": "정답인 이유를 설명하는 해설"
     }}
@@ -4321,7 +4258,7 @@ def generate_content(
 
 규칙:
 - answerIndex는 정답 options의 0부터 시작하는 인덱스
-- options는 반드시 4개
+{options_rule}
 - hint는 정답을 직접 언급하지 말 것
 - questions 배열에 정확히 {quiz_count}개의 항목 포함
 - title은 문서 내용을 구체적으로 반영할 것
@@ -4331,8 +4268,9 @@ def generate_content(
 
     elif gen_type == "plan":
         prompt = f"""아래는 학습 문서의 내용입니다.
-이 내용을 바탕으로 {level_ko} 학습자를 위한 주간 학습 계획을 작성해주세요.
-마크다운 형식으로 Day별 목표와 학습 내용을 구체적으로 작성해주세요.
+이 내용을 바탕으로 {level_ko} 학습자를 위한 주간 학습 계획을 {language_ko}로 작성해주세요.
+문체는 {tone_ko}로 작성해주세요.
+마크다운 형식으로 Day별 목표와 학습 내용을 구체적으로 작성해주세요.{instructions_block}
 
 문서 내용:
 {context}"""
@@ -4417,8 +4355,8 @@ def generate_audio_overview(
         for l in lines
     )
 
-    # Host A → sarah(여성), Host B → adam(남성) ElevenLabs 음성 (무료 플랜 호환)
-    voice_map = {"A": "sarah", "B": "adam"}
+    # Host A → sarah(여성), Host B → josh(남성) ElevenLabs 음성
+    voice_map = {"A": "sarah", "B": "josh"}
     audio_parts: list[bytes] = []
     for line in lines:
         text = line.get("text", "").strip()
@@ -4498,7 +4436,7 @@ def generate_flashcards(
         (cards_list, title)
         cards_list: [{"front": "용어/개념", "back": "설명", "hint": "힌트(선택)"}]
     """
-    count_map = {"fewer": 10, "standard": 20, "more": 40}
+    count_map = {"fewer": 5, "standard": 10, "more": 15}
     card_count = count_map.get(count, 20)
 
     difficulty_map = {"easy": "쉬운", "intermediate": "보통", "hard": "어려운"}
@@ -5329,16 +5267,7 @@ JSON 형식으로만 응답:
             claude_resp = claude_client.messages.create(
                 model=model,
                 max_tokens=512,
-                system=(
-                    "당신은 학습 내용을 깊이 이해하도록 돕는 전문 교육 튜터입니다. "
-                    "자료의 실제 내용에 기반한 구체적이고 통찰력 있는 질문을 생성합니다. "
-                    "반드시 JSON 형식으로만 응답하세요. "
-                    "질문은 짧고 간결하게 작성하세요. "
-                    "각 질문은 가능하면 15자 안팎의 짧은 한 문장으로 만들고, "
-                    "배경 설명이나 조건을 길게 덧붙이지 말고 핵심만 물으세요. "
-                    "한 질문에 여러 조건을 과도하게 묶지 마세요."
-                    "너무 세부적인 조건 하나를 파고들기보다, 전체 흐름·핵심 차이·실제 활용처럼 범위를 넓혀 질문하세요. "
-                ),
+                system="당신은 학습 내용을 깊이 이해하도록 돕는 전문 교육 튜터입니다. 자료의 실제 내용에 기반한 구체적이고 통찰력 있는 질문을 생성합니다. 반드시 JSON 형식으로만 응답하세요.",
                 messages=[{"role": "user", "content": anthropic_content}],
             )
             raw = claude_resp.content[0].text if claude_resp.content else "{}"

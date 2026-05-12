@@ -61,7 +61,7 @@ class GenerateRequest(BaseModel):
     doc_ids: Optional[list[str]] = None
     type: str  # "summary" | "quiz" | "plan"
     model: Optional[str] = "gpt-4o"
-    level: Optional[str] = "normal"
+    level: Optional[str] = "intermediate"
     quiz_count: Optional[int] = 5
     topic: Optional[str] = None
     difficulty: Optional[str] = "intermediate"
@@ -98,7 +98,7 @@ async def generate(
             doc_ids=doc_ids,
             gen_type=req.type,
             model=req.model or "gpt-4o",
-            level=req.level or "normal",
+            level=req.level or "intermediate",
             quiz_count=req.quiz_count or 5,
             topic=req.topic or "",
             difficulty=req.difficulty or "intermediate",

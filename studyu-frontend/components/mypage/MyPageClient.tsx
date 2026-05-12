@@ -33,25 +33,25 @@ const MODEL_OPTIONS = [
   { value: "gpt-4o", label: "GPT-4o · 높은 품질" },
 ];
 
-function normalizeLearningLevel(value: string | null | undefined): "easy" | "normal" | "brief" {
+function normalizeLearningLevel(value: string | null | undefined): "beginner" | "intermediate" | "advanced" {
   switch (value) {
     case "beginner":
     case "easy":
-      return "easy";
+      return "beginner";
     case "advanced":
     case "brief":
-      return "brief";
+      return "advanced";
     case "intermediate":
     case "normal":
     default:
-      return "normal";
+      return "intermediate";
   }
 }
 
-const LEVEL_OPTIONS = [
-  { value: "easy", label: "쉽게" },
-  { value: "normal", label: "보통" },
-  { value: "brief", label: "간략하게" },
+const LEVEL_OPTIONS: { value: "beginner" | "intermediate" | "advanced"; label: string }[] = [
+  { value: "beginner", label: "쉽게" },
+  { value: "intermediate", label: "보통" },
+  { value: "advanced", label: "간략하게" },
 ];
 
 const PLAYBACK_OPTIONS = ["0.75", "1", "1.25", "1.5", "1.75", "2"];
@@ -100,14 +100,14 @@ export default function MyPageClient({ email, createdAt, displayName, avatarUrl,
   const [pwMsg, setPwMsg] = useState<Status>(null);
 
   // ── 학습 기본값 (localStorage) ──────────────────
-  const [level, setLevel] = useState<"easy" | "normal" | "brief">("normal");
+  const [level, setLevel] = useState<"beginner" | "intermediate" | "advanced">("intermediate");
   const [voice, setVoice] = useState("sarah");
   const [model, setModel] = useState("claude-haiku-4-5-20251001");
   const [playbackRate, setPlaybackRate] = useState("1");
   const [settingsMsg, setSettingsMsg] = useState<Status>(null);
 
   useEffect(() => {
-    setLevel(normalizeLearningLevel(readLS("studyu_default_level", "normal")));
+    setLevel(normalizeLearningLevel(readLS("studyu_default_level", "intermediate")));
     setVoice(readLS("studyu_default_voice", "sarah"));
     setModel(readLS("studyu_default_model", "claude-haiku-4-5-20251001"));
     setPlaybackRate(readLS("studyu_playback_rate", "1"));
