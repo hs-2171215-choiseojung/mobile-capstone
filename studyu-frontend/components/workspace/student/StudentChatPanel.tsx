@@ -289,6 +289,10 @@ function normalizeInlineListMarkers(content: string) {
     .replace(/([.!?])\s+(\d+\.\s+(?=\S))/g, "$1\n$2");
 }
 
+function containsMarkdownTable(content: string) {
+  return /(^|\n)\|.*\|\n\|[-:\s|]+\|/m.test(content);
+}
+
 const mdContentRegex = /^[ \t]*[#\-*>|]|^[ \t]*\d+\. |[가-힣]/;
 function fixMarkdownCodeFences(text: string): string {
   const lines = text.split('\n');
@@ -905,6 +909,7 @@ export function StudentChatPanel({
     // 스트리밍 AI 메시지 플레이스홀더 추가
     const aiMsgIndex = -1; // setMessages 후 계산
     let streamingContent = '';
+    let sawRewrite = false;
 
     const CATS: Array<"이해" | "분석" | "적용"> = ["이해", "분석", "적용"];
     const applyNewSuggestions = (newQuestions: string[]) => {
@@ -990,6 +995,7 @@ export function StudentChatPanel({
                 return next;
               });
             } else if (parsed.rewrite) {
+              sawRewrite = true;
               streamingContent = parsed.rewrite;
               setMessages(prev => {
                 const next = [...prev];
@@ -1035,11 +1041,15 @@ export function StudentChatPanel({
         finalReferences = fallbackData.references ?? [];
       }
 
-      const normalizedAnswer = normalizeInlineListMarkers(
-        normalizeDetachedPageRefs(
-          collapseNearbyTimestampLists(streamingContent)
-        )
-      );
+      const normalizedAnswer = containsMarkdownTable(streamingContent)
+        ? streamingContent
+        : sawRewrite
+        ? streamingContent
+        : normalizeInlineListMarkers(
+            normalizeDetachedPageRefs(
+              collapseNearbyTimestampLists(streamingContent)
+            )
+          );
 
       // 스트리밍 완료 후 메타데이터(sources, references) 반영
       setMessages(prev => {
