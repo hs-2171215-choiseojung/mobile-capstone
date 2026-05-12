@@ -561,7 +561,11 @@ export function StudentChatPanel({
   // ── 음성 재생 상태 ────────────────────────────────────────
   const [voiceMode,        setVoiceMode]        = useState(false);
   const [podcastMode,      setPodcastMode]      = useState(false);
-  const [selectedVoice,    setSelectedVoice]    = useState<VoiceKey>("sarah");
+  const [selectedVoice,    setSelectedVoice]    = useState<VoiceKey>(() =>
+    typeof window !== 'undefined'
+      ? ((localStorage.getItem('studyu_default_voice') as VoiceKey) || 'sarah')
+      : 'sarah'
+  );
   const [voiceDropdownOpen, setVoiceDropdownOpen] = useState(false);
   const voiceDropdownRef = useRef<HTMLDivElement>(null);
   const [playbackRate,     setPlaybackRate]     = useState<number>(() =>
@@ -1359,7 +1363,11 @@ export function StudentChatPanel({
                   {VOICES.map(v => (
                     <button
                       key={v.key}
-                      onClick={() => { setSelectedVoice(v.key); setVoiceDropdownOpen(false); }}
+                      onClick={() => {
+                        setSelectedVoice(v.key);
+                        try { localStorage.setItem('studyu_default_voice', v.key); } catch { /* ignore */ }
+                        setVoiceDropdownOpen(false);
+                      }}
                       className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-[#f8f9fb] ${
                         selectedVoice === v.key ? 'bg-blue-50' : ''
                       }`}

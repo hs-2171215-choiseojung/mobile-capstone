@@ -92,7 +92,7 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
         const supabase = createClient();
         const { data } = await supabase.auth.getSession();
         const token = data.session?.access_token;
-        if (!token) { setError("로그인이 필요합니다."); return; }
+        if (!token) { setError("로그인이 필요합니다."); setLoading(false); return; }
 
         const res = await fetch(`${API}/api/documents/${docId}/slides`, {
           headers: { Authorization: `Bearer ${token}` },
@@ -100,6 +100,7 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
           setError(d.detail || "슬라이드를 불러올 수 없습니다.");
+          setLoading(false);
           return;
         }
         const data2 = await res.json();
@@ -284,8 +285,14 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
 
   if (error) {
     return (
-      <div className="h-full flex items-center justify-center text-gray-400 text-sm text-center px-6">
-        {error}
+      <div className="h-full flex flex-col items-center justify-center gap-3 px-8 text-center">
+        <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center">
+          <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+        </div>
+        <p className="text-sm font-medium text-gray-700">문제가 생겨 문서 보기를 할 수 없습니다</p>
+        <p className="text-xs text-gray-400 leading-relaxed">{error}</p>
       </div>
     );
   }
