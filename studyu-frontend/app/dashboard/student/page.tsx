@@ -65,13 +65,13 @@ export default async function StudentDashboardPage() {
     )
 
     if (!hasInstructorNames) {
-      const ownerIds = [
-        ...new Set(
+      const ownerIds = Array.from(
+        new Set(
           enrolledNotebooks
             .map((notebook) => notebook?.user_id)
             .filter((id): id is string => typeof id === 'string' && id.length > 0)
-        ),
-      ]
+        )
+      )
 
       if (ownerIds.length > 0) {
         const { data: instructors } = await supabase

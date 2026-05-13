@@ -1,0 +1,205 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main, firebase-deploy]
+  workflow_dispatch:
+    inputs:
+      force_backend:
+        description: "Force deploy backend"
+        type: boolean
+        default: false
+      force_frontend:
+        description: "Force deploy frontend"
+        type: boolean
+        default: false
+      force_hosting:
+        description: "Force deploy hosting"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
+      hosting: ${{ steps.filter.outputs.hosting }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'studyu-frontend/**'
+            backend:
+              - 'studyu-backend/**'
+            hosting:
+              - 'firebase.json'
+              - '.firebaserc'
+
+  deploy-backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' || inputs.force_backend == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          token_format: "access_token"
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Login to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.GCP_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Build & Push image
+        working-directory: studyu-backend
+        run: |
+          IMAGE="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.AR_REPO }}/backend:${{ github.sha }}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Debug Secrets (safe)
+        run: |
+          echo "SUPABASE_URL set? $([[ -n "${{ secrets.SUPABASE_URL }}" ]] && echo YES || echo NO)"
+          echo "SUPABASE_ANON_KEY set? $([[ -n "${{ secrets.SUPABASE_ANON_KEY }}" ]] && echo YES || echo NO)"
+          echo "SUPABASE_SERVICE_ROLE_KEY set? $([[ -n "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]] && echo YES || echo NO)"
+
+          echo "Lengths:"
+          echo "URL length: ${#SUPABASE_URL}"
+          echo "ANON length: ${#SUPABASE_ANON_KEY}"
+          echo "SERVICE length: ${#SUPABASE_SERVICE_ROLE_KEY}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      - name: Create env file
+        run: |
+          cat <<-EOF > env.yaml
+          SUPABASE_URL: "${{ secrets.SUPABASE_URL }}"
+          SUPABASE_ANON_KEY: "${{ secrets.SUPABASE_ANON_KEY }}"
+          SUPABASE_SERVICE_ROLE_KEY: "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+          OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}"
+          FRONTEND_URL: "${{ secrets.FRONTEND_URL }}"
+          EOF
+
+      - name: Show env.yaml
+        run: cat -A env.yaml
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy studyu-backend \
+            --image="$IMAGE" \
+            --region=${{ vars.GCP_REGION }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=8000 \
+            --env-vars-file=env.yaml
+
+      - name: Check Cloud Run env
+        run: |
+          gcloud run services describe studyu-backend \
+            --region=${{ vars.GCP_REGION }} \
+            --format="yaml(spec.template.spec.containers[0].env)"
+
+  deploy-frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true' || inputs.force_frontend == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          token_format: "access_token"
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Login to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.GCP_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Build & Push image
+        working-directory: studyu-frontend
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SITE_URL: ${{ secrets.FRONTEND_URL }}
+          NEXT_PUBLIC_API_URL: ${{ secrets.BACKEND_URL }}
+        run: |
+          IMAGE="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.AR_REPO }}/frontend:${{ github.sha }}"
+          docker build \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL="$NEXT_PUBLIC_SUPABASE_URL" \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY="$NEXT_PUBLIC_SUPABASE_ANON_KEY" \
+            --build-arg NEXT_PUBLIC_SITE_URL="$NEXT_PUBLIC_SITE_URL" \
+            --build-arg NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
+            -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy studyu-frontend \
+            --image="$IMAGE" \
+            --region=${{ vars.GCP_REGION }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=3000
+
+  deploy-hosting:
+    needs: [changes, deploy-frontend, deploy-backend]
+    if: |
+      always() &&
+      (needs.changes.outputs.hosting == 'true' ||
+       needs.changes.outputs.frontend == 'true' ||
+       needs.changes.outputs.backend == 'true' ||
+       inputs.force_hosting == true) &&
+      (needs.deploy-frontend.result == 'success' || needs.deploy-frontend.result == 'skipped') &&
+      (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          token_format: "access_token"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install -g firebase-tools
+
+      - name: Deploy Firebase Hosting
+        env:
+          FIREBASE_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          firebase deploy --only hosting \
+            --project ${{ vars.GCP_PROJECT_ID }} \
+            --token "$FIREBASE_TOKEN" \
+            --non-interactive
