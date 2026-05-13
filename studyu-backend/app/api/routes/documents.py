@@ -608,16 +608,14 @@ def _friendly_media_upload_error(ext: str, error: Exception) -> str:
     raw = str(error)
     lowered = raw.lower()
 
-    if "maximum content size limit" in lowered or "413" in lowered or "25mb" in lowered:
-        return "오디오/비디오 파일은 25MB 이하만 업로드할 수 있습니다."
     if "invalid file format" in lowered or "지원하지 않는 파일 형식" in raw:
         return (
-            "지원하지 않는 오디오/비디오 파일 형식입니다. "
-            "MP4, MOV, AVI, MKV, WEBM, MP3, M4A 파일만 업로드해주세요."
+            "오디오/비디오 파일을 읽지 못했습니다. "
+            "파일이 손상되었거나 지원하지 않는 코덱일 수 있습니다."
         )
     return (
         f"{ext.upper()} 파일을 처리하지 못했습니다. "
-        "파일 형식이나 인코딩을 확인한 뒤 다시 시도해주세요."
+        "파일이 손상되었거나 인코딩 문제일 수 있으니 확인 후 다시 시도해 주세요."
     )
 
 
@@ -625,9 +623,6 @@ def _friendly_url_ingest_error(url: str, error: Exception) -> str:
     raw = str(error)
     lowered = raw.lower()
     is_youtube = _extract_youtube_video_id(url) is not None
-    parsed = urlparse(url)
-    ext = parsed.path.lower().rsplit(".", 1)[-1] if "." in parsed.path else ""
-    is_media_url = ext in VIDEO_AUDIO_EXTENSIONS
 
     if is_youtube:
         if "자막이 없습니다" in raw:
@@ -636,17 +631,77 @@ def _friendly_url_ingest_error(url: str, error: Exception) -> str:
             return "이 유튜브 영상은 자막이 비활성화되어 있어 불러올 수 없습니다."
         return "유튜브 자막을 불러오지 못했습니다. 자막이 공개된 영상인지 확인한 뒤 다시 시도해주세요."
 
-    if is_media_url:
-        if "maximum content size limit" in lowered or "413" in lowered or "25mb" in lowered:
-            return "오디오/비디오 파일은 25MB 이하만 처리할 수 있습니다."
-        if "invalid file format" in lowered or "지원하지 않는 파일 형식" in raw:
-            return (
-                "지원하지 않는 오디오/비디오 형식입니다. "
-                "MP4, MOV, AVI, MKV, WEBM, MP3, M4A 형식만 사용할 수 있습니다."
-            )
+    if "maximum content size limit" in lowered or "413" in lowered or "25mb" in lowered:
+        return "오디오/비디오 파일은 25MB 이하만 처리할 수 있습니다."
+    if "invalid file format" in lowered or "지원하지 않는 파일 형식" in raw:
+        return (
+            "지원하지 않는 오디오/비디오 형식입니다. "
+            "MP4, MOV, AVI, MKV, WEBM, MP3, M4A 형식만 사용할 수 있습니다."
+        )
+    media_error_markers_lower = (
+        "media url",
+        "transcription",
+    )
+    media_error_markers_raw = (
+        "미디어 URL",
+        "오디오/비디오 URL",
+        "전사",
+        "음성 내용",
+    )
+    if any(marker in lowered for marker in media_error_markers_lower) or any(marker in raw for marker in media_error_markers_raw):
         return "오디오/비디오 파일을 처리하지 못했습니다. 파일 형식이나 인코딩을 확인한 뒤 다시 시도해주세요."
 
     return raw
+
+
+def _friendly_document_upload_error(ext: str, error: Exception) -> tuple[int, str]:
+    raw = str(error)
+    lowered = raw.lower()
+
+    if ext in VIDEO_AUDIO_EXTENSIONS:
+        return 400, _friendly_media_upload_error(ext, error)
+
+    if ext == "pdf":
+        if "broken document" in lowered or "cannot open" in lowered:
+            return 400, "PDF 파일이 손상되었거나 열 수 없는 형식입니다."
+        if "password" in lowered or "encrypt" in lowered:
+            return 400, "암호로 보호된 PDF는 업로드할 수 없습니다. 보안 해제 후 다시 시도해주세요."
+        return 400, "PDF 내용을 읽지 못했습니다. 암호화되었거나 손상된 파일인지 확인해주세요."
+
+    if ext == "docx":
+        if "file is not a zip file" in lowered or "package not found" in lowered:
+            return 400, "DOCX 파일 형식이 올바르지 않습니다. 실제 Word 문서인지 확인해주세요."
+        if "badzipfile" in lowered or "corrupt" in lowered:
+            return 400, "DOCX 파일이 손상되어 문서 내용을 읽을 수 없습니다."
+        return 400, "DOCX 문서를 분석하지 못했습니다. 손상되었거나 지원하지 않는 구성 요소가 포함되어 있을 수 있습니다."
+
+    if ext in {"ppt", "pptx"}:
+        if "file is not a zip file" in lowered:
+            return 400, "PPT/PPTX 파일 형식이 올바르지 않습니다. 실제 PowerPoint 문서인지 확인해주세요."
+        if "presentation" in lowered or "powerpoint" in lowered or "corrupt" in lowered:
+            return 400, "PPT/PPTX 파일이 손상되었거나 슬라이드 구조를 읽을 수 없습니다."
+        return 400, "PPT/PPTX 파일을 분석하지 못했습니다. 손상된 파일인지 확인해주세요."
+
+    if ext == "hwp":
+        if "hwp" in lowered or "ole" in lowered:
+            return 400, "HWP 파일을 읽을 수 없습니다. 손상되었거나 지원하지 않는 형식일 수 있습니다."
+        return 400, "HWP 문서 분석에 실패했습니다."
+
+    if ext == "hwpx":
+        if "file is not a zip file" in lowered or "xml" in lowered:
+            return 400, "HWPX 내부 문서 구조를 읽을 수 없습니다. 손상된 파일인지 확인해주세요."
+        if "corrupt" in lowered:
+            return 400, "HWPX 파일이 손상되어 내용을 추출할 수 없습니다."
+        return 400, "HWPX 문서 분석에 실패했습니다."
+
+    if ext in {"jpg", "jpeg", "png", "gif", "webp"}:
+        if "이미지 압축 실패" in raw:
+            return 400, "이미지 파일 압축에 실패했습니다. 손상된 이미지인지 확인해주세요."
+        if "cannot identify image file" in lowered or "unidentifiedimageerror" in lowered:
+            return 400, "이미지 파일 형식이 올바르지 않거나 손상되었습니다."
+        return 400, "이미지 분석에 실패했습니다. 이미지 내용을 읽을 수 없는 파일일 수 있습니다."
+
+    return 500, "파일 처리 중 오류가 발생했습니다. 파일 형식과 내용을 확인한 뒤 다시 시도해주세요."
 
 
 def _ensure_youtube_document_chunks(document_id: str, storage_path: str) -> None:
@@ -813,9 +868,8 @@ async def upload_document(
         import traceback
         traceback.print_exc()
         supabase_admin.table("documents").update({"status": "error"}).eq("id", doc_id).execute()
-        if ext in VIDEO_AUDIO_EXTENSIONS:
-            raise HTTPException(status_code=400, detail=_friendly_media_upload_error(ext, e))
-        raise HTTPException(status_code=500, detail=f"파일 파싱 실패: {str(e)}")
+        status_code, detail = _friendly_document_upload_error(ext, e)
+        raise HTTPException(status_code=status_code, detail=detail)
 
     # 4-B. HWPX 마크다운을 document_chunks 테이블에 chunk_index=-1로 저장
     if ext == "hwpx" and hwpx_markdown_text:
