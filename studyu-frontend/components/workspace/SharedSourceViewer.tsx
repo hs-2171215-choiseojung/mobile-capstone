@@ -137,6 +137,11 @@ export function SharedSourceViewer({
   const [markdownText, setMarkdownText] = useState<string | null>(null);
   const [markdownLoading, setMarkdownLoading] = useState(false);
 
+  const [imgZoom, setImgZoom] = useState(1);
+  const [imgPan, setImgPan] = useState({ x: 0, y: 0 });
+  const imgIsPanning = useRef(false);
+  const imgPanStart = useRef({ mx: 0, my: 0, px: 0, py: 0 });
+
   const videoSectionRef = useRef<HTMLDivElement | null>(null);
   const [videoPaneHeight, setVideoPaneHeight] = useState(420);
   const [activeTab, setActiveTab] = useState<"document" | "text">("document");
@@ -323,6 +328,11 @@ export function SharedSourceViewer({
       setVideoPaneHeight(360);
     }
   }, [isEmbeddableYoutube, source.id]);
+
+  useEffect(() => {
+    setImgZoom(1);
+    setImgPan({ x: 0, y: 0 });
+  }, [source.id]);
 
   // DOCX/HWPX: 마크다운 변환 텍스트 fetch
   useEffect(() => {
@@ -544,9 +554,44 @@ export function SharedSourceViewer({
             </div>
           </div>
         ) : isImage ? (
-          <div className="h-full flex items-center justify-center">
+          <div
+            className="h-full flex items-center justify-center overflow-hidden"
+            style={{ cursor: imgZoom > 1 ? "grab" : "default" }}
+            onWheel={(e) => {
+              e.preventDefault();
+              const delta = e.deltaY > 0 ? -0.1 : 0.1;
+              const next = Math.min(5, Math.max(1, imgZoom + delta));
+              setImgZoom(next);
+              if (next <= 1) setImgPan({ x: 0, y: 0 });
+            }}
+            onMouseDown={(e) => {
+              if (imgZoom <= 1) return;
+              imgIsPanning.current = true;
+              imgPanStart.current = { mx: e.clientX, my: e.clientY, px: imgPan.x, py: imgPan.y };
+            }}
+            onMouseMove={(e) => {
+              if (!imgIsPanning.current) return;
+              setImgPan({
+                x: imgPanStart.current.px + (e.clientX - imgPanStart.current.mx),
+                y: imgPanStart.current.py + (e.clientY - imgPanStart.current.my),
+              });
+            }}
+            onMouseUp={() => { imgIsPanning.current = false; }}
+            onMouseLeave={() => { imgIsPanning.current = false; }}
+          >
+            {imgZoom > 1 && (
+              <div className="absolute top-3 right-3 z-10 bg-black/50 text-white text-xs px-2 py-1 rounded-full pointer-events-none">
+                {Math.round(imgZoom * 100)}%
+              </div>
+            )}
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={mediaUrl} alt={source.filename} className="max-w-full max-h-full object-contain rounded-lg shadow-sm" />
+            <img
+              src={mediaUrl}
+              alt={source.filename}
+              draggable={false}
+              className="max-w-full max-h-full object-contain rounded-lg shadow-sm transition-transform duration-75"
+              style={{ transform: `scale(${imgZoom}) translate(${imgPan.x / imgZoom}px, ${imgPan.y / imgZoom}px)` }}
+            />
           </div>
         ) : isEmbeddableYoutube ? (
           <div ref={videoSectionRef} className="h-full flex flex-col p-4 overflow-hidden">
