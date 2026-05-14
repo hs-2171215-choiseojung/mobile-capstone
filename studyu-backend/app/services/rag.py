@@ -2084,14 +2084,19 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vis
     if ext == "pdf":
         text, page_count = _extract_text_from_pdf(file_bytes, vision_descriptions=pdf_vision or {})
     elif ext == "docx":
+        # DOCX: python-docx로 단락 순회 → w:lastRenderedPageBreak/w:pageBreak 감지해
+        # [페이지 N] 마커를 삽입하면서 텍스트 추출
         text, page_count = _extract_text_from_docx(file_bytes)
     elif ext in ("pptx", "ppt"):
         text, page_count = _extract_text_from_pptx(file_bytes, vision_descriptions=pptx_vision or {})
     elif ext == "hwpx":
+        # HWPX: pyhwpx COM 자동화로 PDF 변환 후 PDF 텍스트 추출 경로 사용 (정확한 페이지 번호)
+        # hwpx_pdf_bytes가 없으면 직접 ZIP+XML 파싱 후 페이지 수 기반 균등 분배 fallback
         if hwpx_pdf_bytes:
             # pyhwpx로 생성된 PDF에서 정확한 페이지별 텍스트 추출
             text, page_count = _extract_text_from_pdf(hwpx_pdf_bytes)
         else:
+            # PDF 변환 실패 시 HWPX ZIP+XML에서 직접 텍스트 추출 (페이지 구분 부정확)
             text, page_count = _extract_text_from_hwpx(file_bytes)
             # PDF 없을 때: 단락을 페이지 수로 균등 분배해 [페이지 N] 마커 삽입
             if hwpx_page_count > 0 and text:
@@ -2108,6 +2113,8 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vis
                 text = "\n\n".join(paged)
                 page_count = hwpx_page_count
     elif ext == "hwp":
+        # HWP 5.x: OLE 바이너리 스트림에서 HWPTAG_PARA_TEXT(rec_type 67) 파싱
+        # 페이지 구분 정보가 없어 page_count=0으로 반환됨
         text, page_count = _extract_text_from_hwp(file_bytes)
     elif ext in IMAGE_EXTENSIONS:
         text, page_count = _extract_text_from_image(file_bytes, filename)
@@ -2165,18 +2172,25 @@ def ingest_document(file_bytes: bytes, doc_id: str, filename: str = "", pptx_vis
                         chunks.append(sub)
     elif ext in ("docx", "hwpx"):
         # DOCX/HWPX: [페이지 N] 마커 기준으로 페이지별 청킹 (PDF와 동일 방식)
+        # - DOCX: python-docx로 페이지 구분자 삽입 후 텍스트 추출
+        # - HWPX: pyhwpx로 PDF 변환 → PDF 텍스트 추출 경로 사용
+
+        # [페이지 N] 마커를 기준으로 텍스트를 페이지 단위로 분리
         page_parts = re.split(r'(?=\[페이지\s*\d+\])', text)
         for part in page_parts:
             part = _hard_sanitize(_sanitize(part)).strip()
             if not part:
                 continue
+            # 페이지 내용이 CHUNK_SIZE*2 이하면 그대로 1청크
             if len(part) <= CHUNK_SIZE * 2:
                 chunks.append(part)
             else:
+                # 페이지가 너무 길면 CHUNK_SIZE 단위로 슬라이딩 윈도우 분할
+                # [페이지 N] 헤더는 모든 서브청크에 유지
                 header_match = re.match(r'(\[페이지\s*\d+\])', part)
                 header = header_match.group(1) + "\n" if header_match else ""
                 body = part[len(header):]
-                step = CHUNK_SIZE - CHUNK_OVERLAP
+                step = CHUNK_SIZE - CHUNK_OVERLAP  # 오버랩을 고려한 슬라이딩 간격
                 for i in range(0, len(body), step):
                     sub = _hard_sanitize(_sanitize(header + body[i: i + CHUNK_SIZE]))
                     if sub.strip():
@@ -3438,10 +3452,14 @@ def chat_with_docs(
         str(doc_meta_map.get(d, {}).get("filename", "")).lower().rsplit(".", 1)[-1] == "pdf"
         for d in doc_ids
     )
+    # DOCX 문서 여부 판별: PDF/PPT/URL이 아닌 .docx 파일이 포함된 경우
+    # → [페이지 N] 마커 기반 인용 방식 사용 (source_chunks 제거)
     is_docx_doc = (not is_url_doc) and (not is_ppt_doc) and (not is_pdf_doc) and any(
         str(doc_meta_map.get(d, {}).get("filename", "")).lower().rsplit(".", 1)[-1] == "docx"
         for d in doc_ids
     )
+    # HWPX/HWP 문서 여부 판별: PDF/PPT/URL/DOCX가 아닌 .hwpx 또는 .hwp 파일이 포함된 경우
+    # → [페이지 N] 마커 기반 인용 방식 사용 (source_chunks 제거)
     is_hwpx_doc = (not is_url_doc) and (not is_ppt_doc) and (not is_pdf_doc) and (not is_docx_doc) and any(
         str(doc_meta_map.get(d, {}).get("filename", "")).lower().rsplit(".", 1)[-1] in ("hwpx", "hwp")
         for d in doc_ids
@@ -3772,7 +3790,16 @@ def chat_with_docs(
 </context>"""
 
     elif is_hwpx_doc:
-        # HWPX 전용 프롬프트 — DOCX와 동일한 [페이지 N] 인용 형식
+        # ──────────────────────────────────────────────────────────────
+        # HWPX / HWP 전용 시스템 프롬프트
+        # - is_hwpx_doc=True일 때 진입 (PDF/PPT/URL/DOCX가 아닌 .hwpx 또는 .hwp 파일)
+        # - HWPX: pyhwpx로 PDF 변환 → [페이지 N] 마커 기반 청킹
+        # - HWP: OLE 바이너리 파싱 → 페이지 구분 없어 문단 기반 청킹
+        # - DOCX 프롬프트와 동일한 [페이지 N] 인용 방식 사용
+        # - hwpx_name: 실제 파일명을 프롬프트에 삽입해 AI가 문서명 인식
+        # - SUGGESTION_BLOCK: 추천 질문 [SUGGESTED_QUESTIONS]...[/SUGGESTED_QUESTIONS] 마커 삽입
+        # - {context}: 청크 검색 결과(RAG)가 삽입되는 자리
+        # ──────────────────────────────────────────────────────────────
         hwpx_name = doc_filenames[0] if doc_filenames else "한글 문서"
         system_msg = f"""당신은 '{hwpx_name}' 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
 
@@ -3800,7 +3827,14 @@ def chat_with_docs(
 </context>"""
 
     elif is_docx_doc:
-        # DOCX 전용 프롬프트 — PDF와 동일한 [페이지 N] 인용 형식
+        # ──────────────────────────────────────────────────────────────
+        # DOCX 전용 시스템 프롬프트
+        # - is_docx_doc=True일 때만 진입 (PDF/PPT/URL/HWPX가 아닌 .docx 파일)
+        # - PDF 프롬프트와 동일한 [페이지 N] 인용 방식 사용
+        # - docx_name: 실제 파일명을 프롬프트에 삽입해 AI가 문서명 인식
+        # - SUGGESTION_BLOCK: 추천 질문 [SUGGESTED_QUESTIONS]...[/SUGGESTED_QUESTIONS] 마커 삽입
+        # - {context}: 청크 검색 결과(RAG)가 삽입되는 자리
+        # ──────────────────────────────────────────────────────────────
         docx_name = doc_filenames[0] if doc_filenames else "Word 문서"
         system_msg = f"""당신은 '{docx_name}' 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
 
