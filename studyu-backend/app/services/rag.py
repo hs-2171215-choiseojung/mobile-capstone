@@ -100,7 +100,17 @@ def _get_embedding_model():
         with _embedding_lock:
             if _embedding_model is None:  # double-checked locking
                 from sentence_transformers import SentenceTransformer
-                _embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+                import os
+                # 로컬 캐시 폴더 사용 (인터넷 없이도 작동)
+                cache_folder = os.path.join(os.path.dirname(__file__), "..", "..", "models")
+                try:
+                    _embedding_model = SentenceTransformer(
+                        "paraphrase-multilingual-MiniLM-L12-v2",
+                        cache_folder=cache_folder
+                    )
+                except Exception as e:
+                    print(f"[warn] 로컬 캐시 로드 실패, 온라인 다운로드 시도: {e}")
+                    _embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
     return _embedding_model
 
 
@@ -2011,7 +2021,7 @@ image_type 선택 기준:
         image_b64=b64,
         mime_type=mime_type,
         prompt=prompt,
-        model="claude-sonnet-4-6",
+        model="gpt-4o",
         json_mode=True,
         max_tokens=2000,
     )
@@ -4283,7 +4293,7 @@ def generate_content(
         model=model,
         temperature=0.4,
         json_mode=(gen_type == "quiz"),
-        max_tokens=4000,
+        max_tokens=8000,
     )
 
 

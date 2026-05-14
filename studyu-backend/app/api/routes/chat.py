@@ -21,7 +21,7 @@ class ChatRequest(BaseModel):
     doc_names: Optional[dict[str, str]] = None
     question: str
     session_id: Optional[str] = None
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     level: Optional[str] = "intermediate"
     current_slide: Optional[int] = None
     asked_questions: Optional[list[str]] = []
@@ -49,7 +49,7 @@ async def chat(
     answer, sources, references, suggested_questions = chat_with_docs(
         doc_ids=doc_ids,
         question=req.question,
-        model=req.model or "claude-haiku-4-5-20251001",
+        model=req.model or "gpt-4o",
         level=req.level or "intermediate",
         chat_history=req.chat_history or [],
         current_slide=req.current_slide,
@@ -77,7 +77,7 @@ async def chat_stream(
     generator, _, _ = chat_with_docs(
         doc_ids=doc_ids,
         question=req.question,
-        model=req.model or "claude-haiku-4-5-20251001",
+        model=req.model or "gpt-4o",
         level=req.level or "intermediate",
         chat_history=req.chat_history or [],
         current_slide=req.current_slide,
@@ -99,7 +99,7 @@ async def chat_stream(
 class SuggestionsRequest(BaseModel):
     doc_ids: list[str]
     asked_questions: list[str] = []
-    model: Optional[str] = "claude-haiku-4-5-20251001"
+    model: Optional[str] = "gpt-4o"
     last_answer: str = ""
 
 
@@ -119,7 +119,7 @@ async def get_suggestions(
     questions = generate_suggestions(
         doc_ids=req.doc_ids,
         asked_questions=req.asked_questions,
-        model=req.model or "claude-haiku-4-5-20251001",
+        model=req.model or "gpt-4o",
         last_answer=req.last_answer,
     )
     return SuggestionsResponse(questions=questions)

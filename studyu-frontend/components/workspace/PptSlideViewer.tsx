@@ -55,7 +55,11 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
   // 설명재생
   const [autoPlaying, setAutoPlaying] = useState(false);
   const [audioLoading, setAudioLoading] = useState(false);
-  const [selectedVoice, setSelectedVoice] = useState<VoiceKey>("sarah");
+  const [selectedVoice, setSelectedVoice] = useState<VoiceKey>(() =>
+    typeof window !== "undefined"
+      ? ((localStorage.getItem("studyu_default_voice") as VoiceKey) || "sarah")
+      : "sarah"
+  );
   const [voiceDropdownOpen, setVoiceDropdownOpen] = useState(false);
   const [playbackRate, setPlaybackRate] = useState<number>(() =>
     typeof window !== "undefined"
