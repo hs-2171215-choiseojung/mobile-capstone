@@ -608,14 +608,24 @@ def _friendly_media_upload_error(ext: str, error: Exception) -> str:
     raw = str(error)
     lowered = raw.lower()
 
-    if "invalid file format" in lowered or "지원하지 않는 파일 형식" in raw:
+    if "maximum content size limit" in lowered or "413" in lowered or "25mb" in lowered:
+        return "오디오/비디오 파일은 25MB 이하만 업로드할 수 있습니다."
+    if "rate limit" in lowered or "rate_limit" in lowered:
+        return "일시적으로 처리 요청이 초과되었습니다. 잠시 후 다시 시도해주세요."
+    if "timeout" in lowered or "timed out" in lowered or "connection" in lowered:
+        return "처리 중 서버 연결이 끊겼습니다. 잠시 후 다시 시도해주세요."
+    if "invalid file format" in lowered or "could not decode" in lowered or "no such file" in lowered:
+        return f"{ext.upper()} 파일이 손상되었거나 재생할 수 없는 파일입니다. 파일이 정상적으로 재생되는지 확인 후 다시 업로드해주세요."
+    if "지원하지 않는 파일 형식" in raw:
+        return "지원하지 않는 오디오/비디오 파일 형식입니다. MP4, MOV, AVI, MKV, WEBM, MP3, M4A 파일만 업로드해주세요."
+    if ext in ("mp3", "m4a"):
         return (
-            "오디오/비디오 파일을 읽지 못했습니다. "
-            "파일이 손상되었거나 지원하지 않는 코덱일 수 있습니다."
+            f"{ext.upper()} 파일을 처리하지 못했습니다. "
+            "파일이 손상되었거나 재생할 수 없는 파일일 수 있습니다. 파일이 정상적으로 재생되는지 확인 후 다시 시도해주세요."
         )
     return (
         f"{ext.upper()} 파일을 처리하지 못했습니다. "
-        "파일이 손상되었거나 인코딩 문제일 수 있으니 확인 후 다시 시도해 주세요."
+        "파일이 손상되었거나 지원하지 않는 코덱일 수 있습니다. MP4 형식으로 변환 후 다시 시도해주세요."
     )
 
 
@@ -741,20 +751,44 @@ async def upload_document(
 
     file_bytes = await file.read()
 
+    # 빈 파일 검사
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="빈 파일입니다. 내용이 있는 파일을 업로드해주세요.")
+
     # 파일 크기 검사
     if ext in VIDEO_AUDIO_EXTENSIONS and len(file_bytes) > MAX_VIDEO_SIZE:
-        raise HTTPException(status_code=400, detail=f"비디오/오디오 파일은 25MB 이하만 가능합니다.")
+        raise HTTPException(status_code=400, detail="비디오/오디오 파일은 25MB 이하만 가능합니다.")
     if len(file_bytes) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="파일 크기는 200MB 이하만 가능합니다.")
+
+    # 중복 업로드 검사
+    try:
+        existing = (
+            supabase_admin.table("documents")
+            .select("id")
+            .eq("notebook_id", notebook_id)
+            .eq("filename", file.filename.replace('\x00', ''))
+            .eq("status", "ready")
+            .execute()
+        )
+        if existing.data:
+            raise HTTPException(status_code=409, detail="같은 이름의 파일이 이미 업로드되어 있습니다. 파일명을 변경하거나 기존 파일을 삭제해주세요.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
 
     # 이미지 파일이 5MB를 초과하면 자동 압축 (Claude Vision API 5MB 제한)
     original_filename = file.filename
     MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB
+    compressed = False
+    original_format: str | None = None
     if ext in {"jpg", "jpeg", "png", "gif", "webp"} and len(file_bytes) > MAX_IMAGE_SIZE:
         try:
             from PIL import Image
             import io as _io
             img = Image.open(_io.BytesIO(file_bytes))
+            img.load()  # 손상 파일 조기 감지
             if img.mode == "RGBA":
                 img = img.convert("RGB")
             compressed_buf = _io.BytesIO()
@@ -769,12 +803,16 @@ async def upload_document(
             file_bytes = compressed_buf.getvalue()
             original_ext = ext
             if ext not in {"jpg", "jpeg"}:
+                original_format = ext.upper()
                 ext = "jpg"
                 file.filename = original_filename.rsplit(".", 1)[0] + ".jpg"
+            compressed = True
             print(f"[Image] 자동 압축 완료: {len(file_bytes)} bytes (원본: {original_ext} → 변환: {ext})")
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"[Image] 압축 실패: {e}")
-            raise HTTPException(status_code=400, detail=f"이미지 압축 실패: {str(e)}")
+            raise HTTPException(status_code=400, detail="이미지 파일을 처리할 수 없습니다. 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.")
 
     doc_id = str(uuid.uuid4())
 
@@ -816,9 +854,7 @@ async def upload_document(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"파일 저장 실패: {str(e)}")
     else:
-        # DOCX·PPTX·HWP 등 오피스 문서는 Storage 저장 없이 텍스트 추출만 진행
         storage_path = ""
-
 
     # 2. documents 테이블에 메타데이터 저장
     try:
@@ -827,7 +863,7 @@ async def upload_document(
             "notebook_id": notebook_id,
             "user_id": user["id"],
             "filename": file.filename.replace('\x00', ''),
-            "file_type": "pdf",  # enum 제약 우회: 실제 형식은 filename에서 판단
+            "file_type": "pdf",
             "file_size": len(file_bytes),
             "storage_path": storage_path,
             "status": "processing",
@@ -837,24 +873,45 @@ async def upload_document(
             supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
         raise HTTPException(status_code=500, detail=f"문서 등록 실패: {str(e)}")
 
+    warnings: list[str] = []
+
     # 3-A. PPT/PPTX: 슬라이드 이미지 생성 + 영상 추출 + Vision AI 분석 (RAG보다 먼저)
     pptx_vision: dict = {}
+    pptx_total_slides: int = 0
     if ext in ("pptx", "ppt"):
-        _, pptx_vision = _generate_and_upload_slides(file_bytes, doc_id)
+        pptx_total_slides, pptx_vision = _generate_and_upload_slides(file_bytes, doc_id)
+        if pptx_total_slides == 0:
+            warnings.append("슬라이드 미리보기를 생성하지 못했습니다. 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.")
+        elif pptx_total_slides > 100:
+            warnings.append(f"슬라이드가 {pptx_total_slides}장으로 많아 일부만 표시될 수 있습니다.")
 
     # 3-A2. DOCX: 페이지 이미지 생성 (LibreOffice PDF 변환 → WebP)
     if ext == "docx":
-        _generate_and_upload_docx_pages(file_bytes, doc_id)
+        docx_page_count = _generate_and_upload_docx_pages(file_bytes, doc_id)
+        if docx_page_count == 0:
+            warnings.append("문서 미리보기를 생성하지 못했습니다. 파일이 손상되었거나 일부 서식이 지원되지 않을 수 있습니다.")
+
     # 3-A3. HWPX: pyhwpx → PDF → WebP 페이지 이미지
     hwpx_page_count: int = 0
     hwpx_pdf_bytes: bytes | None = None
     if ext == "hwpx":
         hwpx_page_count, hwpx_pdf_bytes = _generate_and_upload_hwpx_pages(file_bytes, doc_id)
+        warnings.append("HWPX 파일은 텍스트 추출만 지원됩니다. 페이지 미리보기는 제공되지 않습니다.")
 
     # 3-B. PDF: 이미지 페이지 Vision AI 분석 (RAG보다 먼저)
     pdf_vision: dict = {}
     if ext == "pdf":
         pdf_vision = _analyze_pdf_images(file_bytes)
+
+    # 이미지 자동 압축 안내
+    if compressed and original_format:
+        warnings.append(f"이미지 용량이 커서 자동으로 압축되었습니다. ({original_format} → JPEG)")
+    elif compressed:
+        warnings.append("이미지 용량이 커서 자동으로 압축되었습니다.")
+
+    # GIF 애니메이션 안내
+    if ext == "gif":
+        warnings.append("애니메이션 GIF는 첫 번째 프레임만 분석됩니다.")
 
     # 4. RAG 청킹 → document_chunks 저장
     try:
@@ -864,12 +921,34 @@ async def upload_document(
             hwpx_page_count=hwpx_page_count,
             hwpx_pdf_bytes=hwpx_pdf_bytes,
         )
+    except ValueError as e:
+        supabase_admin.table("documents").update({"status": "error"}).eq("id", doc_id).execute()
+        if storage_path:
+            supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         import traceback
         traceback.print_exc()
         supabase_admin.table("documents").update({"status": "error"}).eq("id", doc_id).execute()
         status_code, detail = _friendly_document_upload_error(ext, e)
         raise HTTPException(status_code=status_code, detail=detail)
+
+    # 텍스트 없음 감지 (포맷별 안내)
+    if chunk_count == 0:
+        if ext == "pdf":
+            warnings.append("텍스트를 추출하지 못했습니다. 스캔본 PDF이거나 이미지로만 구성된 경우 일부 기능이 제한될 수 있습니다.")
+        elif ext in ("docx",):
+            warnings.append("텍스트를 추출하지 못했습니다. 이미지나 도형으로만 구성된 문서이거나 파일이 손상되었을 수 있습니다.")
+        elif ext in ("pptx", "ppt"):
+            warnings.append("텍스트를 추출하지 못했습니다. 슬라이드가 이미지로만 구성된 경우 AI 검색 기능이 제한될 수 있습니다.")
+        elif ext in ("hwp", "hwpx"):
+            warnings.append("텍스트를 추출하지 못했습니다. 이미지로만 구성된 문서이거나 한/글 포맷 지원 한계일 수 있습니다.")
+        elif ext in ("jpg", "jpeg", "png", "gif", "webp"):
+            warnings.append("이미지 분석에 실패했습니다. AI 검색 기능이 제한될 수 있습니다.")
+        elif ext in ("mp4", "mov", "avi", "mkv", "webm"):
+            warnings.append("음성이 감지되지 않았습니다. 음성이 없거나 배경음악만 있는 영상은 AI 검색 기능이 제한될 수 있습니다.")
+        elif ext in ("mp3", "m4a"):
+            warnings.append("음성이 감지되지 않았습니다. 무음이거나 음성이 없는 오디오 파일은 AI 검색 기능이 제한될 수 있습니다.")
 
     # 4-B. HWPX 마크다운을 document_chunks 테이블에 chunk_index=-1로 저장
     if ext == "hwpx" and hwpx_markdown_text:
@@ -885,13 +964,17 @@ async def upload_document(
 
     # 5. 상태 업데이트 (HWPX는 실제 페이지 수 사용)
     final_page_count = hwpx_page_count if (ext == "hwpx" and hwpx_page_count > 0) else page_count
-    supabase_admin.table("documents").update({
-        "status": "ready",
-        "chunk_count": chunk_count,
-        "page_count": final_page_count,
-    }).eq("id", doc_id).execute()
+    try:
+        supabase_admin.table("documents").update({
+            "status": "ready",
+            "chunk_count": chunk_count,
+            "page_count": final_page_count,
+        }).eq("id", doc_id).execute()
+    except Exception as e:
+        print(f"[upload] status 업데이트 실패 (doc_id={doc_id}): {e}")
+        warnings.append("파일 처리는 완료됐지만 상태 업데이트에 실패했습니다. 잠시 후 새로고침해 주세요.")
 
-    return {
+    response: dict = {
         "doc_id": doc_id,
         "filename": file.filename,
         "file_type": ext,
@@ -899,6 +982,9 @@ async def upload_document(
         "notebook_id": notebook_id,
         "message": "업로드 및 인덱싱 완료",
     }
+    if warnings:
+        response["warnings"] = warnings
+    return response
 
 
 class IngestUrlRequest(BaseModel):

@@ -266,8 +266,8 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
     ffmpeg_path = _find_ffmpeg_binary()
     if not ffmpeg_path:
         raise ValueError(
-            f".{normalized_ext} 형식은 Whisper가 직접 지원하지 않습니다. "
-            "서버에 ffmpeg를 설치하면 자동으로 wav로 변환해서 처리할 수 있습니다."
+            f"{normalized_ext.upper()} 파일을 처리하지 못했습니다. "
+            "MP3 형식으로 변환 후 다시 시도해주세요."
         )
 
     converted_fd, converted_path = tempfile.mkstemp(suffix=".m4a")
@@ -296,10 +296,9 @@ def _prepare_media_file_for_transcription(input_path: str, original_ext: str) ->
             text=True,
         )
         if completed.returncode != 0:
-            stderr = (completed.stderr or "").strip()
             raise ValueError(
-                f".{normalized_ext} 파일을 전사용 m4a로 변환하지 못했습니다."
-                + (f" ffmpeg 오류: {stderr[:240]}" if stderr else "")
+                f"{normalized_ext.upper()} 파일을 처리하지 못했습니다. "
+                "파일이 손상되었거나 DRM이 적용된 파일일 수 있습니다. MP3 형식으로 변환 후 다시 시도해주세요."
             )
         return converted_path, True
     except Exception:
@@ -1103,7 +1102,14 @@ def _extract_text_from_pdf(file_bytes: bytes, vision_descriptions: dict | None =
         vision_descriptions: {page_num(int): description} — _analyze_pdf_images에서 전달
     """
     parts: list[str] = []
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+    try:
+        pdf_file = pdfplumber.open(io.BytesIO(file_bytes))
+    except Exception as e:
+        err = str(e).lower()
+        if "password" in err or "encrypt" in err or "decrypt" in err:
+            raise ValueError("암호화된 PDF입니다. 비밀번호를 해제한 후 다시 업로드해주세요.")
+        raise ValueError(f"PDF 파일을 열 수 없습니다. 파일이 손상되었을 수 있습니다. ({e})")
+    with pdf_file as pdf:
         page_count = len(pdf.pages)
         for page_idx, page in enumerate(pdf.pages, start=1):
             lines: list[str] = [f"[페이지 {page_idx}]"]
@@ -1145,7 +1151,13 @@ def _extract_text_from_docx(file_bytes: bytes) -> tuple[str, int]:
     """DOCX에서 텍스트 추출. [페이지 N] 마커 포함. (text, page_count) 반환."""
     from docx import Document
     from docx.oxml.ns import qn
-    doc = Document(io.BytesIO(file_bytes))
+    try:
+        doc = Document(io.BytesIO(file_bytes))
+    except Exception as e:
+        err = str(e).lower()
+        if any(k in err for k in ("not a zip file", "encrypted", "password", "decrypt", "protected")):
+            raise ValueError("암호가 설정된 DOCX 파일입니다. 암호를 해제한 후 다시 업로드해주세요.")
+        raise ValueError(f"DOCX 파일을 열 수 없습니다. 파일이 손상되었을 수 있습니다. ({e})")
 
     W_BR    = qn("w:br")
     W_TYPE  = qn("w:type")
@@ -1194,7 +1206,13 @@ def _extract_text_from_pptx(file_bytes: bytes, vision_descriptions: dict | None 
     """
     from pptx import Presentation
     from pptx.enum.shapes import PP_PLACEHOLDER
-    prs = Presentation(io.BytesIO(file_bytes))
+    try:
+        prs = Presentation(io.BytesIO(file_bytes))
+    except Exception as e:
+        err = str(e).lower()
+        if any(k in err for k in ("not a zip file", "encrypted", "password", "decrypt", "protected")):
+            raise ValueError("암호가 설정된 PPTX 파일입니다. 암호를 해제한 후 다시 업로드해주세요.")
+        raise ValueError(f"PPTX 파일을 열 수 없습니다. 파일이 손상되었을 수 있습니다. ({e})")
     slides_text: list[str] = []
 
     for slide_idx, slide in enumerate(prs.slides, start=1):
@@ -1242,8 +1260,15 @@ def _extract_text_from_hwpx(file_bytes: bytes) -> tuple[str, int]:
     import zipfile
     from xml.etree import ElementTree as ET
 
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(file_bytes))
+    except zipfile.BadZipFile:
+        raise ValueError("HWPX 파일을 열 수 없습니다. 파일이 손상되었거나 암호가 설정되어 있을 수 있습니다.")
+    except Exception as e:
+        raise ValueError(f"HWPX 파일을 읽을 수 없습니다. ({e})")
+
     paragraphs: list[str] = []
-    with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+    with zf as z:
         # section*.xml 만 처리 (Contents/ 폴더)
         section_files = sorted(
             name for name in z.namelist()
@@ -1368,7 +1393,10 @@ def _extract_text_from_hwp(file_bytes: bytes) -> tuple[str, int]:
                         pass
             section_idx += 1
     except Exception as e:
-        raise ValueError(f"HWP 파일을 읽을 수 없습니다: {e}")
+        err = str(e).lower()
+        if any(k in err for k in ("password", "encrypt", "decrypt", "protected")):
+            raise ValueError("암호가 설정된 HWP 파일입니다. 암호를 해제한 후 다시 업로드해주세요.")
+        raise ValueError(f"HWP 파일을 읽을 수 없습니다. 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다. ({e})")
     return "\n".join(texts), 0
 
 
@@ -1969,13 +1997,20 @@ def _extract_text_from_image(file_bytes: bytes, filename: str) -> tuple[str, int
                 "gif": "image/gif", "webp": "image/webp"}
     mime_type = mime_map.get(ext, "image/jpeg")
 
-    # Claude Vision API 5MB 제한 확인 및 자동 압축
     MAX_IMAGE_SIZE = 5 * 1024 * 1024
+
+    # 이미지 유효성 검사 (손상 파일 조기 감지)
+    try:
+        from PIL import Image as _PILImage
+        import io as _io
+        img = _PILImage.open(_io.BytesIO(file_bytes))
+        img.load()
+    except Exception as e:
+        raise ValueError(f"이미지 파일을 열 수 없습니다. 파일이 손상되었을 수 있습니다. ({e})")
+
+    # Claude Vision API 5MB 제한 확인 및 자동 압축
     if len(file_bytes) > MAX_IMAGE_SIZE:
         try:
-            from PIL import Image
-            import io as _io
-            img = Image.open(_io.BytesIO(file_bytes))
             if img.mode == "RGBA":
                 img = img.convert("RGB")
             compressed_buf = _io.BytesIO()
@@ -2017,14 +2052,20 @@ image_type 선택 기준:
 
 반드시 JSON만 응답하세요."""
 
-    raw = _call_llm_vision(
-        image_b64=b64,
-        mime_type=mime_type,
-        prompt=prompt,
-        model="gpt-4o",
-        json_mode=True,
-        max_tokens=2000,
-    )
+    try:
+        raw = _call_llm_vision(
+            image_b64=b64,
+            mime_type=mime_type,
+            prompt=prompt,
+            model="gpt-4o",
+            json_mode=True,
+            max_tokens=2000,
+        )
+    except Exception as e:
+        print(f"[Image Vision] Vision AI 호출 실패: {e}")
+        return "", 0
+
+
     try:
         parsed = json.loads(raw)
     except Exception:
