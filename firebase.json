@@ -5,11 +5,11 @@
     "rewrites": [
       {
         "source": "/api/**",
-        "run": { "serviceId": "studyu-backend", "region": "asia-northeast3" }
+        "run": { "serviceId": "studyu-backend", "region": "asia-east1" }
       },
       {
         "source": "**",
-        "run": { "serviceId": "studyu-frontend", "region": "asia-northeast3" }
+        "run": { "serviceId": "studyu-frontend", "region": "asia-east1" }
       }
     ]
   }
