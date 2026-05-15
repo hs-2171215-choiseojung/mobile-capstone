@@ -7,6 +7,7 @@
 """
 
 import uuid
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from app.core.auth import get_current_user
@@ -73,6 +74,74 @@ async def list_studio_items(
             except Exception:
                 item["audio_url"] = ""
     return rows
+
+
+class NoteUpsertRequest(BaseModel):
+    notebook_id: str
+    week_id: int
+    text: str
+    plan: Optional[dict] = None
+
+
+@router.get("/studio/notes")
+async def get_notebook_notes(
+    notebook_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """노트북의 주차별 메모 목록 반환 (학생 본인 것만)."""
+    rows = (
+        supabase_admin.table("studio_items")
+        .select("id, content, title, created_at")
+        .eq("notebook_id", notebook_id)
+        .eq("user_id", user["id"])
+        .eq("type", "notepad")
+        .order("created_at", desc=False)
+        .execute()
+        .data or []
+    )
+    return rows
+
+
+@router.put("/studio/notes")
+async def upsert_note(
+    req: NoteUpsertRequest,
+    user: dict = Depends(get_current_user),
+):
+    """주차 메모 저장/수정 (upsert). 기존 plan 데이터를 보존하며 업데이트."""
+    all_rows = (
+        supabase_admin.table("studio_items")
+        .select("id, content")
+        .eq("notebook_id", req.notebook_id)
+        .eq("user_id", user["id"])
+        .eq("type", "notepad")
+        .execute()
+        .data or []
+    )
+    note_item = next(
+        (row for row in all_rows if (row.get("content") or {}).get("week_id") == req.week_id),
+        None,
+    )
+
+    new_content: dict = {"text": req.text, "week_id": req.week_id}
+    if req.plan is not None:
+        new_content["plan"] = req.plan
+
+    if note_item:
+        supabase_admin.table("studio_items").update({
+            "content": new_content,
+            "title": f"{req.week_id}주차 메모",
+        }).eq("id", note_item["id"]).execute()
+        return {"item_id": note_item["id"]}
+    else:
+        result = supabase_admin.table("studio_items").insert({
+            "user_id": user["id"],
+            "notebook_id": req.notebook_id,
+            "type": "notepad",
+            "title": f"{req.week_id}주차 메모",
+            "content": new_content,
+        }).execute()
+        item_id = result.data[0]["id"] if result.data else None
+        return {"item_id": item_id}
 
 
 class RenameRequest(BaseModel):
