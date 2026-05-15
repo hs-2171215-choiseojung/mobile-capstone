@@ -506,6 +506,7 @@ export function StudentChatPanel({
   });
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [initialQuestions, setInitialQuestions] = useState<string[]>(DEFAULT_INITIAL_QUESTIONS);
+  const [docInitialSuggestions, setDocInitialSuggestions] = useState<Suggestion[]>([]);
   const askedQuestionsRef = useRef<string[]>([]);
   const suggestionFromChatRef = useRef(false);
   const suggestionFetchAbortRef = useRef<AbortController | null>(null);
@@ -639,12 +640,14 @@ export function StudentChatPanel({
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
           setSuggestions(parsed as Suggestion[]);
+          setDocInitialSuggestions((parsed as Suggestion[]).slice(0, 2));
           askedQuestionsRef.current = [];
           return;
         }
       } catch {}
     }
 
+    setDocInitialSuggestions([]);
     // 없으면 fetch
     const abort = new AbortController();
     suggestionFetchAbortRef.current = abort;
@@ -661,6 +664,7 @@ export function StudentChatPanel({
           if (!abort.signal.aborted && !suggestionFromChatRef.current && data.questions?.length) {
             const newSugs = data.questions.slice(0, 3) as Suggestion[];
             setSuggestions(newSugs);
+            setDocInitialSuggestions(newSugs.slice(0, 2));
             try { localStorage.setItem(`${chatKey}_suggestions`, JSON.stringify(newSugs)); } catch {}
           }
         })
@@ -688,6 +692,7 @@ export function StudentChatPanel({
       setMessages([]);
     }
     setInitialQuestions([...DEFAULT_INITIAL_QUESTIONS]);
+    setDocInitialSuggestions([]);
     setIsLoaded(true);
   }, [chatKey]);
 
@@ -752,9 +757,35 @@ export function StudentChatPanel({
         { text: "쉽게 설명해줘", category: "분석" },
         { text: "시험에 나올 부분 알려줘", category: "적용" },
       ]);
+      setDocInitialSuggestions([]);
       askedQuestionsRef.current = [];
+      lastAnswerRef.current = "";
       localStorage.removeItem(chatKeyRef.current);
       localStorage.removeItem(`${chatKeyRef.current}_suggestions`);
+
+      // 자료 기반 추천 질문 재fetch (이전에 보여줬던 질문은 제외)
+      const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
+      const prevShown = suggestionsRef.current.map((s) => s.text);
+      if (targetDocIds.length > 0) {
+        suggestionFromChatRef.current = false;
+        getToken().then((token) =>
+          fetch(`${API}/api/chat/suggestions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: targetDocIds, asked_questions: prevShown }),
+          })
+            .then((r) => r.json())
+            .then((data) => {
+              if (data.questions?.length) {
+                const newSugs = data.questions.slice(0, 3) as Suggestion[];
+                setSuggestions(newSugs);
+                setDocInitialSuggestions(newSugs.slice(0, 2));
+                try { localStorage.setItem(`${chatKeyRef.current}_suggestions`, JSON.stringify(newSugs)); } catch {}
+              }
+            })
+            .catch(() => {})
+        );
+      }
     }
   };
 
@@ -1629,6 +1660,16 @@ export function StudentChatPanel({
                   className="px-4 py-2 rounded-full border border-[#e7e9ed] bg-white text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm text-right disabled:opacity-40"
                 >
                   {q}
+                </button>
+              ))}
+              {docInitialSuggestions.map((s) => (
+                <button
+                  key={s.text}
+                  onClick={() => handleInitialQuestionClick(-1, s.text)}
+                  disabled={!difficultyReady || isLoading}
+                  className="px-4 py-2 rounded-full border border-[#c7d7fd] bg-blue-50/50 text-[13px] text-[#414751] hover:border-[#155dfc] hover:text-[#155dfc] hover:bg-blue-50 transition-all shadow-sm text-right disabled:opacity-40"
+                >
+                  {s.text}
                 </button>
               ))}
             </div>
