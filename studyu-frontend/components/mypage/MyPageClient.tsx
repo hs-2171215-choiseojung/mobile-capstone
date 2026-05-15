@@ -29,8 +29,10 @@ const VOICE_OPTIONS = [
 ];
 
 const MODEL_OPTIONS = [
-  { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5 · 빠름" },
   { value: "gpt-4o", label: "GPT-4o · 높은 품질" },
+  { value: "gpt-4o-mini", label: "GPT-4o mini · 빠르고 저렴" },
+  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 · 균형잡힌 성능" },
+  { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5 · 빠름" },
 ];
 
 function normalizeLearningLevel(value: string | null | undefined): "beginner" | "intermediate" | "advanced" {
@@ -102,14 +104,14 @@ export default function MyPageClient({ email, createdAt, displayName, avatarUrl,
   // ── 학습 기본값 (localStorage) ──────────────────
   const [level, setLevel] = useState<"beginner" | "intermediate" | "advanced">("intermediate");
   const [voice, setVoice] = useState("sarah");
-  const [model, setModel] = useState("claude-haiku-4-5-20251001");
+  const [model, setModel] = useState("gpt-4o");
   const [playbackRate, setPlaybackRate] = useState("1");
   const [settingsMsg, setSettingsMsg] = useState<Status>(null);
 
   useEffect(() => {
     setLevel(normalizeLearningLevel(readLS("studyu_default_level", "intermediate")));
     setVoice(readLS("studyu_default_voice", "sarah"));
-    setModel(readLS("studyu_default_model", "claude-haiku-4-5-20251001"));
+    setModel(readLS("studyu_default_model", "gpt-4o"));
     setPlaybackRate(readLS("studyu_playback_rate", "1"));
   }, []);
 
@@ -215,8 +217,12 @@ export default function MyPageClient({ email, createdAt, displayName, avatarUrl,
   const [deletePhrase, setDeletePhrase] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [deleteMsg, setDeleteMsg] = useState<Status>(null);
+  const [isGoogleUser, setIsGoogleUser] = useState(false);
 
-  function openDeleteModal() {
+  async function openDeleteModal() {
+    const { data: { user } } = await supabase.auth.getUser();
+    const provider = user?.app_metadata?.provider;
+    setIsGoogleUser(provider === "google");
     setDeleteOpen(true);
     setDeletePw("");
     setDeletePhrase("");
@@ -228,7 +234,7 @@ export default function MyPageClient({ email, createdAt, displayName, avatarUrl,
       setDeleteMsg({ type: "err", text: `확인 문구로 "${DELETE_CONFIRM_PHRASE}"를 정확히 입력해주세요.` });
       return;
     }
-    if (!deletePw) {
+    if (!isGoogleUser && !deletePw) {
       setDeleteMsg({ type: "err", text: "현재 비밀번호를 입력해주세요." });
       return;
     }
@@ -236,13 +242,15 @@ export default function MyPageClient({ email, createdAt, displayName, avatarUrl,
     setDeleting(true);
     setDeleteMsg(null);
     try {
-      const { error: verifyError } = await supabase.auth.signInWithPassword({
-        email,
-        password: deletePw,
-      });
-      if (verifyError) {
-        setDeleteMsg({ type: "err", text: "현재 비밀번호가 올바르지 않습니다." });
-        return;
+      if (!isGoogleUser) {
+        const { error: verifyError } = await supabase.auth.signInWithPassword({
+          email,
+          password: deletePw,
+        });
+        if (verifyError) {
+          setDeleteMsg({ type: "err", text: "현재 비밀번호가 올바르지 않습니다." });
+          return;
+        }
       }
 
       const { data: sessionData } = await supabase.auth.getSession();
@@ -443,15 +451,17 @@ export default function MyPageClient({ email, createdAt, displayName, avatarUrl,
             )}
 
             <div className="mt-5 space-y-3">
-              <Field label="현재 비밀번호">
-                <input
-                  type="password"
-                  value={deletePw}
-                  onChange={(e) => setDeletePw(e.target.value)}
-                  autoComplete="current-password"
-                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400"
-                />
-              </Field>
+              {!isGoogleUser && (
+                <Field label="현재 비밀번호">
+                  <input
+                    type="password"
+                    value={deletePw}
+                    onChange={(e) => setDeletePw(e.target.value)}
+                    autoComplete="current-password"
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400"
+                  />
+                </Field>
+              )}
               <Field label={`확인 문구 — "${DELETE_CONFIRM_PHRASE}"를 입력해주세요`}>
                 <input
                   type="text"
@@ -479,7 +489,7 @@ export default function MyPageClient({ email, createdAt, displayName, avatarUrl,
               </button>
               <button
                 onClick={confirmDeleteAccount}
-                disabled={deleting || deletePhrase.trim() !== DELETE_CONFIRM_PHRASE || !deletePw}
+                disabled={deleting || deletePhrase.trim() !== DELETE_CONFIRM_PHRASE || (!isGoogleUser && !deletePw)}
                 className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
               >
                 {deleting ? "삭제 중..." : "영구 삭제"}
