@@ -97,6 +97,7 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
           OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}"
           ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}"
+          ELEVENLABS_API_KEY: "${{ secrets.ELEVENLABS_API_KEY }}"
           FRONTEND_URL: "${{ secrets.FRONTEND_URL }}"
           EOF
 
