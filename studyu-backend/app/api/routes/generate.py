@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from app.core.auth import get_current_user
 from app.core.supabase import supabase_admin
-from app.services.rag import generate_content
+from app.services.rag import generate_content, generate_study_plan, generate_followup_answer, generate_plan_modification, generate_smart_chat
 
 router = APIRouter()
 
@@ -158,6 +158,366 @@ async def generate(
     )
     print(f"[studio] ✅ {req.type} 생성 완료 | item_id={item_id}")
     return {"result": result, "type": req.type, "item_id": item_id}
+
+
+class StudyPlanRequest(BaseModel):
+    doc_ids: list[str] = []
+    studio_item_ids: list[str] = []
+    notebook_id: str
+    target_weeks: int
+    purpose: str  # "concept" | "exam_cram"
+    model: Optional[str] = "gpt-4o"
+    item_title: Optional[str] = None
+
+
+@router.post("/generate/study-plan")
+async def generate_study_plan_endpoint(
+    req: StudyPlanRequest,
+    user: dict = Depends(get_current_user),
+):
+    """학생용 AI 학습계획 생성 — 실제 파일·결과물의 최적 학습 순서 추천."""
+    if req.target_weeks < 1 or req.target_weeks > 15:
+        raise HTTPException(status_code=400, detail="target_weeks는 1~15 사이여야 합니다.")
+    if req.purpose not in ("concept", "exam_cram", "cram_mode"):
+        raise HTTPException(status_code=400, detail="purpose는 concept 또는 exam_cram 이어야 합니다.")
+
+    nb = supabase_admin.table("notebooks").select("id, user_id").eq("id", req.notebook_id).limit(1).execute()
+    if not nb.data:
+        raise HTTPException(status_code=404, detail="노트북을 찾을 수 없습니다.")
+    is_owner = nb.data[0]["user_id"] == user["id"]
+    if not is_owner:
+        enrolled = supabase_admin.table("notebook_enrollments").select("id").eq("notebook_id", req.notebook_id).eq("student_id", user["id"]).limit(1).execute()
+        if not enrolled.data:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    materials: list[dict] = []
+    DOC_MAX_CHARS = 2000
+
+    if req.doc_ids:
+        try:
+            doc_res = supabase_admin.table("documents").select("id, filename").in_("id", req.doc_ids).execute()
+            doc_name_map = {d["id"]: d.get("filename", d["id"]) for d in doc_res.data or []}
+        except Exception as e:
+            print(f"[study_plan] 문서 조회 실패: {e}")
+            doc_name_map = {}
+
+        doc_summary_map: dict[str, str] = {}
+        try:
+            summary_res = (
+                supabase_admin.table("studio_items")
+                .select("id, content")
+                .eq("notebook_id", req.notebook_id)
+                .in_("type", ["summary", "report"])
+                .order("created_at", desc=True)
+                .limit(50)
+                .execute()
+            )
+            for s in summary_res.data or []:
+                content = s.get("content") or {}
+                summary_text = (content.get("text") or "").strip()
+                if not summary_text:
+                    continue
+                for did in (content.get("doc_ids") or []):
+                    if did in req.doc_ids and did not in doc_summary_map:
+                        doc_summary_map[did] = summary_text
+        except Exception as e:
+            print(f"[study_plan] 요약본 조회 실패: {e}")
+
+        docs_needing_chunks = [d for d in req.doc_ids if d not in doc_summary_map]
+        doc_chunk_map: dict[str, str] = {}
+        if docs_needing_chunks:
+            try:
+                chunk_res = (
+                    supabase_admin.table("document_chunks")
+                    .select("document_id, text, chunk_index")
+                    .in_("document_id", docs_needing_chunks)
+                    .order("chunk_index")
+                    .limit(len(docs_needing_chunks) * 8)
+                    .execute()
+                )
+                for chunk in chunk_res.data or []:
+                    did = chunk["document_id"]
+                    existing = doc_chunk_map.get(did, "")
+                    added = (chunk.get("text") or "").strip()
+                    if added and len(existing) < DOC_MAX_CHARS:
+                        doc_chunk_map[did] = (existing + " " + added).strip()[:DOC_MAX_CHARS]
+            except Exception as e:
+                print(f"[study_plan] 문서 청크 조회 실패: {e}")
+
+        for doc_id in req.doc_ids:
+            used_summary = doc_id in doc_summary_map
+            materials.append({
+                "id": doc_id,
+                "name": doc_name_map.get(doc_id, doc_id),
+                "item_type": "document",
+                "type": "document",
+                "content_preview": doc_summary_map.get(doc_id) or doc_chunk_map.get(doc_id, ""),
+                "content_source": "summary" if used_summary else "chunks",
+            })
+
+    if req.studio_item_ids:
+        try:
+            studio_res = (
+                supabase_admin.table("studio_items")
+                .select("id, type, title, content")
+                .in_("id", req.studio_item_ids)
+                .not_.in_("type", ["study_plan", "notepad"])
+                .execute()
+            )
+            for item in studio_res.data or []:
+                itype = item.get("type", "")
+                content = item.get("content") or {}
+                full_content = ""
+
+                if itype in ("summary", "report"):
+                    full_content = (content.get("text") or "").strip()
+                elif itype == "quiz":
+                    questions = content.get("questions") or []
+                    lines = []
+                    for i, q in enumerate(questions, 1):
+                        q_text = q.get("question") or q.get("text") or ""
+                        if not q_text:
+                            continue
+                        options = q.get("options") or q.get("choices") or []
+                        answer = q.get("answer") or q.get("correct_answer") or ""
+                        line = f"Q{i}. {q_text}"
+                        if options:
+                            line += " [" + " / ".join(str(o) for o in options) + "]"
+                        if answer:
+                            line += f" → 정답: {answer}"
+                        lines.append(line)
+                    full_content = "\n".join(lines)
+                elif itype == "flashcard":
+                    cards = content.get("cards") or []
+                    lines = []
+                    for c in cards:
+                        term = c.get("term") or c.get("front") or ""
+                        definition = c.get("definition") or c.get("back") or ""
+                        if term:
+                            lines.append(f"{term}: {definition}" if definition else term)
+                    full_content = "\n".join(lines)
+                elif itype in ("notepad", "memo"):
+                    full_content = (content.get("text") or content.get("content") or "").strip()
+                elif itype == "mindmap":
+                    nodes = content.get("nodes") or []
+                    labels = [str(n.get("label") or n.get("text") or "") for n in nodes if n]
+                    full_content = " → ".join(l for l in labels if l)
+                elif itype == "table":
+                    rows = content.get("rows") or []
+                    full_content = "\n".join(
+                        " | ".join(str(cell) for cell in row) for row in rows[:20] if row
+                    )
+
+                materials.append({
+                    "id": item["id"],
+                    "name": item.get("title") or item["id"],
+                    "item_type": "studio",
+                    "type": itype,
+                    "content_preview": full_content,
+                })
+        except Exception as e:
+            print(f"[study_plan] 스튜디오 아이템 조회 실패: {e}")
+
+    if not materials:
+        raise HTTPException(status_code=400, detail="학습계획을 생성할 자료가 없습니다.")
+
+    print(f"[study_plan] 생성 시작 | purpose={req.purpose} | materials={len(materials)}")
+
+    try:
+        result_str = generate_study_plan(
+            materials=materials,
+            purpose=req.purpose,
+            target_weeks=req.target_weeks,
+            model=req.model or "gpt-4o",
+        )
+    except Exception as e:
+        print(f"[study_plan] 생성 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"학습계획 생성 실패: {str(e)}")
+
+    try:
+        cleaned = result_str.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+            cleaned = cleaned.strip()
+        parsed = json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        print(f"[study_plan] JSON 파싱 실패: {result_str[:300]}")
+        raise HTTPException(status_code=500, detail="학습계획 JSON 파싱 실패")
+
+    material_name_to_id = {m["name"].strip().lower(): m["id"] for m in materials}
+    material_ids = {m["id"] for m in materials}
+    material_id_to_type = {m["id"]: m.get("item_type", "document") for m in materials}
+    for step in parsed.get("steps") or []:
+        raw_id = step.get("item_id", "")
+        if raw_id not in material_ids:
+            fallback = material_name_to_id.get((step.get("item_name") or "").strip().lower())
+            if fallback:
+                step["item_id"] = fallback
+        corrected_id = step.get("item_id", "")
+        if corrected_id in material_id_to_type:
+            step["item_type"] = material_id_to_type[corrected_id]
+
+    purpose_label = {"concept": "개념정립", "exam_cram": "시험대비", "cram_mode": "벼락치기"}.get(req.purpose, req.purpose)
+    title = req.item_title or parsed.get("title") or f"학습계획 ({purpose_label})"
+    item_id = _save_studio_item(
+        user_id=user["id"],
+        item_type="study_plan",
+        title=title,
+        subtitle=f"학습계획 · {req.target_weeks}주 · {purpose_label}",
+        content={**parsed, "target_weeks": req.target_weeks, "purpose": req.purpose},
+        notebook_id=req.notebook_id,
+    )
+
+    print(f"[study_plan] 생성 완료 | item_id={item_id} | title={title}")
+    return {"result": parsed, "item_id": item_id, "title": title}
+
+
+class StudyPlanFollowupRequest(BaseModel):
+    notebook_id: str
+    question: str
+    plan: dict
+    model: Optional[str] = "gpt-4o"
+
+
+@router.post("/generate/study-plan/followup")
+async def study_plan_followup_endpoint(
+    req: StudyPlanFollowupRequest,
+    user: dict = Depends(get_current_user),
+):
+    """학습계획 컨텍스트 기반 후속 질문 답변."""
+    nb = supabase_admin.table("notebooks").select("id, user_id").eq("id", req.notebook_id).limit(1).execute()
+    if not nb.data:
+        raise HTTPException(status_code=404, detail="노트북을 찾을 수 없습니다.")
+    is_owner = nb.data[0]["user_id"] == user["id"]
+    if not is_owner:
+        enrolled = (
+            supabase_admin.table("notebook_enrollments")
+            .select("id")
+            .eq("notebook_id", req.notebook_id)
+            .eq("student_id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        if not enrolled.data:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="질문을 입력해주세요.")
+
+    try:
+        answer = generate_followup_answer(
+            question=req.question,
+            plan=req.plan,
+            model=req.model or "gpt-4o",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"답변 생성 실패: {str(e)}")
+
+    return {"answer": answer}
+
+
+class StudyPlanModifyRequest(BaseModel):
+    notebook_id: str
+    plan: dict
+    request: str
+    model: Optional[str] = "gpt-4o"
+
+
+@router.post("/generate/study-plan/modify")
+async def study_plan_modify_endpoint(
+    req: StudyPlanModifyRequest,
+    user: dict = Depends(get_current_user),
+):
+    """학습계획 수정 요청 처리 — 수정된 계획 JSON 반환."""
+    nb = supabase_admin.table("notebooks").select("id, user_id").eq("id", req.notebook_id).limit(1).execute()
+    if not nb.data:
+        raise HTTPException(status_code=404, detail="노트북을 찾을 수 없습니다.")
+    is_owner = nb.data[0]["user_id"] == user["id"]
+    if not is_owner:
+        enrolled = (
+            supabase_admin.table("notebook_enrollments")
+            .select("id")
+            .eq("notebook_id", req.notebook_id)
+            .eq("student_id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        if not enrolled.data:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    if not req.request.strip():
+        raise HTTPException(status_code=400, detail="수정 요청을 입력해주세요.")
+
+    try:
+        result_str = generate_plan_modification(
+            plan=req.plan,
+            request=req.request,
+            model=req.model or "gpt-4o",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"계획 수정 실패: {str(e)}")
+
+    try:
+        cleaned = result_str.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+            cleaned = cleaned.strip()
+        parsed = json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=500, detail="계획 수정 JSON 파싱 실패")
+
+    return {"result": parsed}
+
+
+class StudyPlanChatRequest(BaseModel):
+    notebook_id: str
+    message: str
+    plan: dict
+    model: Optional[str] = "gpt-4o"
+
+
+@router.post("/generate/study-plan/chat")
+async def study_plan_chat_endpoint(
+    req: StudyPlanChatRequest,
+    user: dict = Depends(get_current_user),
+):
+    """학생 메시지 의도를 판단해 답변 + 선택적 계획 수정을 한 번에 반환."""
+    nb = supabase_admin.table("notebooks").select("id, user_id").eq("id", req.notebook_id).limit(1).execute()
+    if not nb.data:
+        raise HTTPException(status_code=404, detail="노트북을 찾을 수 없습니다.")
+    is_owner = nb.data[0]["user_id"] == user["id"]
+    if not is_owner:
+        enrolled = (
+            supabase_admin.table("notebook_enrollments")
+            .select("id")
+            .eq("notebook_id", req.notebook_id)
+            .eq("student_id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        if not enrolled.data:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    if not req.message.strip():
+        raise HTTPException(status_code=400, detail="메시지를 입력해주세요.")
+
+    try:
+        result = generate_smart_chat(
+            message=req.message,
+            plan=req.plan,
+            model=req.model or "gpt-4o",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"응답 생성 실패: {str(e)}")
+
+    return {
+        "answer": result.get("answer", ""),
+        "updated_plan": result.get("updated_plan"),
+    }
 
 
 class AudioGenerateRequest(BaseModel):

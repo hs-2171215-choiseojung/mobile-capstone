@@ -9,6 +9,7 @@ import { Resizable } from 're-resizable';
 import { TopNavBar } from "@/components/workspace/student/TopNavBar";
 import { WeeklyPlanCard } from "@/components/workspace/student/WeeklyPlanCard";
 import { StudentChatPanel, SourceChunk } from "@/components/workspace/student/StudentChatPanel";
+import { StudyPlanChatPanel } from "@/components/workspace/student/StudyPlanChatPanel";
 import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer";
 import { StudentSourceViewer } from "@/components/workspace/student/StudentSourceViewer";
 import { PptSlideViewer } from "@/components/workspace/PptSlideViewer";
@@ -404,6 +405,20 @@ export default function StudentWorkspacePage() {
     };
   });
 
+
+  const weeklyDocIds: Record<number, string[]> = Object.fromEntries(
+    cards.map((c) => [
+      c.weekNumber,
+      c.items.filter((i: any) => i.resolvedDocId).map((i: any) => i.resolvedDocId as string),
+    ])
+  );
+
+  const weeklyStudioIds: Record<number, string[]> = Object.fromEntries(
+    cards.map((c) => [
+      c.weekNumber,
+      c.items.filter((i: any) => !i.resolvedDocId && i.id).map((i: any) => i.id as string),
+    ])
+  );
 
   useEffect(() => {
     if (!notebookId) return;
@@ -1020,11 +1035,11 @@ export default function StudentWorkspacePage() {
                 </div>
               </div>
 
-              {/* 우측 채팅 패널 */}
+              {/* 우측 AI 학습계획 패널 */}
               {isChatOpen && (
                 <Resizable
                   size={{ width: chatWidth, height: '100%' }}
-                  minWidth={280}
+                  minWidth={300}
                   maxWidth={640}
                   enable={{ left: true }}
                   onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
@@ -1038,7 +1053,24 @@ export default function StudentWorkspacePage() {
                   }}
                   className="shrink-0 border-l border-[#e7e9ed] bg-white flex flex-col"
                 >
-                  <StudentChatPanel activeDocIds={activeDocIds} docs={docs} notebookId={notebookId} selectedLLM={selectedLLM} selectedDifficulty={selectedDifficulty} difficultyReady={prefsHydrated} onClose={() => setIsChatOpen(false)} onCitationClick={handleCitationClick} />
+                  <StudyPlanChatPanel
+                    notebookId={notebookId}
+                    selectedLLM={selectedLLM}
+                    onClose={() => setIsChatOpen(false)}
+                    weeklyDocIds={weeklyDocIds}
+                    weeklyStudioIds={weeklyStudioIds}
+                    onStudyPlanSaved={() => fetchData()}
+                    onOpenDoc={(docId) => {
+                      const doc = displayDocsMap.get(docId)
+                        ?? displayDocs.find((d) => d.filename?.trim().toLowerCase() === docId.trim().toLowerCase());
+                      if (doc) void openSourceDocument(doc);
+                    }}
+                    onOpenStudioItem={(itemId) => {
+                      const item = studioItems.find((s) => s.id === itemId)
+                        ?? studioItems.find((s) => (s.title ?? '').trim().toLowerCase() === itemId.trim().toLowerCase());
+                      if (item) setSelectedItem(item);
+                    }}
+                  />
                 </Resizable>
               )}
             </div>

@@ -27,6 +27,9 @@ Thumbs.db
 # 업로드된 테스트 파일
 uploads/
 
+# 로컬 캐시된 ML 모델 (대용량, 커밋 금지)
+models/
+
 # Google Cloud 서비스 계정 키
 google-credentials.json
 *-credentials.json

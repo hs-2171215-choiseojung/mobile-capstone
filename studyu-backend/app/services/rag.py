@@ -4372,6 +4372,246 @@ def generate_content(
     )
 
 
+def generate_study_plan(
+    materials: list[dict],
+    purpose: str,
+    target_weeks: int = 4,
+    model: str = _DEFAULT_MODEL,
+) -> str:
+    """주어진 자료들의 최적 학습 순서를 내용 분석 기반으로 생성. JSON 문자열 반환."""
+    purpose_ko = {"concept": "개념정립", "exam_cram": "시험대비", "cram_mode": "벼락치기"}.get(purpose, purpose)
+
+    type_label = {
+        "summary": "요약본", "report": "요약본", "quiz": "퀴즈",
+        "flashcard": "플래시카드", "notepad": "메모", "memo": "메모",
+        "mindmap": "마인드맵", "table": "표",
+    }
+
+    lines = []
+    for i, m in enumerate(materials):
+        item_type = m.get("item_type", "document")
+        sub_type = m.get("type", "")
+        content_source = m.get("content_source", "")
+        if item_type == "document":
+            label = "원본 문서 (AI 요약본 기반)" if content_source == "summary" else "원본 문서"
+        else:
+            label = type_label.get(sub_type, "AI 결과물")
+        preview = (m.get("content_preview") or "").strip()
+        entry = f'{i+1}. [ID: {m["id"]}]\n   이름: {m["name"]}\n   유형: {label}'
+        if preview:
+            entry += f'\n   내용: {preview}'
+        lines.append(entry)
+
+    materials_text = "\n\n".join(lines) if lines else "(자료 없음)"
+
+    if purpose == "concept":
+        purpose_context = (
+            "학습자는 개념을 처음부터 체계적으로 이해하고 싶어합니다. "
+            "선수 지식이 필요한 자료가 있다면 그 의존 관계를 파악해 순서를 정하고, "
+            "각 자료의 난이도와 분량을 고려해 인지 부하가 자연스럽게 증가하도록 배치하세요."
+        )
+    elif purpose == "exam_cram":
+        purpose_context = (
+            "학습자는 시험을 앞두고 효율적으로 준비하고 싶어합니다. "
+            "어떤 자료가 핵심 개념을 포함하는지, 어떤 것이 반복 연습에 적합한지 파악해 "
+            "빠른 이해 → 핵심 암기 → 실전 문제풀이 흐름이 되도록 배치하세요."
+        )
+    else:  # cram_mode
+        purpose_context = (
+            "학습자는 시험이 매우 임박해 시간이 극히 부족합니다. 다음 규칙을 반드시 지키세요:\n"
+            "1. 모든 자료를 포함하지 말고, 핵심 개념이 가장 많이 담긴 자료만 선별하세요. "
+            "퀴즈·플래시카드·요약본을 최우선으로 선택하고, 원본 문서는 꼭 필요한 경우에만 포함하세요.\n"
+            "2. 총 학습 시간이 반드시 2시간 이내가 되도록 각 단계의 duration_minutes를 설정하세요.\n"
+            "3. 액션은 '퀴즈 풀기'와 '플래시카드 암기'를 우선 배치하고 '읽기'는 최소화하세요.\n"
+            "4. tip 필드에는 '이것만 보면 됩니다' 스타일로 해당 자료를 선택한 이유를 한 문장으로 작성하세요.\n"
+            "5. 단계 수는 가능한 적게 유지하세요."
+        )
+
+    prompt = f"""당신은 학습 전문가입니다. 아래에 제공된 각 자료의 실제 내용을 꼼꼼히 읽고, 학습자에게 최적화된 학습 순서를 설계해주세요.
+
+목적: {purpose_ko}
+{purpose_context}
+
+---
+【자료 목록 및 전체 내용】
+
+{materials_text}
+
+---
+반드시 아래 JSON 형식으로만 응답하세요:
+
+{{
+  "title": "학습계획 제목 (자료의 실제 주제 반영)",
+  "purpose": "{purpose_ko}",
+  "total_estimated_hours": 총_예상_시간(숫자),
+  "steps": [
+    {{
+      "order": 1,
+      "item_id": "자료 ID 그대로",
+      "item_name": "자료 이름 그대로",
+      "item_type": "document 또는 studio",
+      "action": "읽기 / 훑어보기 / 요약 복습 / 퀴즈 풀기 / 플래시카드 암기 / 메모 확인 중 하나",
+      "duration_minutes": 예상_소요_분(숫자),
+      "tip": "이 자료의 내용을 근거로 이 순서에 배치한 이유"
+    }}
+  ]
+}}
+
+모든 자료를 포함하고, 목록에 없는 자료는 추가하지 마세요."""
+
+    return _call_llm(
+        messages=[{"role": "user", "content": prompt}],
+        model=model,
+        temperature=0.5,
+        json_mode=True,
+        max_tokens=4000,
+    )
+
+
+def generate_followup_answer(
+    question: str,
+    plan: dict,
+    model: str = _DEFAULT_MODEL,
+) -> str:
+    """학습계획 컨텍스트 기반 후속 질문 답변. 자연어 문자열 반환."""
+    plan_str = json.dumps(plan, ensure_ascii=False, indent=2)
+    prompt = f"""다음은 학생의 학습 계획입니다:
+
+{plan_str}
+
+학생의 질문: {question}
+
+위 학습 계획을 참고해서 학생의 질문에 친절하고 구체적으로 답변해주세요.
+마크다운 없이 자연스러운 한국어로 간결하게 답변해주세요."""
+
+    return _call_llm(
+        messages=[{"role": "user", "content": prompt}],
+        model=model,
+        temperature=0.7,
+        json_mode=False,
+        max_tokens=600,
+    )
+
+
+def generate_plan_modification(
+    plan: dict,
+    request: str,
+    model: str = _DEFAULT_MODEL,
+) -> str:
+    """학습계획 수정 요청 처리. 수정된 계획 JSON 문자열 반환."""
+    plan_str = json.dumps(plan, ensure_ascii=False, indent=2)
+    prompt = f"""현재 학습 계획:
+
+{plan_str}
+
+학생의 수정 요청: {request}
+
+위 수정 요청에 따라 학습 계획을 수정해주세요.
+- 기존 자료의 item_id와 item_name은 절대 변경하지 마세요
+- 수정 요청과 관련 없는 단계는 그대로 유지하세요
+- order는 1부터 순서대로 재번호 매기세요
+- total_estimated_hours는 변경된 duration_minutes 합산에 맞게 재계산하세요
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{{
+  "title": "...",
+  "purpose": "...",
+  "total_estimated_hours": 숫자,
+  "steps": [
+    {{
+      "order": 숫자,
+      "item_id": "기존 ID 그대로",
+      "item_name": "기존 이름 그대로",
+      "item_type": "document 또는 studio",
+      "action": "...",
+      "duration_minutes": 숫자,
+      "tip": "..."
+    }}
+  ]
+}}"""
+
+    return _call_llm(
+        messages=[{"role": "user", "content": prompt}],
+        model=model,
+        temperature=0.4,
+        json_mode=True,
+        max_tokens=4000,
+    )
+
+
+def generate_smart_chat(
+    message: str,
+    plan: dict,
+    model: str = _DEFAULT_MODEL,
+) -> dict:
+    """학생 메시지 의도를 LLM이 판단해 답변 + 선택적 계획 수정을 한 번에 반환.
+
+    반환값: {"answer": str, "updated_plan": dict | None}
+    - 단순 질문이면 updated_plan = null
+    - 상황 언급·조건 변경이면 updated_plan = 수정된 계획 전체
+    """
+    plan_str = json.dumps(plan, ensure_ascii=False, indent=2)
+    prompt = f"""당신은 학습계획 도우미입니다. 학생의 현재 학습계획은 다음과 같습니다:
+
+{plan_str}
+
+학생이 다음과 같이 말했습니다: "{message}"
+
+다음 두 가지를 판단하세요:
+1. 학생의 말에 공감하며 자연스럽게 한국어로 답변합니다.
+2. 학생의 말이 계획 변경을 암시한다면 (예: 이미 알고 있는 내용, 시간 부족, 특정 자료 건너뛰기, 난이도·방식 조정 요청 등) 수정된 학습계획도 함께 반환합니다. 단순 질문이라면 updated_plan은 null로 반환합니다.
+
+계획을 수정할 때 규칙:
+- item_id, item_name, item_type은 절대 변경하지 마세요
+- order는 1부터 순서대로 재번호 매기세요
+- total_estimated_hours는 duration_minutes 합산으로 재계산하세요
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{{
+  "answer": "학생에게 보내는 자연스러운 한국어 답변 (1~3문장)",
+  "updated_plan": null
+}}
+
+계획 수정이 필요하다면 updated_plan에 수정된 계획 전체를 넣으세요:
+{{
+  "answer": "...",
+  "updated_plan": {{
+    "title": "...",
+    "purpose": "...",
+    "total_estimated_hours": 숫자,
+    "steps": [
+      {{
+        "order": 숫자,
+        "item_id": "기존 ID 그대로",
+        "item_name": "기존 이름 그대로",
+        "item_type": "document 또는 studio",
+        "action": "...",
+        "duration_minutes": 숫자,
+        "tip": "..."
+      }}
+    ]
+  }}
+}}"""
+
+    raw = _call_llm(
+        messages=[{"role": "user", "content": prompt}],
+        model=model,
+        temperature=0.5,
+        json_mode=True,
+        max_tokens=4000,
+    )
+    try:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+            cleaned = cleaned.strip()
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        return {"answer": raw, "updated_plan": None}
+
+
 def generate_audio_overview(
     doc_ids: list[str],
     fmt: str = "deep_analysis",
