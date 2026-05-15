@@ -114,9 +114,9 @@ function prepareTtsText(raw: string): string {
 }
 
 const DEFAULT_INITIAL_QUESTIONS = [
-  "이 자료 요약해줘.",
-  "핵심 개념이 뭐야?",
-  "어떤 부분이 제일 중요해?",
+  "한눈에 정리해줘",
+  "쉽게 설명해줘",
+  "시험에 나올 부분 알려줘",
 ];
 
 // ── IndexedDB 헬퍼 ───────────────────────────────────────────
@@ -499,9 +499,9 @@ export function StudentChatPanel({
       }
     } catch {}
     return [
-      { text: "이 자료 요약해줘.", category: "이해" },
-      { text: "핵심 개념이 뭐야?", category: "분석" },
-      { text: "어떤 부분이 제일 중요해?", category: "적용" },
+      { text: "한눈에 정리해줘", category: "이해" },
+      { text: "쉽게 설명해줘", category: "분석" },
+      { text: "시험에 나올 부분 알려줘", category: "적용" },
     ];
   });
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
@@ -748,9 +748,9 @@ export function StudentChatPanel({
       setMessages([]);
       setInitialQuestions([...DEFAULT_INITIAL_QUESTIONS]);
       setSuggestions([
-        { text: "이 자료 요약해줘.", category: "이해" },
-        { text: "핵심 개념이 뭐야?", category: "분석" },
-        { text: "어떤 부분이 제일 중요해?", category: "적용" },
+        { text: "한눈에 정리해줘", category: "이해" },
+        { text: "쉽게 설명해줘", category: "분석" },
+        { text: "시험에 나올 부분 알려줘", category: "적용" },
       ]);
       askedQuestionsRef.current = [];
       localStorage.removeItem(chatKeyRef.current);
