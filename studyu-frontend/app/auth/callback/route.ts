@@ -32,8 +32,11 @@ export async function GET(request: Request) {
         return NextResponse.redirect(`${origin}/onboarding`)
       }
     }
+  // 잠깐 테스트 추가(서정)
+    console.error('exchangeCodeForSession 실패:', error.message, error)
   }
 
+  console.error('code 없음 또는 세션 교환 실패, origin:', origin)
   // 에러 발생 시 → 로그인 페이지로 (에러 메시지 포함)
   return NextResponse.redirect(`${origin}/login?error=auth_failed`)
 }
