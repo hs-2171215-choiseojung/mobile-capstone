@@ -3,10 +3,22 @@
 // ============================================
 // 모든 요청에서 Supabase 세션(쿠키)을 갱신하는 미들웨어
 // 이게 없으면 로그인 세션이 만료되어도 갱신되지 않음
+//
+// Firebase Hosting의 쿠키 strip 정책을 우회하기 위해 모든 Supabase 쿠키를
+// `__session` 단일 쿠키에 다중화해서 저장한다. (./lib/supabase/session-cookie 참조)
 // ============================================
 
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import {
+  SESSION_COOKIE_NAME,
+  SESSION_COOKIE_OPTIONS,
+  applyUpdates,
+  decodeSession,
+  encodeSession,
+  mapToEntries,
+  type CookieToSet,
+} from './lib/supabase/session-cookie'
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
@@ -19,17 +31,21 @@ export async function middleware(request: NextRequest) {
     {
       cookies: {
         getAll() {
-          return request.cookies.getAll()
+          return mapToEntries(decodeSession(request.cookies.get(SESSION_COOKIE_NAME)?.value))
         },
-        setAll(cookiesToSet: { name: string; value: string; options?: Record<string, unknown> }[]) {
-          cookiesToSet.forEach(({ name, value }: { name: string; value: string; options?: Record<string, unknown> }) =>
-            request.cookies.set(name, value)
-          )
+        setAll(cookiesToSet: CookieToSet[]) {
+          const current = decodeSession(request.cookies.get(SESSION_COOKIE_NAME)?.value)
+          const next = applyUpdates(current, cookiesToSet)
+          const encoded = encodeSession(next)
+
+          request.cookies.set(SESSION_COOKIE_NAME, encoded)
           supabaseResponse = NextResponse.next({
             request,
           })
-          cookiesToSet.forEach(({ name, value, options }: { name: string; value: string; options?: Record<string, unknown> }) =>
-            supabaseResponse.cookies.set(name, value, options as Parameters<typeof supabaseResponse.cookies.set>[2])
+          supabaseResponse.cookies.set(
+            SESSION_COOKIE_NAME,
+            encoded,
+            SESSION_COOKIE_OPTIONS as Parameters<typeof supabaseResponse.cookies.set>[2]
           )
         },
       },
