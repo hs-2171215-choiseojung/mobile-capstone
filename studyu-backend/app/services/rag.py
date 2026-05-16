@@ -1,4 +1,4 @@
-"""
+﻿"""
 RAG 파이프라인 (Supabase 영속 저장, pdfplumber + OpenAI)
 
 문서 청크는 Supabase document_chunks 테이블에 저장되어
@@ -821,6 +821,17 @@ def _build_balanced_media_transcript_excerpt(
         trimmed_lines.append(line)
         current_len = next_len
     return "\n".join(trimmed_lines)
+
+
+def _build_balanced_media_context_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    max_chars: int,
+) -> str:
+    timeline = _build_media_timeline_from_chunks_v2(rows)
+    if not timeline:
+        return ""
+    return _build_balanced_media_transcript_excerpt(timeline, max_chars=max_chars)
 
 
 def _normalize_media_fallback_text(text: str) -> str:
@@ -3010,8 +3021,42 @@ def _get_semantic_rows(doc_ids: list[str], question: str, top_k: int = TOP_K) ->
             if rows_with_emb:
                 embeddings = [r["embedding"] for r in rows_with_emb]
                 scores = _cosine_similarity(query_embedding, embeddings)
-                top_indices = np.argsort(scores)[::-1][:top_k]
-                chosen_rows = [rows_with_emb[i] for i in top_indices]
+                ranked_indices = np.argsort(scores)[::-1]
+                ranked_rows = [
+                    {
+                        **rows_with_emb[i],
+                        "_score": float(scores[i]),
+                    }
+                    for i in ranked_indices
+                ]
+
+                # For media transcript chunks, avoid sending several near-identical
+                # neighboring timestamps so the model has more distinct time anchors.
+                diverse_rows: list[dict[str, Any]] = []
+                diverse_times: list[float] = []
+                for row in ranked_rows:
+                    meta = _parse_media_metadata(row.get("content", ""))
+                    start_sec = meta.get("start_sec")
+                    if not isinstance(start_sec, (int, float)):
+                        diverse_rows.append(row)
+                    else:
+                        if any(abs(float(start_sec) - t) < 18 for t in diverse_times):
+                            continue
+                        diverse_rows.append(row)
+                        diverse_times.append(float(start_sec))
+                    if len(diverse_rows) >= top_k:
+                        break
+
+                if len(diverse_rows) < top_k:
+                    used_ids = {id(row) for row in diverse_rows}
+                    for row in ranked_rows:
+                        if id(row) in used_ids:
+                            continue
+                        diverse_rows.append(row)
+                        if len(diverse_rows) >= top_k:
+                            break
+
+                chosen_rows = diverse_rows[:top_k]
                 chosen_rows.sort(key=lambda item: item.get("chunk_index", 0))
             else:
                 chosen_rows = rows[:top_k]
@@ -3146,10 +3191,17 @@ def _get_context(doc_ids: list[str], max_chars: int = 10000, labeled: bool = Fal
                 .order("chunk_index")
                 .execute()
             )
-            chunks = [_strip_media_metadata(row["content"]) for row in result.data]
-            if not chunks:
+            rows = result.data or []
+            if not rows:
                 continue
-            doc_text = "\n\n".join(chunks)[:per_doc_chars]
+            is_media_doc = any(_parse_media_metadata(row.get("content", "")).get("start_sec") is not None for row in rows)
+            if is_media_doc:
+                doc_text = _build_balanced_media_context_from_rows(rows, max_chars=per_doc_chars)
+            else:
+                chunks = [_strip_media_metadata(row["content"]) for row in rows]
+                doc_text = "\n\n".join(chunks)[:per_doc_chars]
+            if not doc_text:
+                continue
             doc_name = doc_name_map.get(doc_id, doc_id)
             parts.append(f"[문서명: {doc_name}]\n{doc_text}")
         return "\n\n=====\n\n".join(parts)
@@ -3162,7 +3214,13 @@ def _get_context(doc_ids: list[str], max_chars: int = 10000, labeled: bool = Fal
         .order("chunk_index")
         .execute()
     )
-    chunks = [_strip_media_metadata(row["content"]) for row in result.data]
+    rows = result.data or []
+    if not rows:
+        return ""
+    is_media_doc = any(_parse_media_metadata(row.get("content", "")).get("start_sec") is not None for row in rows)
+    if is_media_doc:
+        return _build_balanced_media_context_from_rows(rows, max_chars=max_chars)
+    chunks = [_strip_media_metadata(row["content"]) for row in rows]
     return "\n\n".join(chunks)[:max_chars]
 
 
@@ -3194,16 +3252,6 @@ def _get_media_doc_ids(doc_ids: list[str]) -> list[str]:
     return media_doc_ids
 
 
-def _get_youtube_doc_ids(doc_ids: list[str]) -> list[str]:
-    if not doc_ids:
-        return []
-    result = supabase_admin.table("documents").select("id, storage_path").in_("id", doc_ids).execute()
-    youtube_doc_ids: list[str] = []
-    for row in (result.data or []):
-        storage_path = row.get("storage_path", "") or ""
-        if _is_youtube_url(storage_path):
-            youtube_doc_ids.append(row["id"])
-    return youtube_doc_ids
 
 
 # ─────────────────────────────────────────────
@@ -3212,18 +3260,28 @@ def _get_youtube_doc_ids(doc_ids: list[str]) -> list[str]:
 
 LEVEL_PROMPTS = {
     "beginner": (
-        "반드시 쉬운 설명 모드로 답변하세요. 어려운 용어는 일상적인 말로 풀어쓰고, "
-        "필요하면 용어 뜻을 한 번 더 짧게 설명하세요. 답변 길이는 보통 5~8문장 또는 3~4개 불릿으로 유지하고, "
-        "가능하면 짧은 예시를 1개 포함하세요. 전문적인 배경지식을 이미 안다고 가정하지 마세요."
+        "반드시 쉬운 설명 모드로 답변하세요. 어려운 용어는 가능한 한 쉬운 일상 표현으로 풀어쓰고, "
+        "전문 용어를 써야 하면 바로 뒤에서 짧게 뜻을 설명하세요. "
+        "답변은 처음 배우는 사람도 따라올 수 있게 단계적으로 설명하고, 필요하면 짧은 예시를 1개만 포함하세요. "
+        "답변 길이는 보통 4~6문장 또는 3개 안팎의 불릿으로 유지하고, 전문적인 배경지식을 이미 안다고 가정하지 마세요."
     ),
     "intermediate": (
-        "반드시 보통 설명 모드로 답변하세요. 핵심 개념을 중심으로 자세함과 간결함의 균형을 맞춰 설명하세요. "
-        "답변 길이는 보통 4~7문장 또는 2~4개 불릿으로 유지하고, 필요한 경우에만 예시를 덧붙이세요."
+        "반드시 보통 설명 모드로 답변하세요. 핵심 개념과 이유를 중심으로 자세함과 간결함의 균형을 맞춰 설명하세요. "
+        "답변 길이는 보통 3~5문장 또는 2~3개 불릿으로 유지하고, 필요한 경우에만 짧은 예시를 덧붙이세요. "
+        "불필요한 배경 설명은 줄이고 질문에 직접 필요한 내용부터 답하세요."
     ),
     "advanced": (
-        "반드시 간략 설명 모드로 답변하세요. 가장 중요한 내용만 추려서 짧고 압축적으로 답하세요. "
-        "가능하면 2~4문장 또는 2~3개 불릿 이내로 끝내고, 배경 설명·부연 설명·예시는 꼭 필요할 때만 최소화하세요."
+        "반드시 간략 설명 모드로 답변하세요. 가장 중요한 결론과 근거만 남기고 매우 짧고 압축적으로 답하세요. "
+        "가능하면 2~3문장 또는 2개 불릿 이내로 끝내고, 배경 설명·부연 설명·예시는 꼭 필요할 때만 최소화하세요. "
+        "질문이 명확하면 바로 답부터 말하고, 반복 표현이나 완곡한 서두는 생략하세요."
     ),
+}
+
+
+LEVEL_MAX_TOKENS = {
+    "beginner": 1100,
+    "intermediate": 850,
+    "advanced": 600,
 }
 
 
@@ -3237,6 +3295,13 @@ def normalize_learning_level(level: str | None) -> str:
         "brief": "advanced",
     }
     return mapping.get((level or "").strip().lower(), "intermediate")
+
+
+def _get_level_max_tokens(level: str, *, is_full_doc_query: bool) -> int:
+    base = LEVEL_MAX_TOKENS.get(level, LEVEL_MAX_TOKENS["intermediate"])
+    if is_full_doc_query:
+        return base + 900
+    return base
 
 
 SUGGESTION_BLOCK = """【추천 질문 — 필수 출력】
@@ -3471,7 +3536,8 @@ def chat_with_docs(
     import base64
 
     is_multi = len(doc_ids) > 1
-    level_hint = LEVEL_PROMPTS.get(level, LEVEL_PROMPTS["intermediate"])
+    normalized_level = normalize_learning_level(level)
+    level_hint = LEVEL_PROMPTS.get(normalized_level, LEVEL_PROMPTS["intermediate"])
     filename_map = _get_doc_filename_map(doc_ids)
     doc_filenames = [filename_map.get(doc_id, doc_id) for doc_id in doc_ids]
 
@@ -3516,8 +3582,6 @@ def chat_with_docs(
     is_full_doc_query = (is_ppt_doc or is_pdf_doc or is_docx_doc or is_hwpx_doc) and bool(_FULL_DOC_RE.search(question))
 
     media_doc_ids = _get_media_doc_ids(doc_ids)
-    youtube_doc_ids = _get_youtube_doc_ids(doc_ids)
-    youtube_only = False
     semantic_rows = _get_semantic_rows(doc_ids, question, top_k=TOP_K)
     references = _build_media_references(semantic_rows)
 
@@ -3621,20 +3685,7 @@ def chat_with_docs(
     video_note = ""
     if has_video:
         joined_ref_lines = _format_reference_lines(references)
-        if youtube_only:
-            video_note = (
-                "\n\n중요: 이 문서는 유튜브 자막 기반 문서입니다. "
-                "1차 답변에서는 먼저 자막 텍스트만 읽고 질문에 정확히 답하세요. "
-                "이 단계에서는 타임스탬프를 억지로 넣지 말고, 질문에 대한 설명만 자연스럽게 정리하세요. "
-                "추측하지 말고 자막에 근거가 있는 내용만 답하세요. "
-                "답변은 Markdown 형식으로 작성하고, 핵심 개념·중요 결론·주의할 부분은 **굵게** 표시하세요. "
-                "문단 사이에는 빈 줄을 넣으세요. "
-                "설명이 여러 포인트로 나뉘면 불릿 목록(*)이나 번호 목록을 사용하되, 각 항목은 반드시 새로운 줄에서 시작하세요. "
-                "불릿 목록을 시작하기 전에도 빈 줄을 넣으세요. "
-                "핵심 주제가 바뀌면 빈 줄을 넣어 문단을 나누고, 한 문단을 너무 길게 이어 쓰지 마세요."
-            )
-        else:
-            video_note = (
+        video_note = (
                 "\n\n중요: 비디오 또는 오디오 파일이 포함되어 있습니다. "
                 "답변은 반드시 전사 텍스트를 바탕으로 작성하고, 관련 내용이 있으면 답변 본문 안에 바로 타임스탬프를 넣어주세요. "
                 "예: 드래그 장면(0:17): ..., 사라지는 장면(0:23-0:31): ... "
@@ -3659,6 +3710,13 @@ def chat_with_docs(
             video_note += f"\n\n관련 전사 구간:\n{joined_ref_lines}"
 
     # ── 이미지 타입별 분석 가이드 ─────────────────
+    if has_video:
+        video_note += (
+            "\n\nCritical requirement for media answers: include at least one timestamp directly in the answer body. "
+            "If the answer is based on video, audio, or YouTube transcript content, a response without any timestamp is invalid. "
+            "Use a concrete format such as (0:17) or (0:23-0:31), and place it next to the relevant explanation instead of adding a separate timestamp section."
+        )
+
     IMAGE_TYPE_GUIDE = {
         "photo": "피사체의 외형·행동·감정을 묘사하고, 배경과 전체적인 분위기도 언급하세요.",
         "chart": "축 레이블, 데이터 값, 단위, 추세, 최댓값·최솟값을 정확히 언급하세요. 수치는 반드시 이미지에서 보이는 그대로 인용하세요.",
@@ -3994,7 +4052,6 @@ def chat_with_docs(
         safe_model = "gpt-4o-mini"
 
     use_claude = _is_claude(safe_model)
-    # youtube_only 재작성 등 팀원 코드는 OpenAI 클라이언트 유지
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
     if stream:
@@ -4056,7 +4113,7 @@ def chat_with_docs(
                     _sugg_tail = combined
 
             try:
-                max_tok = 1500 if not is_full_doc_query else 3000
+                max_tok = _get_level_max_tokens(normalized_level, is_full_doc_query=is_full_doc_query)
                 if use_claude:
                     from anthropic import Anthropic as _Anthropic
                     _claude = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -4095,62 +4152,11 @@ def chat_with_docs(
                 yield f"data: {_json.dumps({'error': str(e)})}\n\n"
                 return
 
-            # 유튜브 전용: 스트리밍 완료 후 타임스탬프 재작성
             full_answer = "".join(full_answer_parts)
             final_refs = _stream_meta["references"]
-            if youtube_only and full_answer.strip():
-                try:
-                    aligned_rows = _get_semantic_rows(youtube_doc_ids, full_answer, top_k=max(TOP_K, 6))
-                    aligned_references = _build_media_references(aligned_rows)
-                    aligned_ref_lines = _format_reference_lines(aligned_references)
-                    if aligned_ref_lines:
-                        rewrite_msgs = [
-                            {
-                                "role": "system",
-                                "content": (
-                                    "너는 유튜브 자막을 근거로 답변을 다듬는 도우미다. "
-                                    "초안 답변의 의미와 구조는 유지하되, 아래 자막 근거를 다시 읽고 "
-                                    "질문과 직접 관련된 설명 부분의 시간만 답변 본문 안에 자연스럽게 붙여 다시 작성하라. "
-                                    "별도의 관련 시점 목록은 만들지 말고, 이어지는 설명이면 범위 표기를 우선하라."
-                                ),
-                            },
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"질문:\n{_stream_meta['question']}\n\n"
-                                    f"초안 답변:\n{full_answer}\n\n"
-                                    f"자막 근거:\n{aligned_ref_lines}"
-                                ),
-                            },
-                        ]
-                        if use_claude:
-                            from anthropic import Anthropic as _Anthropic
-                            _claude_rw = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-                            _sys_rw, _msgs_rw = _convert_messages_for_anthropic(rewrite_msgs)
-                            _rw_resp = _claude_rw.messages.create(
-                                model=safe_model,
-                                max_tokens=2000,
-                                system=_sys_rw,
-                                messages=_msgs_rw,  # type: ignore
-                                temperature=0.2,
-                            )
-                            rewritten = (_rw_resp.content[0].text if _rw_resp.content else "").strip()
-                        else:
-                            rewrite_resp = client.chat.completions.create(
-                                model="gpt-4o-mini",
-                                messages=rewrite_msgs,
-                                temperature=0.2,
-                                max_tokens=2000,
-                            )
-                            rewritten = (rewrite_resp.choices[0].message.content or "").strip()
-                        if rewritten:
-                            final_refs = aligned_references
-                            yield f"data: {_json.dumps({'rewrite': rewritten})}\n\n"
-                except Exception:
-                    pass
 
             # 추천 질문 스레드 대기 (스트리밍 중 이미 완료됐을 가능성 높음)
-            sugg_thread.join(timeout=5)
+            sugg_thread.join(timeout=1)
 
             sc = _stream_meta["source_chunks"]
             for c in sc:
@@ -4160,7 +4166,7 @@ def chat_with_docs(
 
         return _token_generator(), [], []  # type: ignore
 
-    max_tok = 1500 if not is_full_doc_query else 3000
+    max_tok = _get_level_max_tokens(normalized_level, is_full_doc_query=is_full_doc_query)
     if use_claude:
         from anthropic import Anthropic as _Anthropic
         _claude = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -4181,41 +4187,6 @@ def chat_with_docs(
             max_tokens=max_tok,
         )
         answer = response.choices[0].message.content or ""
-
-    if youtube_only and answer.strip():
-        aligned_rows = _get_semantic_rows(youtube_doc_ids, answer, top_k=max(TOP_K, 6))
-        aligned_references = _build_media_references(aligned_rows)
-        aligned_ref_lines = _format_reference_lines(aligned_references)
-        if aligned_ref_lines:
-            rewrite_messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "너는 유튜브 자막을 근거로 답변을 다듬는 도우미다. "
-                        "초안 답변의 의미와 구조는 유지하되, 아래 자막 근거를 다시 읽고 "
-                        "질문과 직접 관련된 설명 부분의 시간만 답변 본문 안에 자연스럽게 붙여 다시 작성하라. "
-                        "별도의 관련 시점 목록은 만들지 말고, 이어지는 설명이면 범위 표기를 우선하라."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"질문:\n{question}\n\n"
-                        f"초안 답변:\n{answer}\n\n"
-                        f"자막 근거:\n{aligned_ref_lines}"
-                    ),
-                },
-            ]
-            rewrite_response = client.chat.completions.create(
-                model=safe_model,
-                messages=rewrite_messages,
-                temperature=0.2,
-                max_tokens=2000,
-            )
-            rewritten_answer = rewrite_response.choices[0].message.content or ""
-            if rewritten_answer.strip():
-                answer = rewritten_answer
-                references = aligned_references
 
     # ── 이미지 직접 참조 질문에서 잘못 붙은 📌 제거 ──
     if has_images and _IMAGE_DIRECT_REF_RE.search(question):

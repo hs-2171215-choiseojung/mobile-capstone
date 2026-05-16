@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ChevronDown, BotMessageSquare } from 'lucide-react';
 import { Resizable } from 're-resizable';
@@ -115,6 +115,7 @@ function canGenerateMediaSummary(doc: DocumentInfo | null, resolvedUrl?: string)
 
 export default function StudentWorkspacePage() {
   const params = useParams();
+  const router = useRouter();
   const notebookId = params.id as string;
 
   const [notebookTitle, setNotebookTitle] = useState<string>("");
@@ -717,6 +718,22 @@ export default function StudentWorkspacePage() {
     shouldRestoreCenterScrollRef.current = true;
   };
 
+  const handleTopNavBack = () => {
+    if (selectedSource) {
+      closeSource();
+      return;
+    }
+
+    if (selectedItem) {
+      setSelectedItem(null);
+      shouldRestoreCenterScrollRef.current = true;
+      return;
+    }
+
+    router.push("/dashboard/student");
+    router.refresh();
+  };
+
   const renderModelControls = () => (
     <>
       <div className="relative">
@@ -741,7 +758,11 @@ export default function StudentWorkspacePage() {
 
   return (
     <div className="flex flex-col h-screen bg-white overflow-hidden">
-      <TopNavBar title={notebookTitle} rightSlot={renderModelControls()} />
+      <TopNavBar
+        title={notebookTitle}
+        rightSlot={renderModelControls()}
+        onBackClick={handleTopNavBack}
+      />
       <div className="flex flex-1 pt-[64px] overflow-hidden relative">
 
         {/* 채팅 없이 단독으로 열리는 스튜디오 타입 */}

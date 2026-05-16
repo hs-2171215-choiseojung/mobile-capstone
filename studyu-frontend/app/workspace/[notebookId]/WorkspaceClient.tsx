@@ -110,12 +110,17 @@ export default function WorkspaceClient({ notebook, initialDocs, backUrl, role =
             <span className="text-gray-300">›</span>
             <span className="text-sm font-semibold text-gray-800 truncate max-w-[200px]">{notebook.title}</span>
           </div>
-          <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => { router.push(backUrl); router.refresh(); }}
+            className="flex items-center gap-2"
+            aria-label="대시보드로 이동"
+          >
             <StudyULogo size={28} />
             <span className="text-sm font-bold text-gray-800">
               STUDY<span className="text-blue-600">:U</span>
             </span>
-          </div>
+          </button>
         </div>
 
         {/* 탭 바 */}
@@ -126,7 +131,7 @@ export default function WorkspaceClient({ notebook, initialDocs, backUrl, role =
             📁 소스
           </button>
           <button
-            onClick={() => router.push(`/dashboard/students?notebook=${notebook.id}`)}
+            onClick={() => router.push(`/dashboard/students?notebook=${notebook.id}&from=${encodeURIComponent(`/workspace/${notebook.id}`)}`)}
             className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-blue-600 border-b-2 border-transparent hover:border-blue-300 transition-colors"
           >
             👥 학생관리

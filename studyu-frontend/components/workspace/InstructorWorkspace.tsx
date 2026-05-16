@@ -388,6 +388,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
   const [linkCopied, setLinkCopied] = useState(false);
+  const [inviteCodeCopied, setInviteCodeCopied] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
   const [inviteLoading, setInviteLoading] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -1649,7 +1650,17 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
               <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
-          <StudyULogo size={28} />
+          <button
+            type="button"
+            onClick={() => {
+              router.push("/dashboard/instructor");
+              router.refresh();
+            }}
+            className="shrink-0"
+            aria-label="강사 대시보드로 이동"
+          >
+            <StudyULogo size={28} />
+          </button>
           <span className="text-gray-300 text-lg">|</span>
           <span className="text-blue-500 font-semibold truncate max-w-[240px]" style={{ fontSize: "0.9rem" }}>
             {notebook.title}
@@ -1761,7 +1772,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                 {/* Nav tabs */}
                 <nav className="flex flex-col gap-[4px] px-2 shrink-0">
                   <button
-                    onClick={() => router.push(`/dashboard/students?notebook=${notebook.id}`)}
+                    onClick={() => router.push(`/dashboard/students?notebook=${notebook.id}&from=${encodeURIComponent(`/workspace/${notebook.id}`)}`)}
                     className={`h-[41px] flex items-center gap-2.5 pl-3 rounded-[14px] transition-all ${
                       activeView === "students" ? "bg-[#eff6ff] shadow-sm" : "hover:bg-gray-50"
                     }`}
@@ -3167,11 +3178,21 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                     <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-4 py-4">
                       <span className="flex-1 text-2xl font-bold tracking-widest text-blue-600 text-center">{inviteCode}</span>
                       <button
-                        onClick={() => { navigator.clipboard?.writeText(inviteCode).catch(() => {}); }}
-                        className="p-1.5 rounded-lg hover:bg-gray-200 text-gray-400 transition-colors"
-                        title="복사"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(inviteCode).catch(() => {});
+                          setInviteCodeCopied(true);
+                          setTimeout(() => setInviteCodeCopied(false), 2000);
+                        }}
+                        className={`p-1.5 rounded-lg transition-colors ${
+                          inviteCodeCopied ? "bg-green-100 text-green-600" : "hover:bg-gray-200 text-gray-400"
+                        }`}
+                        title={inviteCodeCopied ? "복사 완료" : "복사"}
                       >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor" strokeWidth="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                        {inviteCodeCopied ? (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M5 12.5 9.5 17 19 7.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        ) : (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor" strokeWidth="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                        )}
                       </button>
                     </div>
                     <button

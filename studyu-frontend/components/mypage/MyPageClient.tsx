@@ -282,12 +282,16 @@ export default function MyPageClient({ email, createdAt, displayName, avatarUrl,
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b sticky top-0 z-10">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
+          <Link
+            href={`/dashboard/${role}`}
+            className="flex items-center gap-2"
+            aria-label="대시보드로 이동"
+          >
             <StudyULogo size={32} />
             <span className="font-bold text-lg">
               STUDY<span className="text-blue-600">:U</span>
             </span>
-          </div>
+          </Link>
           <Link
             href={`/dashboard/${role}`}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"

@@ -474,6 +474,9 @@ export function StudentChatPanel({
   onPageClick,
   currentSlide,
 }: StudentChatPanelProps) {
+  const normalizeQuestionForHistory = (value: string) =>
+    value.trim().replace(/\s+/g, " ").toLowerCase();
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -512,6 +515,8 @@ export function StudentChatPanel({
   const suggestionFetchAbortRef = useRef<AbortController | null>(null);
   const suggestionsRef = useRef<Suggestion[]>(suggestions);
   const lastAnswerRef = useRef<string>("");
+  const lastSubmittedQuestionRef = useRef<string>("");
+  const lastSubmittedDifficultyRef = useRef<string>("");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatKeyRef = useRef(chatKey);
@@ -972,14 +977,25 @@ export function StudentChatPanel({
       const token        = await getToken();
       const targetDocIds = activeDocIds.length > 0 ? activeDocIds : docs.map(d => d.id);
 
+      const normalizedQuestion = normalizeQuestionForHistory(userMessage);
+      const currentDifficulty = selectedDifficulty || "intermediate";
+      const sameQuestionDifferentDifficulty =
+        normalizedQuestion.length > 0 &&
+        normalizedQuestion === lastSubmittedQuestionRef.current &&
+        currentDifficulty !== lastSubmittedDifficultyRef.current;
+
       if (targetDocIds.length === 0)
         throw new Error("학습할 소스(문서)가 없습니다. 강사님께 자료 업로드를 요청해 주세요.");
 
       // 최근 대화 히스토리 구성 (user/ai 메시지만, 최대 10개)
-      const chatHistory = messagesRef.current
-        .filter(m => m.type === 'user' || m.type === 'ai')
-        .slice(-10)
-        .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }));
+      const chatHistory = sameQuestionDifferentDifficulty
+        ? []
+        : messagesRef.current
+          .filter(m => m.type === 'user' || m.type === 'ai')
+          .slice(-10)
+          .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }));
+      lastSubmittedQuestionRef.current = normalizedQuestion;
+      lastSubmittedDifficultyRef.current = currentDifficulty;
       const currentSuggestionTexts = suggestionsRef.current.map((s) => s.text);
       const askedQuestionTexts = [...askedQuestionsRef.current, ...currentSuggestionTexts, userMessage].slice(-12);
       const fetchMoreSuggestions = () =>
