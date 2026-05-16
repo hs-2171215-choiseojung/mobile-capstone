@@ -43,6 +43,7 @@ export default function InstructorDashboard({ notebooks: initial, userName }: Pr
   const [shareId, setShareId] = useState<string | null>(null);
   const [inviteCode, setInviteCode] = useState<string>("");
   const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteCodeCopied, setInviteCodeCopied] = useState(false);
 
   const starred = notebooks.filter((nb) => nb.is_starred);
 
@@ -273,14 +274,26 @@ export default function InstructorDashboard({ notebooks: initial, userName }: Pr
                 <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 mb-3">
                   <span className="flex-1 text-2xl font-bold tracking-widest text-blue-600 text-center">{inviteCode}</span>
                   <button
-                    onClick={() => { navigator.clipboard.writeText(inviteCode); }}
-                    className="p-1.5 rounded-lg hover:bg-gray-200 transition-colors"
-                    title="복사"
+                    onClick={() => {
+                      navigator.clipboard.writeText(inviteCode);
+                      setInviteCodeCopied(true);
+                      setTimeout(() => setInviteCodeCopied(false), 2000);
+                    }}
+                    className={`p-1.5 rounded-lg transition-colors ${
+                      inviteCodeCopied ? "bg-green-100 text-green-600" : "hover:bg-gray-200 text-gray-500"
+                    }`}
+                    title={inviteCodeCopied ? "복사 완료" : "복사"}
                   >
-                    <svg className="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24">
-                      <rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                    </svg>
+                    {inviteCodeCopied ? (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
+                        <path d="M5 12.5 9.5 17 19 7.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
+                        <rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                      </svg>
+                    )}
                   </button>
                 </div>
                 <p className="text-xs text-gray-400 text-center mb-4">학생에게 이 코드를 알려주세요. 학생이 코드를 입력하면 이 노트북에 참여할 수 있습니다.</p>
