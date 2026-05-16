@@ -187,11 +187,15 @@ export default function StudentsPageClient({
                   <div className="max-h-64 overflow-y-auto">
                     {notebookList.map((notebook) => {
                       const notebookId = notebook.id || notebook.notebook_id;
+                      const nextBackHref = backHref.startsWith("/workspace/")
+                        ? `/workspace/${notebookId}`
+                        : backHref;
+                      const notebookHref = `/dashboard/students?notebook=${notebookId}&from=${encodeURIComponent(nextBackHref)}`;
                       return (
                         <button
                           key={notebookId}
                           onClick={() => {
-                            router.push(`/dashboard/students?notebook=${notebookId}`);
+                            router.push(notebookHref);
                             setDropdownOpen(false);
                           }}
                           className={`w-full text-left px-4 py-2.5 text-sm border-b border-gray-100 last:border-0 hover:bg-gray-50 transition-colors ${
