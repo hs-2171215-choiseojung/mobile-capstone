@@ -76,6 +76,17 @@ function getRecentNotebookOrder(): string[] {
   }
 }
 
+function removeRecentNotebook(id: string): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const next = getRecentNotebookOrder().filter((value) => value !== id);
+    localStorage.setItem(RECENT_NOTEBOOKS_STORAGE_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    return [];
+  }
+}
+
 export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, userName }: Props) {
   const router = useRouter();
   const [enrolledNotebooks, setEnrolledNotebooks] = useState<Notebook[]>(() => initialEnrolled.map(normalizeNotebook));
@@ -137,6 +148,7 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
       if (!res.ok && res.status !== 204) throw new Error("나가기에 실패했습니다.");
 
       setEnrolledNotebooks((prev) => prev.filter((nb) => nb.id !== id));
+      setRecentNotebookOrder(removeRecentNotebook(id));
       router.refresh();
     } catch (error: unknown) {
       alert(`나가기 실패: ${parseErrorMessage(error, "오류")}`);
@@ -209,6 +221,7 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
         });
       }
 
+      setRecentNotebookOrder(removeRecentNotebook(joinedNotebookId));
       setJoinModalOpen(false);
       setJoinCode("");
       router.refresh();

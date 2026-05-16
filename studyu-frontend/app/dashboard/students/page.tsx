@@ -9,15 +9,17 @@ interface Notebook {
   notebook_id?: string;
   title: string;
   student_count?: number;
+  notebook_enrollments?: { count: number }[];
 }
 
 interface Props {
-  searchParams: Promise<{ notebook?: string }>;
+  searchParams: Promise<{ notebook?: string; from?: string }>;
 }
 
 export default async function StudentsPage({ searchParams }: Props) {
   const params = await searchParams;
   const notebookId = params?.notebook as string;
+  const from = params?.from as string | undefined;
 
   console.log("StudentsPage - notebookId:", notebookId);
 
@@ -60,22 +62,20 @@ export default async function StudentsPage({ searchParams }: Props) {
 
   // 강사의 노트북 목록만 가져오기 (먼저 실행)
   try {
-    const res = await fetch(`${apiBase}/api/notebooks?notebook_type=instructor`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      cache: "no-store",
-    });
+    const { data } = await supabase
+      .from("notebooks")
+      .select("id, title, notebook_enrollments(count)")
+      .eq("user_id", user.id)
+      .eq("notebook_type", "instructor")
+      .order("created_at", { ascending: false });
 
-    if (res.ok) {
-      const data = await res.json();
-      console.log("Raw API response:", data);
-      console.log("First notebook structure:", data[0] || (data.notebooks && data.notebooks[0]));
-      notebookList = Array.isArray(data) ? data : data.notebooks || [];
-      console.log("Notebooks loaded:", notebookList.map(n => ({ id: n.notebook_id, title: n.title })));
-    } else {
-      console.warn(`Notebook list fetch failed: ${res.status}`);
-    }
+    notebookList = (data ?? []).map((notebook) => ({
+      id: notebook.id,
+      title: notebook.title,
+      student_count: Array.isArray(notebook.notebook_enrollments)
+        ? notebook.notebook_enrollments[0]?.count || 0
+        : 0,
+    }));
   } catch (err) {
     console.warn("Notebook list fetch error:", err);
   }
@@ -113,6 +113,7 @@ export default async function StudentsPage({ searchParams }: Props) {
       errorMsg={errorMsg}
       notebookList={notebookList}
       currentNotebookId={notebookId}
+      backHref={from || "/dashboard/instructor"}
     />
   );
 }

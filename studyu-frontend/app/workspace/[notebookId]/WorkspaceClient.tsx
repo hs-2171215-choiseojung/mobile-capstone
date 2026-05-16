@@ -131,7 +131,7 @@ export default function WorkspaceClient({ notebook, initialDocs, backUrl, role =
             📁 소스
           </button>
           <button
-            onClick={() => router.push(`/dashboard/students?notebook=${notebook.id}`)}
+            onClick={() => router.push(`/dashboard/students?notebook=${notebook.id}&from=${encodeURIComponent(`/workspace/${notebook.id}`)}`)}
             className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-blue-600 border-b-2 border-transparent hover:border-blue-300 transition-colors"
           >
             👥 학생관리

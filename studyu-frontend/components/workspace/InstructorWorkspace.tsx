@@ -1771,7 +1771,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                 {/* Nav tabs */}
                 <nav className="flex flex-col gap-[4px] px-2 shrink-0">
                   <button
-                    onClick={() => router.push(`/dashboard/students?notebook=${notebook.id}`)}
+                    onClick={() => router.push(`/dashboard/students?notebook=${notebook.id}&from=${encodeURIComponent(`/workspace/${notebook.id}`)}`)}
                     className={`h-[41px] flex items-center gap-2.5 pl-3 rounded-[14px] transition-all ${
                       activeView === "students" ? "bg-[#eff6ff] shadow-sm" : "hover:bg-gray-50"
                     }`}
