@@ -7,9 +7,10 @@ import StudyULogo from "@/components/StudyULogo";
 interface TopNavBarProps {
   title?: string;
   rightSlot?: ReactNode;
+  onBackClick?: () => void;
 }
 
-export function TopNavBar({ title, rightSlot }: TopNavBarProps) {
+export function TopNavBar({ title, rightSlot, onBackClick }: TopNavBarProps) {
   const router = useRouter();
 
   return (
@@ -17,6 +18,10 @@ export function TopNavBar({ title, rightSlot }: TopNavBarProps) {
       <div className="flex items-center gap-4 min-w-0">
         <button
           onClick={() => {
+            if (onBackClick) {
+              onBackClick();
+              return;
+            }
             router.push("/dashboard/student");
             router.refresh();
           }}
