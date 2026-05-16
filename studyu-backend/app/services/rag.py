@@ -3260,18 +3260,28 @@ def _get_media_doc_ids(doc_ids: list[str]) -> list[str]:
 
 LEVEL_PROMPTS = {
     "beginner": (
-        "반드시 쉬운 설명 모드로 답변하세요. 어려운 용어는 일상적인 말로 풀어쓰고, "
-        "필요하면 용어 뜻을 한 번 더 짧게 설명하세요. 답변 길이는 보통 5~8문장 또는 3~4개 불릿으로 유지하고, "
-        "가능하면 짧은 예시를 1개 포함하세요. 전문적인 배경지식을 이미 안다고 가정하지 마세요."
+        "반드시 쉬운 설명 모드로 답변하세요. 어려운 용어는 가능한 한 쉬운 일상 표현으로 풀어쓰고, "
+        "전문 용어를 써야 하면 바로 뒤에서 짧게 뜻을 설명하세요. "
+        "답변은 처음 배우는 사람도 따라올 수 있게 단계적으로 설명하고, 필요하면 짧은 예시를 1개만 포함하세요. "
+        "답변 길이는 보통 4~6문장 또는 3개 안팎의 불릿으로 유지하고, 전문적인 배경지식을 이미 안다고 가정하지 마세요."
     ),
     "intermediate": (
-        "반드시 보통 설명 모드로 답변하세요. 핵심 개념을 중심으로 자세함과 간결함의 균형을 맞춰 설명하세요. "
-        "답변 길이는 보통 4~7문장 또는 2~4개 불릿으로 유지하고, 필요한 경우에만 예시를 덧붙이세요."
+        "반드시 보통 설명 모드로 답변하세요. 핵심 개념과 이유를 중심으로 자세함과 간결함의 균형을 맞춰 설명하세요. "
+        "답변 길이는 보통 3~5문장 또는 2~3개 불릿으로 유지하고, 필요한 경우에만 짧은 예시를 덧붙이세요. "
+        "불필요한 배경 설명은 줄이고 질문에 직접 필요한 내용부터 답하세요."
     ),
     "advanced": (
-        "반드시 간략 설명 모드로 답변하세요. 가장 중요한 내용만 추려서 짧고 압축적으로 답하세요. "
-        "가능하면 2~4문장 또는 2~3개 불릿 이내로 끝내고, 배경 설명·부연 설명·예시는 꼭 필요할 때만 최소화하세요."
+        "반드시 간략 설명 모드로 답변하세요. 가장 중요한 결론과 근거만 남기고 매우 짧고 압축적으로 답하세요. "
+        "가능하면 2~3문장 또는 2개 불릿 이내로 끝내고, 배경 설명·부연 설명·예시는 꼭 필요할 때만 최소화하세요. "
+        "질문이 명확하면 바로 답부터 말하고, 반복 표현이나 완곡한 서두는 생략하세요."
     ),
+}
+
+
+LEVEL_MAX_TOKENS = {
+    "beginner": 1100,
+    "intermediate": 850,
+    "advanced": 600,
 }
 
 
@@ -3285,6 +3295,13 @@ def normalize_learning_level(level: str | None) -> str:
         "brief": "advanced",
     }
     return mapping.get((level or "").strip().lower(), "intermediate")
+
+
+def _get_level_max_tokens(level: str, *, is_full_doc_query: bool) -> int:
+    base = LEVEL_MAX_TOKENS.get(level, LEVEL_MAX_TOKENS["intermediate"])
+    if is_full_doc_query:
+        return base + 900
+    return base
 
 
 SUGGESTION_BLOCK = """【추천 질문 — 필수 출력】
@@ -3519,7 +3536,8 @@ def chat_with_docs(
     import base64
 
     is_multi = len(doc_ids) > 1
-    level_hint = LEVEL_PROMPTS.get(level, LEVEL_PROMPTS["intermediate"])
+    normalized_level = normalize_learning_level(level)
+    level_hint = LEVEL_PROMPTS.get(normalized_level, LEVEL_PROMPTS["intermediate"])
     filename_map = _get_doc_filename_map(doc_ids)
     doc_filenames = [filename_map.get(doc_id, doc_id) for doc_id in doc_ids]
 
@@ -4095,7 +4113,7 @@ def chat_with_docs(
                     _sugg_tail = combined
 
             try:
-                max_tok = 1500 if not is_full_doc_query else 3000
+                max_tok = _get_level_max_tokens(normalized_level, is_full_doc_query=is_full_doc_query)
                 if use_claude:
                     from anthropic import Anthropic as _Anthropic
                     _claude = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -4138,7 +4156,7 @@ def chat_with_docs(
             final_refs = _stream_meta["references"]
 
             # 추천 질문 스레드 대기 (스트리밍 중 이미 완료됐을 가능성 높음)
-            sugg_thread.join(timeout=5)
+            sugg_thread.join(timeout=1)
 
             sc = _stream_meta["source_chunks"]
             for c in sc:
@@ -4148,7 +4166,7 @@ def chat_with_docs(
 
         return _token_generator(), [], []  # type: ignore
 
-    max_tok = 1500 if not is_full_doc_query else 3000
+    max_tok = _get_level_max_tokens(normalized_level, is_full_doc_query=is_full_doc_query)
     if use_claude:
         from anthropic import Anthropic as _Anthropic
         _claude = _Anthropic(api_key=settings.ANTHROPIC_API_KEY)
