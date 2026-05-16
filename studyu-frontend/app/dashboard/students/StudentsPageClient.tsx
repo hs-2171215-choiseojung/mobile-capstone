@@ -202,12 +202,20 @@ export default function StudentsPageClient({ notebookData, errorMsg, notebookLis
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              router.push("/dashboard/instructor");
+              router.refresh();
+            }}
+            className="flex items-center gap-2"
+            aria-label="강사 대시보드로 이동"
+          >
             <StudyULogo size={28} />
             <span className="text-sm font-bold text-gray-800">
               STUDY<span className="text-blue-600">:U</span>
             </span>
-          </div>
+          </button>
         </div>
       </header>
 

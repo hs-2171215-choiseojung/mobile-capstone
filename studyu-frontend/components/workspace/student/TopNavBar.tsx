@@ -27,7 +27,17 @@ export function TopNavBar({ title, rightSlot }: TopNavBarProps) {
             <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
-        <StudyULogo size={28} />
+        <button
+          type="button"
+          onClick={() => {
+            router.push("/dashboard/student");
+            router.refresh();
+          }}
+          className="shrink-0"
+          aria-label="학생 대시보드로 이동"
+        >
+          <StudyULogo size={28} />
+        </button>
         <span className="text-gray-300 text-lg">|</span>
         <span className="text-blue-500 font-semibold truncate max-w-[240px]" style={{ fontSize: "0.9rem" }}>
           {title || "노트북 제목 불러오는 중..."}

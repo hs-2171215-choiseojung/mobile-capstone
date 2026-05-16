@@ -39,12 +39,17 @@ export default function DashboardClient({ role, instructorNotebooks, studentNote
       <header className="bg-white border-b sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
           {/* 로고 */}
-          <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => router.push(`/dashboard/${role}`)}
+            className="flex items-center gap-2"
+            aria-label="대시보드 홈으로 이동"
+          >
             <StudyULogo size={32} />
             <span className="font-bold text-lg">
               STUDY<span className="text-blue-600">:U</span>
             </span>
-          </div>
+          </button>
 
           {/* 우측 메뉴 */}
           <div className="flex items-center gap-4">
