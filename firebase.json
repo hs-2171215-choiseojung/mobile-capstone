@@ -9,21 +9,7 @@
       },
       {
         "source": "**",
-        "run": { 
-          "serviceId": "studyu-frontend", 
-          "region": "asia-east1"
-        }
-      }
-    ],
-    "headers": [
-      {
-        "source": "**",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "no-cache, no-store"
-          }
-        ]
+        "run": { "serviceId": "studyu-frontend", "region": "asia-east1" }
       }
     ]
   }
