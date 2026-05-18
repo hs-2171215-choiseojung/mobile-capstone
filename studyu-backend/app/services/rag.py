@@ -4697,6 +4697,10 @@ def generate_mindmap(
 - 각 브랜치에 2~4개의 2단계 노드 (세부 내용)
 - 필요시 3단계 노드 추가 가능
 - 각 노드는 짧고 핵심적인 텍스트 (10단어 이내)
+- 리프 노드(자식이 없는 최하위 노드)에는 source_ref 필드를 반드시 추가하세요:
+  - page: 문서에 [페이지 N] 또는 [슬라이드 N] 마커가 있으면 해당 번호(정수), 없으면 null
+  - text: 이 노드 내용의 근거가 된 원문 문장을 그대로 인용 (최대 80자), 없으면 null
+  - timestamp: 동영상/오디오 문서에서 [00:00] 형식의 타임스탬프가 있으면 초 단위 숫자, 없으면 null
 
 문서 내용:
 {context}
@@ -4707,10 +4711,10 @@ def generate_mindmap(
   "nodes": [
     {{"id": "root", "text": "중심 주제"}},
     {{"id": "1", "text": "브랜치 1", "parent": "root"}},
-    {{"id": "1-1", "text": "세부 내용 1", "parent": "1"}},
-    {{"id": "1-2", "text": "세부 내용 2", "parent": "1"}},
+    {{"id": "1-1", "text": "세부 내용 1", "parent": "1", "source_ref": {{"page": 2, "text": "원문 인용 문장", "timestamp": null}}}},
+    {{"id": "1-2", "text": "세부 내용 2", "parent": "1", "source_ref": {{"page": null, "text": "원문 인용 문장", "timestamp": null}}}},
     {{"id": "2", "text": "브랜치 2", "parent": "root"}},
-    {{"id": "2-1", "text": "세부 내용 1", "parent": "2"}}
+    {{"id": "2-1", "text": "세부 내용 1", "parent": "2", "source_ref": {{"page": 3, "text": "원문 인용 문장", "timestamp": null}}}}
   ]
 }}"""
 

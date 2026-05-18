@@ -111,6 +111,8 @@ export function StudioItemViewer({ item, onClose, sessionState, onSessionStateCh
         onBack={onClose}
         initialState={sessionState ?? undefined}
         onStateChange={onSessionStateChange}
+        docs={docs}
+        onRequestSource={onRequestSource}
       />
     );
   }
