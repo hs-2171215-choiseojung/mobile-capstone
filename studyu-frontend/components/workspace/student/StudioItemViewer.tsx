@@ -141,6 +141,14 @@ export function StudioItemViewer({ item, onClose, sessionState, onSessionStateCh
   }
 
   if (t === "flashcard") {
+    const flashcardDocIds: string[] = c.doc_ids || [];
+    const sourceDocs = flashcardDocIds.length > 0
+      ? flashcardDocIds.map((id: string) => {
+          const found = (docs || []).find((d) => d.id === id);
+          return found || { id };
+        })
+      : (docs || []);
+
     return (
       <FlashcardView
         cards={c.cards || item.flashcard?.cards || []}
@@ -148,6 +156,8 @@ export function StudioItemViewer({ item, onClose, sessionState, onSessionStateCh
         onBack={onClose}
         initialState={sessionState ?? undefined}
         onStateChange={onSessionStateChange}
+        docs={sourceDocs}
+        onRequestSource={onRequestSource}
       />
     );
   }

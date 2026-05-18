@@ -866,6 +866,8 @@ export function FlashcardView({
   onBack,
   initialState,
   onStateChange,
+  docs,
+  onRequestSource,
 }: {
   cards: any[];
   title: string;
@@ -884,6 +886,8 @@ export function FlashcardView({
     known: boolean[];
     done: boolean;
   }) => void;
+  docs?: { id: string }[];
+  onRequestSource?: (docId: string, page: number | null, text?: string | null, timestamp?: number | null) => void;
 }) {
   const [idx, setIdx] = useState(initialState?.idx ?? 0);
   const [flipped, setFlipped] = useState(initialState?.flipped ?? false);
@@ -1025,6 +1029,25 @@ export function FlashcardView({
                   )}
                   {showHint && toText(card.hint) && (
                     <p className="mt-2 text-sm text-gray-500 bg-pink-50 rounded-lg px-4 py-2.5">{toText(card.hint)}</p>
+                  )}
+                  {onRequestSource && docs && docs.length > 0 && (card?.source_ref?.text || card?.source_ref?.page != null) && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRequestSource(
+                          docs[0].id,
+                          card.source_ref?.page ?? null,
+                          card.source_ref?.text ?? null,
+                          card.source_ref?.timestamp ?? null,
+                        );
+                      }}
+                      className="mt-3 flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-pink-200 bg-white text-pink-600 hover:bg-pink-50 hover:border-pink-400 transition-colors"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      참고 자료 보기
+                    </button>
                   )}
                 </div>
               </div>
