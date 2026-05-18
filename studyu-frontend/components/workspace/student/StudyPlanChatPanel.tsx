@@ -1,12 +1,12 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, Dispatch, SetStateAction } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
   X, BookOpen, NotebookPen, Sparkles, GripVertical,
   Loader2, Clock, CheckCircle2, Send, Trash2, Pencil,
-  ArrowUpRight, Plus,
+  ArrowUpRight, Plus, Wand2, ChevronLeft,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -72,6 +72,13 @@ interface PlanMsg {
 type ChatMessage = TextMsg | QuickReplyMsg | PlanMsg;
 type ChatStep = "selecting_week" | "selecting_purpose" | "generating" | "done";
 
+interface DocItem {
+  id: string;
+  name?: string;
+  filename?: string;
+  type?: string;
+}
+
 interface StudyPlanChatPanelProps {
   notebookId: string;
   selectedLLM: string;
@@ -81,6 +88,10 @@ interface StudyPlanChatPanelProps {
   onStudyPlanSaved?: () => void;
   onOpenDoc: (docId: string) => void;
   onOpenStudioItem: (itemId: string) => void;
+  docs?: DocItem[];
+  onStudioItemCreated?: () => void;
+  studioQueue?: StudioQueueItem[];
+  onStudioQueueChange?: Dispatch<SetStateAction<StudioQueueItem[]>>;
 }
 
 // ─── 로컬스토리지 ─────────────────────────────────────────────────────────────
@@ -297,6 +308,31 @@ function EditablePlanCard({
 
 // ─── StudyPlanChatPanel ───────────────────────────────────────────────────────
 
+// ── 스튜디오 타입 정의 ────────────────────────────────────────────────────────
+const STUDIO_ITEMS_DEF = [
+  { id: "audio",      label: "AI 오디오 오버뷰", icon: "🎧", presets: ["강의 요약 오디오","핵심 개념 설명","Q&A 형식","스토리텔링 방식"] },
+  { id: "slides",    label: "슬라이드 자료",    icon: "📊", presets: ["강의 슬라이드","요약 슬라이드","발표 자료","학습 정리 슬라이드"] },
+  { id: "mindmap",   label: "마인드맵",         icon: "🧠", presets: ["개념 구조도","인과관계 맵","비교 분석 맵","학습 흐름도"] },
+  { id: "report",    label: "보고서",           icon: "📝", presets: ["학습 가이드","기술 개념 설명서","사례 분석 보고서"] },
+  { id: "flashcard", label: "플래시카드",       icon: "🃏", presets: ["단어·정의 카드","Q&A 카드","공식 암기 카드"] },
+  { id: "quiz",      label: "퀴즈",             icon: "✅", presets: ["객관식 퀴즈","O/X 퀴즈"] },
+  { id: "infographic", label: "인포그래픽",   icon: "🎨", presets: ["개요형","프로세스형","비교형","통계형","타임라인형"] },
+  { id: "table",     label: "데이터 표",        icon: "📋", presets: ["핵심 내용 정리표","비교 분석 표","개념 정의 표"] },
+] as const;
+
+type StudioItemId = typeof STUDIO_ITEMS_DEF[number]["id"];
+
+interface StudioQueueItem {
+  queueId: string;
+  label: string;
+  icon: string;
+  status: "generating" | "done" | "error";
+  itemId?: string;
+  errorMsg?: string;
+}
+
+const API_STUDENT = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export function StudyPlanChatPanel({
   notebookId,
   selectedLLM,
@@ -306,12 +342,26 @@ export function StudyPlanChatPanel({
   onStudyPlanSaved,
   onOpenDoc,
   onOpenStudioItem,
+  docs = [],
+  onStudioItemCreated,
+  studioQueue: studioQueueProp,
+  onStudioQueueChange,
 }: StudyPlanChatPanelProps) {
   // ── 탭 ──
-  const [activeTab, setActiveTab] = useState<"plan" | "notepad">(() => {
+  const [activeTab, setActiveTab] = useState<"plan" | "notepad" | "studio">(() => {
     const saved = loadPersistedState(notebookId);
     return saved?.activeTab ?? "plan";
   });
+
+  // ── 스튜디오 탭 상태 ──
+  const [studioStep, setStudioStep] = useState<"grid" | "config">("grid");
+  const [studioSelectedItem, setStudioSelectedItem] = useState<typeof STUDIO_ITEMS_DEF[number] | null>(null);
+  const [studioConfig, setStudioConfig] = useState({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: [] as string[] });
+  // 큐 상태는 page.tsx에서 prop으로 관리 (언마운트 시에도 유지)
+  const [studioQueueLocal, setStudioQueueLocal] = useState<StudioQueueItem[]>([]);
+  const studioQueue = studioQueueProp ?? studioQueueLocal;
+  const setStudioQueue = onStudioQueueChange ?? setStudioQueueLocal;
+  const [studioError, setStudioError] = useState<string | null>(null);
 
   // ── 챗 상태 ──
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -673,6 +723,72 @@ export function StudyPlanChatPanel({
     setNoteText(allNotes[w]?.text ?? "");
   };
 
+  // ── 스튜디오 생성 ──
+  const handleStudioGenerate = async () => {
+    if (!studioSelectedItem) return;
+    const item = studioSelectedItem;
+    const effectiveDocIds = studioConfig.selectedDocIds.length > 0 ? studioConfig.selectedDocIds : docs.map((d) => d.id);
+    if (effectiveDocIds.length === 0) { setStudioError("소스를 선택해주세요."); return; }
+    const token = await getToken();
+    if (!token) { setStudioError("로그인이 필요합니다."); return; }
+
+    // 큐에 추가하고 즉시 그리드로 복귀
+    const queueId = genId();
+    setStudioQueue((prev) => [...prev, { queueId, label: item.label, icon: item.icon, status: "generating" }]);
+    setStudioStep("grid");
+    setStudioSelectedItem(null);
+    setStudioConfig({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: docs.map((d) => d.id) });
+    setStudioError(null);
+
+    // 백그라운드에서 API 호출
+    const lengthMap: Record<string, string> = { "5문제": "short", "10문제": "medium", "15문제": "long" };
+    const diffMap: Record<string, string> = { "5문제": "easy", "10문제": "intermediate", "15문제": "hard" };
+    const countMap: Record<string, string> = { "5문제": "fewer", "10문제": "standard", "15문제": "more" };
+    const countNumMap: Record<string, number> = { "5문제": 5, "10문제": 10, "15문제": 15 };
+    const snapConfig = { ...studioConfig };
+    (async () => {
+      try {
+        let res: Response;
+        if (item.id === "audio") {
+          res = await fetch(`${API_STUDENT}/api/generate/audio`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, format: snapConfig.format || "overview", language: snapConfig.language, length: lengthMap[snapConfig.length] || "medium", focus: snapConfig.instructions, notebook_id: notebookId }) });
+        } else if (item.id === "quiz") {
+          const quizStyleMap: Record<string, string> = { "객관식 퀴즈": "multiple_choice", "O/X 퀴즈": "ox" };
+          res = await fetch(`${API_STUDENT}/api/generate`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, type: "quiz", difficulty: diffMap[snapConfig.length] || "intermediate", quiz_count: countNumMap[snapConfig.length] || 10, quiz_style: quizStyleMap[snapConfig.format] || "multiple_choice", topic: snapConfig.instructions || "", notebook_id: notebookId }) });
+        } else if (item.id === "mindmap") {
+          res = await fetch(`${API_STUDENT}/api/generate/mindmap`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, language: snapConfig.language, focus: snapConfig.instructions || snapConfig.format, notebook_id: notebookId }) });
+        } else if (item.id === "flashcard") {
+          res = await fetch(`${API_STUDENT}/api/generate/flashcard`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, count: countMap[snapConfig.length] || "standard", difficulty: diffMap[snapConfig.length] || "intermediate", topic: snapConfig.format || snapConfig.instructions || "", language: snapConfig.language, notebook_id: notebookId }) });
+        } else if (item.id === "slides") {
+          res = await fetch(`${API_STUDENT}/api/generate/slides`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, format: snapConfig.format || "lecture", length: lengthMap[snapConfig.length] || "medium", language: snapConfig.language, prompt: snapConfig.instructions, notebook_id: notebookId }) });
+        } else if (item.id === "report") {
+          res = await fetch(`${API_STUDENT}/api/generate/report`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, format: snapConfig.format || "report", language: snapConfig.language, length: lengthMap[snapConfig.length] || "medium", tone: "formal", instructions: snapConfig.instructions, notebook_id: notebookId }) });
+        } else if (item.id === "infographic") {
+          const infographicFormatMap: Record<string, string> = { "개요형": "overview", "프로세스형": "process", "비교형": "comparison", "통계형": "statistics", "타임라인형": "timeline" };
+          res = await fetch(`${API_STUDENT}/api/generate/infographic`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, format: infographicFormatMap[snapConfig.format] || "overview", language: snapConfig.language || "ko", instructions: snapConfig.instructions || "", notebook_id: notebookId }) });
+        } else {
+          const tableFormatMap: Record<string, string> = { "핵심 내용 정리표": "summary_table", "비교 분석 표": "comparison_table", "개념 정의 표": "concept_definition" };
+          res = await fetch(`${API_STUDENT}/api/generate/data`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, format: tableFormatMap[snapConfig.format] || "summary_table", language: snapConfig.language || "ko", instructions: snapConfig.instructions || "", notebook_id: notebookId }) });
+        }
+        if (!res.ok) { const d = await res.json(); throw new Error(d.detail ?? "생성 실패"); }
+        const respData = await res.json();
+        const newItemId: string | undefined = respData?.item_id ?? respData?.id;
+        setStudioQueue((prev) => prev.map((q) => q.queueId === queueId ? { ...q, status: "done", itemId: newItemId } : q));
+        onStudioItemCreated?.();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "오류가 발생했습니다.";
+        setStudioQueue((prev) => prev.map((q) => q.queueId === queueId ? { ...q, status: "error", errorMsg: msg } : q));
+      }
+    })();
+  };
+
   // ── 노트패드 계획 수정 시 자동 저장 ──
   const handleNotepadPlanChange = async (newPlan: StudyPlanResult, week: number, text: string) => {
     setAllNotes(prev => ({ ...prev, [week]: { ...prev[week], plan: newPlan } }));
@@ -799,25 +915,40 @@ export function StudyPlanChatPanel({
   return (
     <div className="flex flex-col h-full bg-white">
       {/* 헤더 */}
-      <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-[#e7e9ed]">
-        <div className="flex items-center gap-1">
+      <div className="shrink-0 flex items-center justify-between px-3 py-2.5 border-b border-[#e7e9ed]">
+        <div className="flex items-center gap-0.5">
           <button
             onClick={() => setActiveTab("plan")}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors ${
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-medium whitespace-nowrap transition-colors ${
               activeTab === "plan" ? "bg-[#eff4ff] text-[#155dfc]" : "text-[#6b7280] hover:bg-[#f5f6f8]"
             }`}
           >
-            <Sparkles className="w-3.5 h-3.5" />
+            <Sparkles className="w-3 h-3 shrink-0" />
             AI 학습계획
           </button>
           <button
             onClick={() => setActiveTab("notepad")}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors ${
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-medium whitespace-nowrap transition-colors ${
               activeTab === "notepad" ? "bg-[#eff4ff] text-[#155dfc]" : "text-[#6b7280] hover:bg-[#f5f6f8]"
             }`}
           >
-            <NotebookPen className="w-3.5 h-3.5" />
+            <NotebookPen className="w-3 h-3 shrink-0" />
             메모장
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab("studio");
+              setStudioStep("grid");
+              setStudioSelectedItem(null);
+              setStudioConfig({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: [] });
+              setStudioError(null);
+            }}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-medium whitespace-nowrap transition-colors ${
+              activeTab === "studio" ? "bg-[#eff4ff] text-[#155dfc]" : "text-[#6b7280] hover:bg-[#f5f6f8]"
+            }`}
+          >
+            <Wand2 className="w-3 h-3 shrink-0" />
+            스튜디오
           </button>
         </div>
         <div className="flex items-center gap-1">
@@ -835,6 +966,195 @@ export function StudyPlanChatPanel({
           </button>
         </div>
       </div>
+
+      {/* ── 스튜디오 탭 ── */}
+      {activeTab === "studio" && (
+        <div className="flex-1 overflow-y-auto flex flex-col">
+          {/* 스튜디오 그리드 화면 */}
+          {studioStep === "grid" && (
+            <div className="p-4 flex flex-col gap-4">
+              <div>
+                <p className="text-[12px] text-[#9ca3af] mb-3">강사가 올린 소스를 이용해 학습 자료를 만들어보세요.</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {STUDIO_ITEMS_DEF.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setStudioSelectedItem(item);
+                        setStudioConfig((c) => ({ ...c, format: item.id === "quiz" ? item.presets[0] : "", selectedDocIds: docs.map((d) => d.id) }));
+                        setStudioStep("config");
+                        setStudioError(null);
+                      }}
+                      className="flex flex-col items-center gap-1.5 py-3 px-1 rounded-xl border border-[#e7e9ed] hover:border-[#155dfc] hover:bg-[#f5f8ff] transition-all"
+                    >
+                      <span className="text-xl">{item.icon}</span>
+                      <span className="text-[11px] text-[#374151] font-medium text-center leading-tight">{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 생성 큐 목록 */}
+              {studioQueue.length > 0 && (
+                <div>
+                  <p className="text-[11px] font-semibold text-[#9ca3af] mb-2">만들고 있는 자료</p>
+                  <div className="flex flex-col gap-1.5">
+                    {studioQueue.map((q) => (
+                      <div
+                        key={q.queueId}
+                        onClick={() => {
+                          if (q.status === "done" && q.itemId) onOpenStudioItem(q.itemId);
+                        }}
+                        className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl border transition-all ${
+                          q.status === "done"
+                            ? "border-emerald-200 bg-emerald-50 cursor-pointer hover:border-emerald-400"
+                            : q.status === "error"
+                            ? "border-red-200 bg-red-50"
+                            : "border-[#e7e9ed] bg-white"
+                        }`}
+                      >
+                        <span className="text-base shrink-0">{q.icon}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-[12px] font-semibold truncate ${
+                            q.status === "done" ? "text-emerald-700" : q.status === "error" ? "text-red-600" : "text-[#374151]"
+                          }`}>{q.label}</p>
+                          {q.status === "error" && q.errorMsg && (
+                            <p className="text-[10px] text-red-400 truncate">{q.errorMsg}</p>
+                          )}
+                          {q.status === "done" && (
+                            <p className="text-[10px] text-emerald-500">완료 · 탭하여 열기</p>
+                          )}
+                          {q.status === "generating" && (
+                            <p className="text-[10px] text-[#9ca3af]">생성 중...</p>
+                          )}
+                        </div>
+                        {q.status === "generating" && <Loader2 className="w-3.5 h-3.5 text-[#9ca3af] animate-spin shrink-0" />}
+                        {q.status === "done" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 스튜디오 설정 화면 */}
+          {studioStep === "config" && studioSelectedItem && (
+            <div className="flex flex-col h-full">
+              {/* 서브 헤더 */}
+              <div className="shrink-0 flex items-center gap-2 px-4 py-3 border-b border-[#e7e9ed]">
+                <button onClick={() => setStudioStep("grid")} className="p-1 rounded hover:bg-[#f5f6f8] text-[#9ca3af]">
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <span className="text-[13px] font-semibold text-[#374151]">{studioSelectedItem.icon} {studioSelectedItem.label}</span>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {/* 소스 선택 */}
+                {docs.length > 0 && (
+                  <div>
+                    <p className="text-[12px] font-semibold text-[#374151] mb-2">참고 소스 <span className="text-[#9ca3af] font-normal">(선택)</span></p>
+                    <div className="space-y-1.5">
+                      {docs.map((doc) => {
+                        const checked = studioConfig.selectedDocIds.includes(doc.id);
+                        const ext = (doc.type ?? "").toLowerCase();
+                        const icon = ext === "pdf" ? "📜" : ext === "url" ? "🔗" : ["jpg","jpeg","png","gif","webp"].includes(ext) ? "🖼️" : "📄";
+                        return (
+                          <button key={doc.id}
+                            onClick={() => setStudioConfig((c) => ({ ...c, selectedDocIds: checked ? c.selectedDocIds.filter((id) => id !== doc.id) : [...c.selectedDocIds, doc.id] }))}
+                            className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 text-left transition-all ${
+                              checked ? "border-blue-400 bg-blue-50" : "border-gray-100 hover:border-gray-300 bg-gray-50"
+                            }`}
+                          >
+                            <span className="text-base">{icon}</span>
+                            <span className={`flex-1 truncate text-[12px] font-semibold ${checked ? "text-blue-700" : "text-gray-600"}`}>{doc.filename || doc.name}</span>
+                            {checked && <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* 형식 선택 — 강사 모달과 동일한 스타일 */}
+                <div>
+                  <p className="text-[12px] font-semibold text-[#374151] mb-2">형식</p>
+                  {studioSelectedItem.id !== "quiz" && (
+                    <button
+                      onClick={() => setStudioConfig((c) => ({ ...c, format: "" }))}
+                      className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 mb-2 transition-all ${
+                        studioConfig.format === "" ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-gray-300"
+                      }`}
+                    >
+                      <span className={`text-[12px] font-semibold ${studioConfig.format === "" ? "text-blue-600" : "text-gray-600"}`}>직접 만들기</span>
+                      {studioConfig.format === "" && <svg className="ml-auto" width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                    </button>
+                  )}
+                  {studioSelectedItem.id !== "quiz" && <p className="text-[11px] text-gray-400 font-semibold mb-1.5">추천 형식</p>}
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {studioSelectedItem.presets.map((preset) => (
+                      <button key={preset}
+                        onClick={() => setStudioConfig((c) => ({ ...c, format: preset }))}
+                        className={`flex items-center gap-2 px-3 py-2 rounded-xl border-2 text-left transition-all ${
+                          studioConfig.format === preset ? "border-blue-400 bg-blue-50" : "border-gray-100 hover:border-gray-300 bg-gray-50"
+                        }`}
+                      >
+                        <span className="text-sm">{studioSelectedItem.icon}</span>
+                        <span className={`text-[11px] leading-tight ${studioConfig.format === preset ? "text-blue-600 font-medium" : "text-gray-600"}`}>{preset}</span>
+                        {studioConfig.format === preset && <svg className="ml-auto shrink-0" width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 추가 지시사항 */}
+                <div>
+                  <p className="text-[12px] font-semibold text-[#374151] mb-1.5">추가 지시사항 <span className="text-[#9ca3af] font-normal">(선택)</span></p>
+                  <textarea
+                    value={studioConfig.instructions}
+                    onChange={(e) => setStudioConfig((c) => ({ ...c, instructions: e.target.value }))}
+                    placeholder="예) 초등학생도 이해할 수 있도록 쉽게 작성해주세요..."
+                    rows={2}
+                    className="w-full text-[12px] border-2 border-gray-200 rounded-xl px-3 py-2 resize-none focus:outline-none focus:border-blue-300 text-gray-700 placeholder-gray-300 bg-gray-50 focus:bg-white transition-all"
+                  />
+                </div>
+
+                {/* 문제 수 (quiz/flashcard) */}
+                {["quiz", "flashcard"].includes(studioSelectedItem.id) && (
+                  <div>
+                    <p className="text-[12px] font-semibold text-[#374151] mb-2">문제 수</p>
+                    <div className="flex gap-2">
+                      {["5문제", "10문제", "15문제"].map((len) => (
+                        <button key={len}
+                          onClick={() => setStudioConfig((c) => ({ ...c, length: len }))}
+                          className={`flex-1 py-2 rounded-xl border-2 text-[12px] transition-all ${
+                            studioConfig.length === len ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
+                          }`}
+                        >{len}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 오류 */}
+                {studioError && (
+                  <p className="text-[11px] text-red-500 bg-red-50 rounded-lg px-3 py-2">{studioError}</p>
+                )}
+              </div>
+
+              {/* 생성 버튼 */}
+              <div className="shrink-0 p-4 border-t border-[#e7e9ed]">
+                <button
+                  onClick={handleStudioGenerate}
+                  className="w-full py-2.5 bg-[#155dfc] text-white rounded-xl text-[13px] font-semibold hover:bg-[#1249cc] transition-colors flex items-center justify-center gap-2"
+                >
+                  <Wand2 className="w-4 h-4" />만들기
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── AI 학습계획 탭 (챗) ── */}
       {activeTab === "plan" && (

@@ -141,6 +141,7 @@ async def generate(
                 "questions": parsed.get("questions", []),
                 "difficulty": req.difficulty or "intermediate",
                 "week_id": req.week_id,
+                "doc_ids": doc_ids,
             },
             notebook_id=req.notebook_id,
         )
@@ -608,7 +609,7 @@ async def generate_mindmap_route(
         item_type="mindmap",
         title=title,
         subtitle=f"마인드맵 · 소스 {len(req.doc_ids)}개",
-        content={"nodes": nodes, "week_id": req.week_id},
+        content={"nodes": nodes, "week_id": req.week_id, "doc_ids": req.doc_ids},
         notebook_id=req.notebook_id,
     )
     print(f"[studio] ✅ 마인드맵 생성 완료 | item_id={item_id} | title={title}")
@@ -659,7 +660,7 @@ async def generate_flashcard(
         item_type="flashcard",
         title=title,
         subtitle=f"플래시카드 · 소스 {len(req.doc_ids)}개",
-        content={"cards": cards, "difficulty": req.difficulty, "week_id": req.week_id},
+        content={"cards": cards, "difficulty": req.difficulty, "week_id": req.week_id, "doc_ids": req.doc_ids},
         notebook_id=req.notebook_id,
     )
     print(f"[studio] ✅ 플래시카드 생성 완료 | item_id={item_id} | title={title} | cards={len(cards)}장")

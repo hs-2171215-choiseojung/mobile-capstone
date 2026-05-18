@@ -97,14 +97,9 @@ interface MindmapNode {
   parent?: string;
 }
 
-interface VideoConfig {
-  language: string;
-  length: string;
-}
-
 export interface SavedItem {
   id: string;
-  type: "summary" | "quiz" | "audio" | "mindmap" | "memo" | "flashcard" | "slides" | "report" | "data" | "video" | "infographic";
+  type: "summary" | "quiz" | "audio" | "mindmap" | "memo" | "flashcard" | "slides" | "report" | "data" | "infographic";
   title: string;
   subtitle: string;
   createdAt: Date;
@@ -121,7 +116,6 @@ export interface SavedItem {
   report?: { sections: ReportSection[]; format: string };
   dataTable?: { title: string; description?: string; columns: any[]; rows: any[] };
   infographic?: { title: string; description?: string; sections: any[] };
-  videoData?: { slides: any[] };
 }
 
 interface WeekSource {
@@ -179,7 +173,6 @@ const OPTION_ALPHA = ["A", "B", "C", "D"];
 const CONTENT_TYPES = [
   { id: "audio",      label: "AI 오디오 오버뷰", shortLabel: "오디오",    cardBg: "#d0f5f1", iconBg: "#a1ece4", iconColor: "#0d9488" },
   { id: "slides",     label: "슬라이드 자료",   shortLabel: "슬라이드",  cardBg: "#fef0da", iconBg: "#fdd89a", iconColor: "#d97706" },
-  { id: "video",      label: "동영상 개요",     shortLabel: "비디오",    cardBg: "#dcf5dc", iconBg: "#a8e8a8", iconColor: "#15803d" },
   { id: "mindmap",    label: "마인드맵",        shortLabel: "마인드맵",  cardBg: "#f0e6ff", iconBg: "#d8b4fe", iconColor: "#7c3aed" },
   { id: "report",     label: "보고서",          shortLabel: "문서",      cardBg: "#dcf2e8", iconBg: "#a3e8c4", iconColor: "#166534" },
   { id: "flashcard",  label: "플래시카드",      shortLabel: "플래시카드",cardBg: "#fde0ea", iconBg: "#f9a8c0", iconColor: "#be123c" },
@@ -211,7 +204,6 @@ function TypeIcon({ id, color, size = 16 }: { id: string; color: string; size?: 
   const s = { className: cls, width: size, height: size, fill: "none", viewBox: "0 0 24 24", stroke: color, strokeWidth: "1.5" } as const;
   if (id === "audio") return <svg {...s}><path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z" /></svg>;
   if (id === "slides") return <svg {...s}><rect x="2" y="3" width="20" height="14" rx="2" stroke={color} fill="none" /><path strokeLinecap="round" d="M8 21h8M12 17v4" /></svg>;
-  if (id === "video") return <svg {...s}><path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.723v6.554a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" /></svg>;
   if (id === "mindmap") return <svg {...s}><circle cx="12" cy="12" r="2.5" fill={color} stroke="none" /><circle cx="5" cy="5" r="1.5" fill={color} stroke="none" /><circle cx="19" cy="5" r="1.5" fill={color} stroke="none" /><circle cx="5" cy="19" r="1.5" fill={color} stroke="none" /><circle cx="19" cy="19" r="1.5" fill={color} stroke="none" /><path strokeLinecap="round" d="M10.5 10.5L6.5 6.5M13.5 10.5L17.5 6.5M10.5 13.5L6.5 17.5M13.5 13.5L17.5 17.5" /></svg>;
   if (id === "report") return <svg {...s}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>;
   if (id === "flashcard") return <svg {...s}><rect x="2" y="6" width="20" height="13" rx="2" stroke={color} fill="none" /><path strokeLinecap="round" strokeLinejoin="round" d="M16 2l-2 4M12 2v4M8 2l2 4" /></svg>;
@@ -2127,68 +2119,6 @@ function ReportView({
   );
 }
 
-// ── VideoModal ─────────────────────────────────────────────────────────────
-function VideoModal({ loading, onClose, onGenerate }: { loading: boolean; onClose: () => void; onGenerate: (cfg: VideoConfig) => void }) {
-  const [cfg, setCfg] = useState<VideoConfig>({ language: "ko", length: "default" });
-  return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6 flex flex-col gap-5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-bold text-gray-800">AI 강의 영상 생성</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
-        </div>
-        <div className="flex flex-col gap-3">
-          <div>
-            <label className="text-xs font-semibold text-gray-500 mb-1 block">언어</label>
-            <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" value={cfg.language} onChange={e => setCfg(c => ({ ...c, language: e.target.value }))}>
-              <option value="ko">한국어</option>
-              <option value="en">English</option>
-              <option value="ja">日本語</option>
-              <option value="zh">中文</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-xs font-semibold text-gray-500 mb-1 block">길이</label>
-            <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" value={cfg.length} onChange={e => setCfg(c => ({ ...c, length: e.target.value }))}>
-              <option value="short">짧게 (4~5장)</option>
-              <option value="default">기본 (5~7장)</option>
-              <option value="long">길게 (7~10장)</option>
-            </select>
-          </div>
-        </div>
-        <button
-          disabled={loading}
-          onClick={() => onGenerate(cfg)}
-          className="w-full py-2.5 rounded-xl text-sm font-bold text-white transition-colors"
-          style={{ background: loading ? "#9ca3af" : "#6d28d9" }}
-        >
-          {loading ? "생성 중..." : "영상 생성"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ── VideoView ───────────────────────────────────────────────────────────────
-function VideoView({ videoBase64, title, onBack }: { videoBase64: string; title: string; onBack: () => void }) {
-  return (
-    <div className="flex flex-col h-full bg-gray-950">
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-800">
-        <button onClick={onBack} className="text-gray-400 hover:text-white text-sm">← 뒤로</button>
-        <span className="text-white font-semibold text-sm truncate">{title}</span>
-      </div>
-      <div className="flex-1 flex items-center justify-center p-4">
-        <video
-          controls
-          autoPlay
-          className="max-w-full max-h-full rounded-xl shadow-2xl"
-          src={`data:video/mp4;base64,${videoBase64}`}
-        />
-      </div>
-    </div>
-  );
-}
-
 // ── Main StudioPanel ───────────────────────────────────────────────────────
 export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, weeks = [], onAddWeekTask, onRenameItem, onDeleteItem, openItemId, onOpenItemHandled, openCreateType, openCreateWeekId, onOpenCreateHandled, openMemoRequest, onOpenMemoHandled, forcePortalSubviews = false, onViewItem, onSavedItemsChange, hideCollections = false }: Props) {
   const [loadingType, setLoadingType] = useState<string | null>(null);
@@ -2293,9 +2223,6 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     setCollapsedWeeks((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
   const [weekGeneratingFor, setWeekGeneratingFor] = useState<number | null>(null);
   const [showWeekTypePickerForId, setShowWeekTypePickerForId] = useState<number | null>(null);
-  const [showVideoModal, setShowVideoModal] = useState(false);
-  const [activeVideo, setActiveVideo] = useState<{ videoBase64: string; title: string } | null>(null);
-  const [videoRenderProgress, setVideoRenderProgress] = useState<string | null>(null);
 
   function getEffectiveDocIds(): string[] {
     if (weekGeneratingFor !== null) {
@@ -3001,54 +2928,6 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     })();
   }
 
-  async function handleVideoGenerate(cfg: VideoConfig) {
-    const docIds = getEffectiveDocIds();
-    setLoadingType("video");
-    setVideoRenderProgress("슬라이드 스크립트 및 오디오 생성 중...");
-    try {
-      const token = await getToken();
-      const res = await fetch(`${API}/api/generate/video`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          doc_ids: docIds,
-          language: cfg.language,
-          length: cfg.length,
-          notebook_id: notebookId,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail ?? "생성 실패");
-      const videoTitle = data.title || "동영상 개요";
-
-      setVideoRenderProgress("동영상 렌더링 중... (최대 3분 소요)");
-      const renderRes = await fetch("/api/render-video", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slides: data.slides }),
-      });
-      const renderData = await renderRes.json();
-      if (!renderRes.ok) throw new Error(renderData.error ?? "렌더링 실패");
-
-      const newItem: SavedItem = {
-        id: data.item_id || Date.now().toString(),
-        type: "video",
-        title: videoTitle,
-        subtitle: `동영상 · 소스 ${docIds.length}개`,
-        createdAt: new Date(),
-        videoData: { slides: data.slides },
-      };
-      setSavedItems((prev) => [newItem, ...prev]);
-      setActiveVideo({ videoBase64: renderData.videoBase64, title: videoTitle });
-      setShowVideoModal(false);
-    } catch (e: unknown) {
-      alert(`동영상 생성 실패: ${e instanceof Error ? e.message : "오류"}`);
-    } finally {
-      setLoadingType(null);
-      setVideoRenderProgress(null);
-    }
-  }
-
   function handleCardClick(typeId: string, forWeekId?: number) {
     const effectiveDocIds = forWeekId !== undefined
       ? (weeks.find((w) => w.id === forWeekId)?.sources.filter((s) => s.docId).map((s) => s.docId!) ?? [])
@@ -3061,10 +2940,6 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
       setWeekGeneratingFor(forWeekId);
     }
     setShowWeekTypePickerForId(null);
-    if (typeId === "video") {
-      setShowVideoModal(true);
-      return;
-    }
     const taskItem = STUDIO_TASK_ITEMS.find((i) => i.id === typeId);
     if (taskItem) {
       setUnifiedModalItem(taskItem);
@@ -3119,7 +2994,6 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
     activeReport ? <ReportView sections={activeReport.sections} title={activeReport.title} format={activeReport.format} onBack={() => handleSubviewBack(() => setActiveReport(null))} /> :
     activeDataTable ? <DataTableView data={activeDataTable} onBack={() => handleSubviewBack(() => setActiveDataTable(null))} /> :
     activeInfographic ? <InfographicView data={activeInfographic} onBack={() => handleSubviewBack(() => setActiveInfographic(null))} /> :
-    activeVideo ? <VideoView videoBase64={activeVideo.videoBase64} title={activeVideo.title} onBack={() => setActiveVideo(null)} /> :
     null;
 
   if (subviewContent) {
@@ -3134,27 +3008,6 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
 
   return (
     <aside className={`flex flex-col bg-white overflow-hidden ${isExpanded ? "fixed inset-0 z-50" : "w-full h-full"}`}>
-      {showVideoModal && (
-        <VideoModal
-          loading={loadingType === "video"}
-          onClose={() => { setShowVideoModal(false); setWeekGeneratingFor(null); }}
-          onGenerate={handleVideoGenerate}
-        />
-      )}
-      {loadingType === "video" && videoRenderProgress && (
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl px-8 py-6 flex flex-col items-center gap-4 max-w-sm mx-4">
-            <div className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: "#dcf5dc" }}>
-              <svg className="w-6 h-6 text-green-700 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-              </svg>
-            </div>
-            <p className="text-sm font-semibold text-gray-800 text-center">동영상 생성 중</p>
-            <p className="text-xs text-gray-500 text-center">{videoRenderProgress}</p>
-          </div>
-        </div>
-      )}
       {showUnifiedModal && unifiedModalItem && (
         <UnifiedGenerateModal
           item={unifiedModalItem}

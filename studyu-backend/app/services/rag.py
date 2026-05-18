@@ -4307,7 +4307,12 @@ def generate_content(
       {options_format},
       "answerIndex": 0,
       "hint": "정답을 직접 언급하지 않고 방향만 제시하는 힌트",
-      "explanation": "정답인 이유를 설명하는 해설"
+      "explanation": "정답인 이유를 설명하는 해설",
+      "source_ref": {{
+        "page": 1,
+        "timestamp": null,
+        "text": "이 문제의 근거가 된 원문에서 가장 관련성 높은 문장 1~2줄을 그대로 인용"
+      }}
     }}
   ]
 }}
@@ -4318,6 +4323,9 @@ def generate_content(
 - hint는 정답을 직접 언급하지 말 것
 - questions 배열에 정확히 {quiz_count}개의 항목 포함
 - title은 문서 내용을 구체적으로 반영할 것
+- source_ref.page: 문서 내용에 [페이지 N] 또는 [슬라이드 N] 마커가 있으면 해당 번호, 없으면 null
+- source_ref.timestamp: 동영상/오디오 문서에서 [00:00] 같은 타임스탬프가 있으면 초 단위 숫자, 없으면 null
+- source_ref.text: 문서 내용에서 이 문제의 근거가 된 원문 문장을 그대로 인용 (최대 100자)
 
 문서 내용:
 {context}"""
@@ -4689,6 +4697,10 @@ def generate_mindmap(
 - 각 브랜치에 2~4개의 2단계 노드 (세부 내용)
 - 필요시 3단계 노드 추가 가능
 - 각 노드는 짧고 핵심적인 텍스트 (10단어 이내)
+- 리프 노드(자식이 없는 최하위 노드)에는 source_ref 필드를 반드시 추가하세요:
+  - page: 문서에 [페이지 N] 또는 [슬라이드 N] 마커가 있으면 해당 번호(정수), 없으면 null
+  - text: 이 노드 내용의 근거가 된 원문 문장을 그대로 인용 (최대 80자), 없으면 null
+  - timestamp: 동영상/오디오 문서에서 [00:00] 형식의 타임스탬프가 있으면 초 단위 숫자, 없으면 null
 
 문서 내용:
 {context}
@@ -4699,10 +4711,10 @@ def generate_mindmap(
   "nodes": [
     {{"id": "root", "text": "중심 주제"}},
     {{"id": "1", "text": "브랜치 1", "parent": "root"}},
-    {{"id": "1-1", "text": "세부 내용 1", "parent": "1"}},
-    {{"id": "1-2", "text": "세부 내용 2", "parent": "1"}},
+    {{"id": "1-1", "text": "세부 내용 1", "parent": "1", "source_ref": {{"page": 2, "text": "원문 인용 문장", "timestamp": null}}}},
+    {{"id": "1-2", "text": "세부 내용 2", "parent": "1", "source_ref": {{"page": null, "text": "원문 인용 문장", "timestamp": null}}}},
     {{"id": "2", "text": "브랜치 2", "parent": "root"}},
-    {{"id": "2-1", "text": "세부 내용 1", "parent": "2"}}
+    {{"id": "2-1", "text": "세부 내용 1", "parent": "2", "source_ref": {{"page": 3, "text": "원문 인용 문장", "timestamp": null}}}}
   ]
 }}"""
 
@@ -4751,6 +4763,10 @@ def generate_flashcards(
 - 뒷면(back): 앞면에 대한 설명, 정의 또는 답변 (이해하기 쉽게)
 - 힌트(hint): 정답을 직접 언급하지 않고 방향만 제시 (선택사항)
 - 내용이 점점 어려워지도록 순서를 정렬해주세요
+- source_ref: 각 카드의 근거가 된 원문 위치 정보
+  - page: 문서에 [페이지 N] 또는 [슬라이드 N] 마커가 있으면 해당 번호(정수), 없으면 null
+  - text: 이 카드 내용의 근거가 된 원문 문장을 그대로 인용 (최대 80자), 없으면 null
+  - timestamp: 동영상/오디오 문서에서 [00:00] 형식 타임스탬프가 있으면 초 단위 숫자, 없으면 null
 
 문서 내용:
 {context}
@@ -4762,7 +4778,8 @@ def generate_flashcards(
     {{
       "front": "앞면 내용 (질문 또는 용어)",
       "back": "뒷면 내용 (답변 또는 설명)",
-      "hint": "힌트 (선택, 없으면 빈 문자열)"
+      "hint": "힌트 (선택, 없으면 빈 문자열)",
+      "source_ref": {{"page": 2, "text": "원문 인용 문장", "timestamp": null}}
     }}
   ]
 }}"""

@@ -7,6 +7,7 @@ export interface MindmapNode {
   text: string;
   parent?: string;
   children?: MindmapNode[];
+  source_ref?: { page?: number | null; text?: string | null; timestamp?: number | null } | null;
 }
 
 interface Props {
@@ -15,6 +16,8 @@ interface Props {
   onBack: () => void;
   initialState?: { expandedNodeIds?: string[] };
   onStateChange?: (state: { expandedNodeIds: string[] }) => void;
+  docs?: { id: string }[];
+  onRequestSource?: (docId: string, page: number | null, text?: string | null, timestamp?: number | null) => void;
 }
 
 function buildTree(flatNodes: MindmapNode[]): MindmapNode[] {
@@ -37,14 +40,20 @@ function NodeItem({
   level,
   expandedNodes,
   onToggle,
+  docs,
+  onRequestSource,
 }: {
   node: MindmapNode;
   level: number;
   expandedNodes: Set<string>;
   onToggle: (id: string) => void;
+  docs?: { id: string }[];
+  onRequestSource?: (docId: string, page: number | null, text?: string | null, timestamp?: number | null) => void;
 }) {
   const isExpanded = expandedNodes.has(node.id);
   const hasChildren = (node.children?.length ?? 0) > 0;
+  const isLeaf = !hasChildren;
+  const hasSourceRef = isLeaf && node.source_ref && (node.source_ref.text || node.source_ref.page != null);
   const colorClass =
     level === 0
       ? "bg-indigo-100 text-indigo-700 border-indigo-300 font-black text-sm"
@@ -54,15 +63,37 @@ function NodeItem({
 
   return (
     <div className="flex items-center">
-      <div
-        id={`node-${node.id}`}
-        onClick={() => hasChildren && onToggle(node.id)}
-        className={`min-w-[110px] max-w-[170px] p-2.5 rounded-xl border-2 transition-all text-center select-none mx-6 ${colorClass} ${
-          hasChildren ? "cursor-pointer hover:brightness-95 active:scale-95" : "cursor-default"
-        }`}
-      >
-        <span className="break-words leading-snug block">{node.text}</span>
-        {hasChildren && <span className="opacity-30 text-[9px] ml-1">{isExpanded ? "-" : "+"}</span>}
+      <div className="flex flex-col items-center mx-6">
+        <div
+          id={`node-${node.id}`}
+          onClick={() => hasChildren && onToggle(node.id)}
+          className={`min-w-[110px] max-w-[170px] p-2.5 rounded-xl border-2 transition-all text-center select-none ${colorClass} ${
+            hasChildren ? "cursor-pointer hover:brightness-95 active:scale-95" : "cursor-default"
+          }`}
+        >
+          <span className="break-words leading-snug block">{node.text}</span>
+          {hasChildren && <span className="opacity-30 text-[9px] ml-1">{isExpanded ? "-" : "+"}</span>}
+        </div>
+        {hasSourceRef && onRequestSource && docs && docs.length > 0 && (
+          <button
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRequestSource(
+                docs[0].id,
+                node.source_ref?.page ?? null,
+                node.source_ref?.text ?? null,
+                node.source_ref?.timestamp ?? null,
+              );
+            }}
+            className="mt-1.5 flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md border border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50 hover:border-emerald-400 transition-colors select-none"
+          >
+            <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            참고 자료
+          </button>
+        )}
       </div>
 
       {isExpanded && hasChildren && (
@@ -74,6 +105,8 @@ function NodeItem({
               level={level + 1}
               expandedNodes={expandedNodes}
               onToggle={onToggle}
+              docs={docs}
+              onRequestSource={onRequestSource}
             />
           ))}
         </div>
@@ -82,7 +115,7 @@ function NodeItem({
   );
 }
 
-export default function MindMapView({ nodes, title, onBack, initialState, onStateChange }: Props) {
+export default function MindMapView({ nodes, title, onBack, initialState, onStateChange, docs, onRequestSource }: Props) {
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(
     () => new Set(initialState?.expandedNodeIds?.length ? initialState.expandedNodeIds : ["root"])
   );
@@ -236,6 +269,8 @@ export default function MindMapView({ nodes, title, onBack, initialState, onStat
               level={0}
               expandedNodes={expandedNodes}
               onToggle={toggleNode}
+              docs={docs}
+              onRequestSource={onRequestSource}
             />
           ))}
         </div>
