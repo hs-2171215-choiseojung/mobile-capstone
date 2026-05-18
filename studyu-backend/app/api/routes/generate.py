@@ -609,7 +609,7 @@ async def generate_mindmap_route(
         item_type="mindmap",
         title=title,
         subtitle=f"마인드맵 · 소스 {len(req.doc_ids)}개",
-        content={"nodes": nodes, "week_id": req.week_id},
+        content={"nodes": nodes, "week_id": req.week_id, "doc_ids": req.doc_ids},
         notebook_id=req.notebook_id,
     )
     print(f"[studio] ✅ 마인드맵 생성 완료 | item_id={item_id} | title={title}")

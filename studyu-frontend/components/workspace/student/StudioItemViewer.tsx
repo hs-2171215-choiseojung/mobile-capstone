@@ -104,6 +104,14 @@ export function StudioItemViewer({ item, onClose, sessionState, onSessionStateCh
   }
 
   if (t === "mindmap") {
+    const mindmapDocIds: string[] = c.doc_ids || [];
+    const sourceDocs = mindmapDocIds.length > 0
+      ? mindmapDocIds.map((id: string) => {
+          const found = (docs || []).find((d) => d.id === id);
+          return found || { id };
+        })
+      : (docs || []);
+
     return (
       <MindMapView
         nodes={c.nodes || item.mindmap?.nodes || []}
@@ -111,7 +119,7 @@ export function StudioItemViewer({ item, onClose, sessionState, onSessionStateCh
         onBack={onClose}
         initialState={sessionState ?? undefined}
         onStateChange={onSessionStateChange}
-        docs={docs}
+        docs={sourceDocs}
         onRequestSource={onRequestSource}
       />
     );
