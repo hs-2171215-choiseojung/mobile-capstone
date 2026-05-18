@@ -986,22 +986,22 @@ export function StudyPlanChatPanel({
                 {/* 소스 선택 */}
                 {docs.length > 0 && (
                   <div>
-                    <p className="text-[12px] font-semibold text-[#374151] mb-2">참고 소스</p>
+                    <p className="text-[12px] font-semibold text-[#374151] mb-2">참고 소스 <span className="text-[#9ca3af] font-normal">(선택)</span></p>
                     <div className="space-y-1.5">
                       {docs.map((doc) => {
                         const checked = studioConfig.selectedDocIds.includes(doc.id);
+                        const ext = (doc.type ?? "").toLowerCase();
+                        const icon = ext === "pdf" ? "📜" : ext === "url" ? "🔗" : ["jpg","jpeg","png","gif","webp"].includes(ext) ? "🖼️" : "📄";
                         return (
                           <button key={doc.id}
                             onClick={() => setStudioConfig((c) => ({ ...c, selectedDocIds: checked ? c.selectedDocIds.filter((id) => id !== doc.id) : [...c.selectedDocIds, doc.id] }))}
-                            className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl border-2 text-left transition-all ${
-                              checked ? "border-[#155dfc] bg-[#f0f5ff]" : "border-[#e7e9ed] hover:border-[#c7d2fe] bg-[#f9fafb]"
+                            className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 text-left transition-all ${
+                              checked ? "border-blue-400 bg-blue-50" : "border-gray-100 hover:border-gray-300 bg-gray-50"
                             }`}
                           >
-                            <span className="text-base">{(doc.type ?? "").toLowerCase() === "pdf" ? "📜" : "📄"}</span>
-                            <span className={`flex-1 truncate text-[11px] font-medium ${ checked ? "text-[#155dfc]" : "text-[#6b7280]" }`}>{doc.filename || doc.name}</span>
-                            <span className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${ checked ? "border-[#155dfc] bg-[#155dfc]" : "border-[#d1d5db]" }`}>
-                              {checked && <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 12 12"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                            </span>
+                            <span className="text-base">{icon}</span>
+                            <span className={`flex-1 truncate text-[12px] font-semibold ${checked ? "text-blue-700" : "text-gray-600"}`}>{doc.filename || doc.name}</span>
+                            {checked && <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                           </button>
                         );
                       })}
@@ -1009,66 +1009,65 @@ export function StudyPlanChatPanel({
                   </div>
                 )}
 
-                {/* 형식 선택 (presets) */}
-                {studioSelectedItem.presets.length > 0 && (
-                  <div>
-                    <p className="text-[12px] font-semibold text-[#374151] mb-2">형식</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {studioSelectedItem.presets.map((preset) => (
-                        <button key={preset}
-                          onClick={() => setStudioConfig((c) => ({ ...c, format: preset }))}
-                          className={`px-2.5 py-1 rounded-full text-[11px] border transition-all ${
-                            studioConfig.format === preset ? "border-[#155dfc] bg-[#eff4ff] text-[#155dfc]" : "border-[#e7e9ed] text-[#6b7280] hover:border-[#155dfc]"
-                          }`}
-                        >{preset}</button>
-                      ))}
-                    </div>
+                {/* 형식 선택 — 강사 모달과 동일한 스타일 */}
+                <div>
+                  <p className="text-[12px] font-semibold text-[#374151] mb-2">형식</p>
+                  {studioSelectedItem.id !== "quiz" && (
+                    <button
+                      onClick={() => setStudioConfig((c) => ({ ...c, format: "" }))}
+                      className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 mb-2 transition-all ${
+                        studioConfig.format === "" ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-gray-300"
+                      }`}
+                    >
+                      <span className={`text-[12px] font-semibold ${studioConfig.format === "" ? "text-blue-600" : "text-gray-600"}`}>직접 만들기</span>
+                      {studioConfig.format === "" && <svg className="ml-auto" width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                    </button>
+                  )}
+                  {studioSelectedItem.id !== "quiz" && <p className="text-[11px] text-gray-400 font-semibold mb-1.5">추천 형식</p>}
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {studioSelectedItem.presets.map((preset) => (
+                      <button key={preset}
+                        onClick={() => setStudioConfig((c) => ({ ...c, format: preset }))}
+                        className={`flex items-center gap-2 px-3 py-2 rounded-xl border-2 text-left transition-all ${
+                          studioConfig.format === preset ? "border-blue-400 bg-blue-50" : "border-gray-100 hover:border-gray-300 bg-gray-50"
+                        }`}
+                      >
+                        <span className="text-sm">{studioSelectedItem.icon}</span>
+                        <span className={`text-[11px] leading-tight ${studioConfig.format === preset ? "text-blue-600 font-medium" : "text-gray-600"}`}>{preset}</span>
+                        {studioConfig.format === preset && <svg className="ml-auto shrink-0" width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#3b82f6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                      </button>
+                    ))}
                   </div>
-                )}
+                </div>
+
+                {/* 추가 지시사항 */}
+                <div>
+                  <p className="text-[12px] font-semibold text-[#374151] mb-1.5">추가 지시사항 <span className="text-[#9ca3af] font-normal">(선택)</span></p>
+                  <textarea
+                    value={studioConfig.instructions}
+                    onChange={(e) => setStudioConfig((c) => ({ ...c, instructions: e.target.value }))}
+                    placeholder="예) 초등학생도 이해할 수 있도록 쉽게 작성해주세요..."
+                    rows={2}
+                    className="w-full text-[12px] border-2 border-gray-200 rounded-xl px-3 py-2 resize-none focus:outline-none focus:border-blue-300 text-gray-700 placeholder-gray-300 bg-gray-50 focus:bg-white transition-all"
+                  />
+                </div>
 
                 {/* 문제 수 (quiz/flashcard) */}
                 {["quiz", "flashcard"].includes(studioSelectedItem.id) && (
                   <div>
                     <p className="text-[12px] font-semibold text-[#374151] mb-2">문제 수</p>
-                    <div className="flex gap-1.5">
+                    <div className="flex gap-2">
                       {["5문제", "10문제", "15문제"].map((len) => (
                         <button key={len}
                           onClick={() => setStudioConfig((c) => ({ ...c, length: len }))}
-                          className={`flex-1 py-1.5 rounded-lg text-[11px] border transition-all ${
-                            studioConfig.length === len ? "border-[#155dfc] bg-[#eff4ff] text-[#155dfc]" : "border-[#e7e9ed] text-[#6b7280] hover:border-[#155dfc]"
+                          className={`flex-1 py-2 rounded-xl border-2 text-[12px] transition-all ${
+                            studioConfig.length === len ? "border-blue-400 bg-blue-50 text-blue-600 font-bold" : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
                           }`}
                         >{len}</button>
                       ))}
                     </div>
                   </div>
                 )}
-
-                {/* 언어 */}
-                <div>
-                  <p className="text-[12px] font-semibold text-[#374151] mb-2">언어</p>
-                  <div className="flex gap-1.5">
-                    {["한국어", "영어"].map((lang) => (
-                      <button key={lang}
-                        onClick={() => setStudioConfig((c) => ({ ...c, language: lang }))}
-                        className={`px-3 py-1.5 rounded-lg text-[11px] border transition-all ${
-                          studioConfig.language === lang ? "border-[#155dfc] bg-[#eff4ff] text-[#155dfc]" : "border-[#e7e9ed] text-[#6b7280] hover:border-[#155dfc]"
-                        }`}
-                      >{lang}</button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 상세 지시 */}
-                <div>
-                  <p className="text-[12px] font-semibold text-[#374151] mb-1">상세 지시 <span className="text-[#9ca3af] font-normal">(선택)</span></p>
-                  <textarea
-                    value={studioConfig.instructions}
-                    onChange={(e) => setStudioConfig((c) => ({ ...c, instructions: e.target.value }))}
-                    placeholder="원하는 내용이나 방향을 입력하세요..."
-                    rows={2}
-                    className="w-full text-[12px] border border-[#e7e9ed] rounded-xl px-3 py-2 resize-none focus:outline-none focus:border-[#155dfc] text-[#374151] placeholder-[#d1d5db]"
-                  />
-                </div>
 
                 {/* 오류 */}
                 {studioError && (
