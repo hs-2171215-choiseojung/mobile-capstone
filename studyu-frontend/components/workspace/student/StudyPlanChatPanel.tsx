@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/client";
 import {
   X, BookOpen, NotebookPen, Sparkles, GripVertical,
   Loader2, Clock, CheckCircle2, Send, Trash2, Pencil,
-  ArrowUpRight, Plus,
+  ArrowUpRight, Plus, Wand2, ChevronLeft,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -72,6 +72,13 @@ interface PlanMsg {
 type ChatMessage = TextMsg | QuickReplyMsg | PlanMsg;
 type ChatStep = "selecting_week" | "selecting_purpose" | "generating" | "done";
 
+interface DocItem {
+  id: string;
+  name?: string;
+  filename?: string;
+  type?: string;
+}
+
 interface StudyPlanChatPanelProps {
   notebookId: string;
   selectedLLM: string;
@@ -81,6 +88,8 @@ interface StudyPlanChatPanelProps {
   onStudyPlanSaved?: () => void;
   onOpenDoc: (docId: string) => void;
   onOpenStudioItem: (itemId: string) => void;
+  docs?: DocItem[];
+  onStudioItemCreated?: () => void;
 }
 
 // ─── 로컬스토리지 ─────────────────────────────────────────────────────────────
@@ -297,6 +306,22 @@ function EditablePlanCard({
 
 // ─── StudyPlanChatPanel ───────────────────────────────────────────────────────
 
+// ── 스튜디오 타입 정의 ────────────────────────────────────────────────────────
+const STUDIO_ITEMS_DEF = [
+  { id: "audio",      label: "AI 오디오 오버뷰", icon: "🎧", presets: ["강의 요약 오디오","핵심 개념 설명","Q&A 형식","스토리텔링 방식"] },
+  { id: "slides",    label: "슬라이드 자료",    icon: "📊", presets: ["강의 슬라이드","요약 슬라이드","발표 자료","학습 정리 슬라이드"] },
+  { id: "mindmap",   label: "마인드맵",         icon: "🧠", presets: ["개념 구조도","인과관계 맵","비교 분석 맵","학습 흐름도"] },
+  { id: "report",    label: "보고서",           icon: "📝", presets: ["학습 가이드","기술 개념 설명서","사례 분석 보고서"] },
+  { id: "flashcard", label: "플래시카드",       icon: "🃏", presets: ["단어·정의 카드","Q&A 카드","공식 암기 카드"] },
+  { id: "quiz",      label: "퀴즈",             icon: "✅", presets: ["객관식 퀴즈","O/X 퀴즈"] },
+  { id: "infographic", label: "인포그래픽",   icon: "🎨", presets: ["개요형","프로세스형","비교형","통계형","타임라인형"] },
+  { id: "table",     label: "데이터 표",        icon: "📋", presets: ["핵심 내용 정리표","비교 분석 표","개념 정의 표"] },
+] as const;
+
+type StudioItemId = typeof STUDIO_ITEMS_DEF[number]["id"];
+
+const API_STUDENT = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export function StudyPlanChatPanel({
   notebookId,
   selectedLLM,
@@ -306,12 +331,23 @@ export function StudyPlanChatPanel({
   onStudyPlanSaved,
   onOpenDoc,
   onOpenStudioItem,
+  docs = [],
+  onStudioItemCreated,
 }: StudyPlanChatPanelProps) {
   // ── 탭 ──
-  const [activeTab, setActiveTab] = useState<"plan" | "notepad">(() => {
+  const [activeTab, setActiveTab] = useState<"plan" | "notepad" | "studio">(() => {
     const saved = loadPersistedState(notebookId);
     return saved?.activeTab ?? "plan";
   });
+
+  // ── 스튜디오 탭 상태 ──
+  const [studioStep, setStudioStep] = useState<"grid" | "config">("grid");
+  const [studioSelectedItem, setStudioSelectedItem] = useState<typeof STUDIO_ITEMS_DEF[number] | null>(null);
+  const [studioConfig, setStudioConfig] = useState({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: [] as string[] });
+  const [studioGenerating, setStudioGenerating] = useState(false);
+  const [studioGeneratingLabel, setStudioGeneratingLabel] = useState("");
+  const [studioError, setStudioError] = useState<string | null>(null);
+  const [studioDone, setStudioDone] = useState(false);
 
   // ── 챗 상태 ──
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -673,6 +709,61 @@ export function StudyPlanChatPanel({
     setNoteText(allNotes[w]?.text ?? "");
   };
 
+  // ── 스튜디오 생성 ──
+  const handleStudioGenerate = async () => {
+    if (!studioSelectedItem) return;
+    const item = studioSelectedItem;
+    const effectiveDocIds = studioConfig.selectedDocIds.length > 0 ? studioConfig.selectedDocIds : docs.map((d) => d.id);
+    if (effectiveDocIds.length === 0) { setStudioError("소스를 선택해주세요."); return; }
+    const token = await getToken();
+    if (!token) { setStudioError("로그인이 필요합니다."); return; }
+    setStudioGenerating(true);
+    setStudioError(null);
+    setStudioGeneratingLabel(item.label);
+    const lengthMap: Record<string, string> = { "5문제": "short", "10문제": "medium", "15문제": "long" };
+    const diffMap: Record<string, string> = { "5문제": "easy", "10문제": "intermediate", "15문제": "hard" };
+    const countMap: Record<string, string> = { "5문제": "fewer", "10문제": "standard", "15문제": "more" };
+    const countNumMap: Record<string, number> = { "5문제": 5, "10문제": 10, "15문제": 15 };
+    try {
+      let res: Response;
+      if (item.id === "audio") {
+        res = await fetch(`${API_STUDENT}/api/generate/audio`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: studioConfig.format || "overview", language: studioConfig.language, length: lengthMap[studioConfig.length] || "medium", focus: studioConfig.instructions, notebook_id: notebookId }) });
+      } else if (item.id === "quiz") {
+        const quizStyleMap: Record<string, string> = { "객관식 퀴즈": "multiple_choice", "O/X 퀴즈": "ox" };
+        res = await fetch(`${API_STUDENT}/api/generate`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, type: "quiz", difficulty: diffMap[studioConfig.length] || "intermediate", quiz_count: countNumMap[studioConfig.length] || 10, quiz_style: quizStyleMap[studioConfig.format] || "multiple_choice", topic: studioConfig.instructions || "", notebook_id: notebookId }) });
+      } else if (item.id === "mindmap") {
+        res = await fetch(`${API_STUDENT}/api/generate/mindmap`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, language: studioConfig.language, focus: studioConfig.instructions || studioConfig.format, notebook_id: notebookId }) });
+      } else if (item.id === "flashcard") {
+        res = await fetch(`${API_STUDENT}/api/generate/flashcard`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, count: countMap[studioConfig.length] || "standard", difficulty: diffMap[studioConfig.length] || "intermediate", topic: studioConfig.format || studioConfig.instructions || "", language: studioConfig.language, notebook_id: notebookId }) });
+      } else if (item.id === "slides") {
+        res = await fetch(`${API_STUDENT}/api/generate/slides`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: studioConfig.format || "lecture", length: lengthMap[studioConfig.length] || "medium", language: studioConfig.language, prompt: studioConfig.instructions, notebook_id: notebookId }) });
+      } else if (item.id === "report") {
+        res = await fetch(`${API_STUDENT}/api/generate/report`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: studioConfig.format || "report", language: studioConfig.language, length: lengthMap[studioConfig.length] || "medium", tone: "formal", instructions: studioConfig.instructions, notebook_id: notebookId }) });
+      } else if (item.id === "infographic") {
+        const infographicFormatMap: Record<string, string> = { "개요형": "overview", "프로세스형": "process", "비교형": "comparison", "통계형": "statistics", "타임라인형": "timeline" };
+        res = await fetch(`${API_STUDENT}/api/generate/infographic`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: infographicFormatMap[studioConfig.format] || "overview", language: studioConfig.language || "ko", instructions: studioConfig.instructions || "", notebook_id: notebookId }) });
+      } else {
+        const tableFormatMap: Record<string, string> = { "핵심 내용 정리표": "summary_table", "비교 분석 표": "comparison_table", "개념 정의 표": "concept_definition" };
+        res = await fetch(`${API_STUDENT}/api/generate/data`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ doc_ids: effectiveDocIds, format: tableFormatMap[studioConfig.format] || "summary_table", language: studioConfig.language || "ko", instructions: studioConfig.instructions || "", notebook_id: notebookId }) });
+      }
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail ?? "생성 실패"); }
+      setStudioDone(true);
+      onStudioItemCreated?.();
+    } catch (e) {
+      setStudioError(e instanceof Error ? e.message : "오류가 발생했습니다.");
+    } finally {
+      setStudioGenerating(false);
+    }
+  };
+
   // ── 노트패드 계획 수정 시 자동 저장 ──
   const handleNotepadPlanChange = async (newPlan: StudyPlanResult, week: number, text: string) => {
     setAllNotes(prev => ({ ...prev, [week]: { ...prev[week], plan: newPlan } }));
@@ -819,6 +910,22 @@ export function StudyPlanChatPanel({
             <NotebookPen className="w-3.5 h-3.5" />
             메모장
           </button>
+          <button
+            onClick={() => {
+              setActiveTab("studio");
+              setStudioStep("grid");
+              setStudioSelectedItem(null);
+              setStudioConfig({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: [] });
+              setStudioError(null);
+              setStudioDone(false);
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors ${
+              activeTab === "studio" ? "bg-[#eff4ff] text-[#155dfc]" : "text-[#6b7280] hover:bg-[#f5f6f8]"
+            }`}
+          >
+            <Wand2 className="w-3.5 h-3.5" />
+            스튜디오
+          </button>
         </div>
         <div className="flex items-center gap-1">
           {activeTab === "plan" && messages.length > 0 && (
@@ -836,7 +943,174 @@ export function StudyPlanChatPanel({
         </div>
       </div>
 
-      {/* ── AI 학습계획 탭 (챗) ── */}
+      {/* ── 스튜디오 탭 ── */}
+      {activeTab === "studio" && (
+        <div className="flex-1 overflow-y-auto flex flex-col">
+          {/* 스튜디오 그리드 화면 */}
+          {studioStep === "grid" && (
+            <div className="p-4">
+              <p className="text-[12px] text-[#9ca3af] mb-3">강사가 올린 소스를 이용해 학습 자료를 만들어보세요.</p>
+              <div className="grid grid-cols-3 gap-2">
+                {STUDIO_ITEMS_DEF.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => {
+                      setStudioSelectedItem(item);
+                      setStudioConfig((c) => ({ ...c, format: item.id === "quiz" ? item.presets[0] : "", selectedDocIds: docs.map((d) => d.id) }));
+                      setStudioStep("config");
+                      setStudioError(null);
+                      setStudioDone(false);
+                    }}
+                    className="flex flex-col items-center gap-1.5 py-3 px-1 rounded-xl border border-[#e7e9ed] hover:border-[#155dfc] hover:bg-[#f5f8ff] transition-all"
+                  >
+                    <span className="text-xl">{item.icon}</span>
+                    <span className="text-[11px] text-[#374151] font-medium text-center leading-tight">{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 스튜디오 설정 화면 */}
+          {studioStep === "config" && studioSelectedItem && (
+            <div className="flex flex-col h-full">
+              {/* 서브 헤더 */}
+              <div className="shrink-0 flex items-center gap-2 px-4 py-3 border-b border-[#e7e9ed]">
+                <button onClick={() => setStudioStep("grid")} className="p-1 rounded hover:bg-[#f5f6f8] text-[#9ca3af]">
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <span className="text-[13px] font-semibold text-[#374151]">{studioSelectedItem.icon} {studioSelectedItem.label}</span>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {/* 소스 선택 */}
+                {docs.length > 0 && (
+                  <div>
+                    <p className="text-[12px] font-semibold text-[#374151] mb-2">참고 소스</p>
+                    <div className="space-y-1.5">
+                      {docs.map((doc) => {
+                        const checked = studioConfig.selectedDocIds.includes(doc.id);
+                        return (
+                          <button key={doc.id}
+                            onClick={() => setStudioConfig((c) => ({ ...c, selectedDocIds: checked ? c.selectedDocIds.filter((id) => id !== doc.id) : [...c.selectedDocIds, doc.id] }))}
+                            className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl border-2 text-left transition-all ${
+                              checked ? "border-[#155dfc] bg-[#f0f5ff]" : "border-[#e7e9ed] hover:border-[#c7d2fe] bg-[#f9fafb]"
+                            }`}
+                          >
+                            <span className="text-base">{(doc.type ?? "").toLowerCase() === "pdf" ? "📜" : "📄"}</span>
+                            <span className={`flex-1 truncate text-[11px] font-medium ${ checked ? "text-[#155dfc]" : "text-[#6b7280]" }`}>{doc.filename || doc.name}</span>
+                            <span className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${ checked ? "border-[#155dfc] bg-[#155dfc]" : "border-[#d1d5db]" }`}>
+                              {checked && <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 12 12"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* 형식 선택 (presets) */}
+                {studioSelectedItem.presets.length > 0 && (
+                  <div>
+                    <p className="text-[12px] font-semibold text-[#374151] mb-2">형식</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {studioSelectedItem.presets.map((preset) => (
+                        <button key={preset}
+                          onClick={() => setStudioConfig((c) => ({ ...c, format: preset }))}
+                          className={`px-2.5 py-1 rounded-full text-[11px] border transition-all ${
+                            studioConfig.format === preset ? "border-[#155dfc] bg-[#eff4ff] text-[#155dfc]" : "border-[#e7e9ed] text-[#6b7280] hover:border-[#155dfc]"
+                          }`}
+                        >{preset}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 문제 수 (quiz/flashcard) */}
+                {["quiz", "flashcard"].includes(studioSelectedItem.id) && (
+                  <div>
+                    <p className="text-[12px] font-semibold text-[#374151] mb-2">문제 수</p>
+                    <div className="flex gap-1.5">
+                      {["5문제", "10문제", "15문제"].map((len) => (
+                        <button key={len}
+                          onClick={() => setStudioConfig((c) => ({ ...c, length: len }))}
+                          className={`flex-1 py-1.5 rounded-lg text-[11px] border transition-all ${
+                            studioConfig.length === len ? "border-[#155dfc] bg-[#eff4ff] text-[#155dfc]" : "border-[#e7e9ed] text-[#6b7280] hover:border-[#155dfc]"
+                          }`}
+                        >{len}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 언어 */}
+                <div>
+                  <p className="text-[12px] font-semibold text-[#374151] mb-2">언어</p>
+                  <div className="flex gap-1.5">
+                    {["한국어", "영어"].map((lang) => (
+                      <button key={lang}
+                        onClick={() => setStudioConfig((c) => ({ ...c, language: lang }))}
+                        className={`px-3 py-1.5 rounded-lg text-[11px] border transition-all ${
+                          studioConfig.language === lang ? "border-[#155dfc] bg-[#eff4ff] text-[#155dfc]" : "border-[#e7e9ed] text-[#6b7280] hover:border-[#155dfc]"
+                        }`}
+                      >{lang}</button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 상세 지시 */}
+                <div>
+                  <p className="text-[12px] font-semibold text-[#374151] mb-1">상세 지시 <span className="text-[#9ca3af] font-normal">(선택)</span></p>
+                  <textarea
+                    value={studioConfig.instructions}
+                    onChange={(e) => setStudioConfig((c) => ({ ...c, instructions: e.target.value }))}
+                    placeholder="원하는 내용이나 방향을 입력하세요..."
+                    rows={2}
+                    className="w-full text-[12px] border border-[#e7e9ed] rounded-xl px-3 py-2 resize-none focus:outline-none focus:border-[#155dfc] text-[#374151] placeholder-[#d1d5db]"
+                  />
+                </div>
+
+                {/* 오류 */}
+                {studioError && (
+                  <p className="text-[11px] text-red-500 bg-red-50 rounded-lg px-3 py-2">{studioError}</p>
+                )}
+
+                {/* 완료 */}
+                {studioDone && (
+                  <div className="flex flex-col items-center gap-2 py-4">
+                    <CheckCircle2 className="w-8 h-8 text-emerald-500" />
+                    <p className="text-[13px] font-semibold text-[#374151]">{studioGeneratingLabel} 생성 완료!</p>
+                    <p className="text-[11px] text-[#9ca3af] text-center">좌측 스튜디오 목록에서 확인할 수 있어요.</p>
+                    <button
+                      onClick={() => { setStudioStep("grid"); setStudioDone(false); }}
+                      className="mt-1 px-4 py-2 bg-[#155dfc] text-white rounded-xl text-[12px] font-semibold hover:bg-[#1249cc] transition-colors"
+                    >다른 자료 만들기</button>
+                  </div>
+                )}
+              </div>
+
+              {/* 생성 버튼 */}
+              {!studioDone && (
+                <div className="shrink-0 p-4 border-t border-[#e7e9ed]">
+                  <button
+                    onClick={handleStudioGenerate}
+                    disabled={studioGenerating}
+                    className="w-full py-2.5 bg-[#155dfc] text-white rounded-xl text-[13px] font-semibold hover:bg-[#1249cc] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                  >
+                    {studioGenerating ? (
+                      <><Loader2 className="w-4 h-4 animate-spin" />{studioGeneratingLabel} 생성 중...</>
+                    ) : (
+                      <><Wand2 className="w-4 h-4" />만들기</>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── AI 학습계획 탭 (챗) ── */} */}
       {activeTab === "plan" && (
         <>
           <div className="flex-1 overflow-y-auto px-4 py-4">

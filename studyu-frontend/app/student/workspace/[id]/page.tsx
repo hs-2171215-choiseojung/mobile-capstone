@@ -1226,6 +1226,8 @@ export default function StudentWorkspacePage() {
                         ?? studioItems.find((s) => (s.title ?? '').trim().toLowerCase() === itemId.trim().toLowerCase());
                       if (item) setSelectedItem(item);
                     }}
+                    docs={displayDocs}
+                    onStudioItemCreated={() => fetchData()}
                   />
                 </Resizable>
               )}
