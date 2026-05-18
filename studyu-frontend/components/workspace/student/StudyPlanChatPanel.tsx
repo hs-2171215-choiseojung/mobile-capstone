@@ -320,6 +320,15 @@ const STUDIO_ITEMS_DEF = [
 
 type StudioItemId = typeof STUDIO_ITEMS_DEF[number]["id"];
 
+interface StudioQueueItem {
+  queueId: string;
+  label: string;
+  icon: string;
+  status: "generating" | "done" | "error";
+  itemId?: string;
+  errorMsg?: string;
+}
+
 const API_STUDENT = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export function StudyPlanChatPanel({
@@ -344,10 +353,8 @@ export function StudyPlanChatPanel({
   const [studioStep, setStudioStep] = useState<"grid" | "config">("grid");
   const [studioSelectedItem, setStudioSelectedItem] = useState<typeof STUDIO_ITEMS_DEF[number] | null>(null);
   const [studioConfig, setStudioConfig] = useState({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: [] as string[] });
-  const [studioGenerating, setStudioGenerating] = useState(false);
-  const [studioGeneratingLabel, setStudioGeneratingLabel] = useState("");
+  const [studioQueue, setStudioQueue] = useState<StudioQueueItem[]>([]);
   const [studioError, setStudioError] = useState<string | null>(null);
-  const [studioDone, setStudioDone] = useState(false);
 
   // ── 챗 상태 ──
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -717,51 +724,62 @@ export function StudyPlanChatPanel({
     if (effectiveDocIds.length === 0) { setStudioError("소스를 선택해주세요."); return; }
     const token = await getToken();
     if (!token) { setStudioError("로그인이 필요합니다."); return; }
-    setStudioGenerating(true);
+
+    // 큐에 추가하고 즉시 그리드로 복귀
+    const queueId = genId();
+    setStudioQueue((prev) => [...prev, { queueId, label: item.label, icon: item.icon, status: "generating" }]);
+    setStudioStep("grid");
+    setStudioSelectedItem(null);
+    setStudioConfig({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: docs.map((d) => d.id) });
     setStudioError(null);
-    setStudioGeneratingLabel(item.label);
+
+    // 백그라운드에서 API 호출
     const lengthMap: Record<string, string> = { "5문제": "short", "10문제": "medium", "15문제": "long" };
     const diffMap: Record<string, string> = { "5문제": "easy", "10문제": "intermediate", "15문제": "hard" };
     const countMap: Record<string, string> = { "5문제": "fewer", "10문제": "standard", "15문제": "more" };
     const countNumMap: Record<string, number> = { "5문제": 5, "10문제": 10, "15문제": 15 };
-    try {
-      let res: Response;
-      if (item.id === "audio") {
-        res = await fetch(`${API_STUDENT}/api/generate/audio`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, format: studioConfig.format || "overview", language: studioConfig.language, length: lengthMap[studioConfig.length] || "medium", focus: studioConfig.instructions, notebook_id: notebookId }) });
-      } else if (item.id === "quiz") {
-        const quizStyleMap: Record<string, string> = { "객관식 퀴즈": "multiple_choice", "O/X 퀴즈": "ox" };
-        res = await fetch(`${API_STUDENT}/api/generate`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, type: "quiz", difficulty: diffMap[studioConfig.length] || "intermediate", quiz_count: countNumMap[studioConfig.length] || 10, quiz_style: quizStyleMap[studioConfig.format] || "multiple_choice", topic: studioConfig.instructions || "", notebook_id: notebookId }) });
-      } else if (item.id === "mindmap") {
-        res = await fetch(`${API_STUDENT}/api/generate/mindmap`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, language: studioConfig.language, focus: studioConfig.instructions || studioConfig.format, notebook_id: notebookId }) });
-      } else if (item.id === "flashcard") {
-        res = await fetch(`${API_STUDENT}/api/generate/flashcard`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, count: countMap[studioConfig.length] || "standard", difficulty: diffMap[studioConfig.length] || "intermediate", topic: studioConfig.format || studioConfig.instructions || "", language: studioConfig.language, notebook_id: notebookId }) });
-      } else if (item.id === "slides") {
-        res = await fetch(`${API_STUDENT}/api/generate/slides`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, format: studioConfig.format || "lecture", length: lengthMap[studioConfig.length] || "medium", language: studioConfig.language, prompt: studioConfig.instructions, notebook_id: notebookId }) });
-      } else if (item.id === "report") {
-        res = await fetch(`${API_STUDENT}/api/generate/report`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, format: studioConfig.format || "report", language: studioConfig.language, length: lengthMap[studioConfig.length] || "medium", tone: "formal", instructions: studioConfig.instructions, notebook_id: notebookId }) });
-      } else if (item.id === "infographic") {
-        const infographicFormatMap: Record<string, string> = { "개요형": "overview", "프로세스형": "process", "비교형": "comparison", "통계형": "statistics", "타임라인형": "timeline" };
-        res = await fetch(`${API_STUDENT}/api/generate/infographic`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, format: infographicFormatMap[studioConfig.format] || "overview", language: studioConfig.language || "ko", instructions: studioConfig.instructions || "", notebook_id: notebookId }) });
-      } else {
-        const tableFormatMap: Record<string, string> = { "핵심 내용 정리표": "summary_table", "비교 분석 표": "comparison_table", "개념 정의 표": "concept_definition" };
-        res = await fetch(`${API_STUDENT}/api/generate/data`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ doc_ids: effectiveDocIds, format: tableFormatMap[studioConfig.format] || "summary_table", language: studioConfig.language || "ko", instructions: studioConfig.instructions || "", notebook_id: notebookId }) });
+    const snapConfig = { ...studioConfig };
+    (async () => {
+      try {
+        let res: Response;
+        if (item.id === "audio") {
+          res = await fetch(`${API_STUDENT}/api/generate/audio`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, format: snapConfig.format || "overview", language: snapConfig.language, length: lengthMap[snapConfig.length] || "medium", focus: snapConfig.instructions, notebook_id: notebookId }) });
+        } else if (item.id === "quiz") {
+          const quizStyleMap: Record<string, string> = { "객관식 퀴즈": "multiple_choice", "O/X 퀴즈": "ox" };
+          res = await fetch(`${API_STUDENT}/api/generate`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, type: "quiz", difficulty: diffMap[snapConfig.length] || "intermediate", quiz_count: countNumMap[snapConfig.length] || 10, quiz_style: quizStyleMap[snapConfig.format] || "multiple_choice", topic: snapConfig.instructions || "", notebook_id: notebookId }) });
+        } else if (item.id === "mindmap") {
+          res = await fetch(`${API_STUDENT}/api/generate/mindmap`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, language: snapConfig.language, focus: snapConfig.instructions || snapConfig.format, notebook_id: notebookId }) });
+        } else if (item.id === "flashcard") {
+          res = await fetch(`${API_STUDENT}/api/generate/flashcard`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, count: countMap[snapConfig.length] || "standard", difficulty: diffMap[snapConfig.length] || "intermediate", topic: snapConfig.format || snapConfig.instructions || "", language: snapConfig.language, notebook_id: notebookId }) });
+        } else if (item.id === "slides") {
+          res = await fetch(`${API_STUDENT}/api/generate/slides`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, format: snapConfig.format || "lecture", length: lengthMap[snapConfig.length] || "medium", language: snapConfig.language, prompt: snapConfig.instructions, notebook_id: notebookId }) });
+        } else if (item.id === "report") {
+          res = await fetch(`${API_STUDENT}/api/generate/report`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, format: snapConfig.format || "report", language: snapConfig.language, length: lengthMap[snapConfig.length] || "medium", tone: "formal", instructions: snapConfig.instructions, notebook_id: notebookId }) });
+        } else if (item.id === "infographic") {
+          const infographicFormatMap: Record<string, string> = { "개요형": "overview", "프로세스형": "process", "비교형": "comparison", "통계형": "statistics", "타임라인형": "timeline" };
+          res = await fetch(`${API_STUDENT}/api/generate/infographic`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, format: infographicFormatMap[snapConfig.format] || "overview", language: snapConfig.language || "ko", instructions: snapConfig.instructions || "", notebook_id: notebookId }) });
+        } else {
+          const tableFormatMap: Record<string, string> = { "핵심 내용 정리표": "summary_table", "비교 분석 표": "comparison_table", "개념 정의 표": "concept_definition" };
+          res = await fetch(`${API_STUDENT}/api/generate/data`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ doc_ids: effectiveDocIds, format: tableFormatMap[snapConfig.format] || "summary_table", language: snapConfig.language || "ko", instructions: snapConfig.instructions || "", notebook_id: notebookId }) });
+        }
+        if (!res.ok) { const d = await res.json(); throw new Error(d.detail ?? "생성 실패"); }
+        const respData = await res.json();
+        const newItemId: string | undefined = respData?.item_id ?? respData?.id;
+        setStudioQueue((prev) => prev.map((q) => q.queueId === queueId ? { ...q, status: "done", itemId: newItemId } : q));
+        onStudioItemCreated?.();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "오류가 발생했습니다.";
+        setStudioQueue((prev) => prev.map((q) => q.queueId === queueId ? { ...q, status: "error", errorMsg: msg } : q));
       }
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail ?? "생성 실패"); }
-      setStudioDone(true);
-      onStudioItemCreated?.();
-    } catch (e) {
-      setStudioError(e instanceof Error ? e.message : "오류가 발생했습니다.");
-    } finally {
-      setStudioGenerating(false);
-    }
+    })();
   };
 
   // ── 노트패드 계획 수정 시 자동 저장 ──
@@ -948,26 +966,69 @@ export function StudyPlanChatPanel({
         <div className="flex-1 overflow-y-auto flex flex-col">
           {/* 스튜디오 그리드 화면 */}
           {studioStep === "grid" && (
-            <div className="p-4">
-              <p className="text-[12px] text-[#9ca3af] mb-3">강사가 올린 소스를 이용해 학습 자료를 만들어보세요.</p>
-              <div className="grid grid-cols-3 gap-2">
-                {STUDIO_ITEMS_DEF.map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => {
-                      setStudioSelectedItem(item);
-                      setStudioConfig((c) => ({ ...c, format: item.id === "quiz" ? item.presets[0] : "", selectedDocIds: docs.map((d) => d.id) }));
-                      setStudioStep("config");
-                      setStudioError(null);
-                      setStudioDone(false);
-                    }}
-                    className="flex flex-col items-center gap-1.5 py-3 px-1 rounded-xl border border-[#e7e9ed] hover:border-[#155dfc] hover:bg-[#f5f8ff] transition-all"
-                  >
-                    <span className="text-xl">{item.icon}</span>
-                    <span className="text-[11px] text-[#374151] font-medium text-center leading-tight">{item.label}</span>
-                  </button>
-                ))}
+            <div className="p-4 flex flex-col gap-4">
+              <div>
+                <p className="text-[12px] text-[#9ca3af] mb-3">강사가 올린 소스를 이용해 학습 자료를 만들어보세요.</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {STUDIO_ITEMS_DEF.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setStudioSelectedItem(item);
+                        setStudioConfig((c) => ({ ...c, format: item.id === "quiz" ? item.presets[0] : "", selectedDocIds: docs.map((d) => d.id) }));
+                        setStudioStep("config");
+                        setStudioError(null);
+                      }}
+                      className="flex flex-col items-center gap-1.5 py-3 px-1 rounded-xl border border-[#e7e9ed] hover:border-[#155dfc] hover:bg-[#f5f8ff] transition-all"
+                    >
+                      <span className="text-xl">{item.icon}</span>
+                      <span className="text-[11px] text-[#374151] font-medium text-center leading-tight">{item.label}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
+
+              {/* 생성 큐 목록 */}
+              {studioQueue.length > 0 && (
+                <div>
+                  <p className="text-[11px] font-semibold text-[#9ca3af] mb-2">만들고 있는 자료</p>
+                  <div className="flex flex-col gap-1.5">
+                    {studioQueue.map((q) => (
+                      <div
+                        key={q.queueId}
+                        onClick={() => {
+                          if (q.status === "done" && q.itemId) onOpenStudioItem(q.itemId);
+                        }}
+                        className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl border transition-all ${
+                          q.status === "done"
+                            ? "border-emerald-200 bg-emerald-50 cursor-pointer hover:border-emerald-400"
+                            : q.status === "error"
+                            ? "border-red-200 bg-red-50"
+                            : "border-[#e7e9ed] bg-white"
+                        }`}
+                      >
+                        <span className="text-base shrink-0">{q.icon}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-[12px] font-semibold truncate ${
+                            q.status === "done" ? "text-emerald-700" : q.status === "error" ? "text-red-600" : "text-[#374151]"
+                          }`}>{q.label}</p>
+                          {q.status === "error" && q.errorMsg && (
+                            <p className="text-[10px] text-red-400 truncate">{q.errorMsg}</p>
+                          )}
+                          {q.status === "done" && (
+                            <p className="text-[10px] text-emerald-500">완료 · 탭하여 열기</p>
+                          )}
+                          {q.status === "generating" && (
+                            <p className="text-[10px] text-[#9ca3af]">생성 중...</p>
+                          )}
+                        </div>
+                        {q.status === "generating" && <Loader2 className="w-3.5 h-3.5 text-[#9ca3af] animate-spin shrink-0" />}
+                        {q.status === "done" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1073,37 +1134,17 @@ export function StudyPlanChatPanel({
                 {studioError && (
                   <p className="text-[11px] text-red-500 bg-red-50 rounded-lg px-3 py-2">{studioError}</p>
                 )}
-
-                {/* 완료 */}
-                {studioDone && (
-                  <div className="flex flex-col items-center gap-2 py-4">
-                    <CheckCircle2 className="w-8 h-8 text-emerald-500" />
-                    <p className="text-[13px] font-semibold text-[#374151]">{studioGeneratingLabel} 생성 완료!</p>
-                    <p className="text-[11px] text-[#9ca3af] text-center">좌측 스튜디오 목록에서 확인할 수 있어요.</p>
-                    <button
-                      onClick={() => { setStudioStep("grid"); setStudioDone(false); }}
-                      className="mt-1 px-4 py-2 bg-[#155dfc] text-white rounded-xl text-[12px] font-semibold hover:bg-[#1249cc] transition-colors"
-                    >다른 자료 만들기</button>
-                  </div>
-                )}
               </div>
 
               {/* 생성 버튼 */}
-              {!studioDone && (
-                <div className="shrink-0 p-4 border-t border-[#e7e9ed]">
-                  <button
-                    onClick={handleStudioGenerate}
-                    disabled={studioGenerating}
-                    className="w-full py-2.5 bg-[#155dfc] text-white rounded-xl text-[13px] font-semibold hover:bg-[#1249cc] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-                  >
-                    {studioGenerating ? (
-                      <><Loader2 className="w-4 h-4 animate-spin" />{studioGeneratingLabel} 생성 중...</>
-                    ) : (
-                      <><Wand2 className="w-4 h-4" />만들기</>
-                    )}
-                  </button>
-                </div>
-              )}
+              <div className="shrink-0 p-4 border-t border-[#e7e9ed]">
+                <button
+                  onClick={handleStudioGenerate}
+                  className="w-full py-2.5 bg-[#155dfc] text-white rounded-xl text-[13px] font-semibold hover:bg-[#1249cc] transition-colors flex items-center justify-center gap-2"
+                >
+                  <Wand2 className="w-4 h-4" />만들기
+                </button>
+              </div>
             </div>
           )}
         </div>
