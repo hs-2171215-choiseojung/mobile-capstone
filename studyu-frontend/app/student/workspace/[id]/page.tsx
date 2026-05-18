@@ -192,6 +192,16 @@ export default function StudentWorkspacePage() {
 
   const [isDataLoading, setIsDataLoading] = useState(true);
 
+  // 스튜디오 생성 큐 (StudyPlanChatPanel 언마운트 시에도 유지)
+  const [studioQueue, setStudioQueue] = useState<{
+    queueId: string;
+    label: string;
+    icon: string;
+    status: "generating" | "done" | "error";
+    itemId?: string;
+    errorMsg?: string;
+  }[]>([]);
+
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatWidth, setChatWidth] = useState(380);
   const [sourceWidth, setSourceWidth] = useState(420);
@@ -315,6 +325,24 @@ export default function StudentWorkspacePage() {
     } finally {
       setIsDataLoading(false);
     }
+  };
+
+  // 스튜디오 아이템만 로딩 없이 갱신 (생성 완료 후 호출용)
+  const refreshStudioOnly = async () => {
+    try {
+      const supabase = createClient();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) return;
+      const res = await fetch(`${API}/api/studio?notebook_id=${notebookId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setStudioItems(Array.isArray(data) ? data : []);
+      }
+    } catch {}
   };
 
   useEffect(() => {
@@ -1227,7 +1255,9 @@ export default function StudentWorkspacePage() {
                       if (item) setSelectedItem(item);
                     }}
                     docs={displayDocs}
-                    onStudioItemCreated={() => fetchData()}
+                    studioQueue={studioQueue}
+                    onStudioQueueChange={setStudioQueue}
+                    onStudioItemCreated={() => refreshStudioOnly()}
                   />
                 </Resizable>
               )}

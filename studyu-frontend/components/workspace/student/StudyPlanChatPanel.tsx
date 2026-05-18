@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, Dispatch, SetStateAction } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
   X, BookOpen, NotebookPen, Sparkles, GripVertical,
@@ -90,6 +90,8 @@ interface StudyPlanChatPanelProps {
   onOpenStudioItem: (itemId: string) => void;
   docs?: DocItem[];
   onStudioItemCreated?: () => void;
+  studioQueue?: StudioQueueItem[];
+  onStudioQueueChange?: Dispatch<SetStateAction<StudioQueueItem[]>>;
 }
 
 // ─── 로컬스토리지 ─────────────────────────────────────────────────────────────
@@ -342,6 +344,8 @@ export function StudyPlanChatPanel({
   onOpenStudioItem,
   docs = [],
   onStudioItemCreated,
+  studioQueue: studioQueueProp,
+  onStudioQueueChange,
 }: StudyPlanChatPanelProps) {
   // ── 탭 ──
   const [activeTab, setActiveTab] = useState<"plan" | "notepad" | "studio">(() => {
@@ -353,7 +357,10 @@ export function StudyPlanChatPanel({
   const [studioStep, setStudioStep] = useState<"grid" | "config">("grid");
   const [studioSelectedItem, setStudioSelectedItem] = useState<typeof STUDIO_ITEMS_DEF[number] | null>(null);
   const [studioConfig, setStudioConfig] = useState({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: [] as string[] });
-  const [studioQueue, setStudioQueue] = useState<StudioQueueItem[]>([]);
+  // 큐 상태는 page.tsx에서 prop으로 관리 (언마운트 시에도 유지)
+  const [studioQueueLocal, setStudioQueueLocal] = useState<StudioQueueItem[]>([]);
+  const studioQueue = studioQueueProp ?? studioQueueLocal;
+  const setStudioQueue = onStudioQueueChange ?? setStudioQueueLocal;
   const [studioError, setStudioError] = useState<string | null>(null);
 
   // ── 챗 상태 ──
@@ -935,7 +942,6 @@ export function StudyPlanChatPanel({
               setStudioSelectedItem(null);
               setStudioConfig({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: [] });
               setStudioError(null);
-              setStudioDone(false);
             }}
             className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-medium whitespace-nowrap transition-colors ${
               activeTab === "studio" ? "bg-[#eff4ff] text-[#155dfc]" : "text-[#6b7280] hover:bg-[#f5f6f8]"
