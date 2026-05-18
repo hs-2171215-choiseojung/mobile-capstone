@@ -362,6 +362,8 @@ export function StudyPlanChatPanel({
   const studioQueue = studioQueueProp ?? studioQueueLocal;
   const setStudioQueue = onStudioQueueChange ?? setStudioQueueLocal;
   const [studioError, setStudioError] = useState<string | null>(null);
+  // 내가 만든 스튜디오 아이템 (DB에서 로드, 새로고침 시에도 유지)
+  const [savedStudentItems, setSavedStudentItems] = useState<any[]>([]);
 
   // ── 챗 상태 ──
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -465,6 +467,31 @@ export function StudyPlanChatPanel({
     const { data: { session } } = await supabase.auth.getSession();
     return session?.access_token ?? null;
   };
+
+  // ── 내가 만든 스튜디오 아이템 로드 ──
+  const fetchStudentStudioItems = async () => {
+    try {
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch(`${API_STUDENT}/api/studio?notebook_id=${notebookId}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const items = await res.json();
+        setSavedStudentItems(
+          Array.isArray(items)
+            ? items.filter((i: any) => i.user_id === session.user.id)
+            : []
+        );
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (notebookId) fetchStudentStudioItems();
+  }, [notebookId]);
 
   // ── 메모 전체 로드 ──
   const loadAllNotes = useCallback(async () => {
@@ -782,6 +809,7 @@ export function StudyPlanChatPanel({
         const newItemId: string | undefined = respData?.item_id ?? respData?.id;
         setStudioQueue((prev) => prev.map((q) => q.queueId === queueId ? { ...q, status: "done", itemId: newItemId } : q));
         onStudioItemCreated?.();
+        fetchStudentStudioItems();
       } catch (e) {
         const msg = e instanceof Error ? e.message : "오류가 발생했습니다.";
         setStudioQueue((prev) => prev.map((q) => q.queueId === queueId ? { ...q, status: "error", errorMsg: msg } : q));
@@ -1032,6 +1060,31 @@ export function StudyPlanChatPanel({
                         {q.status === "done" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                       </div>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 내가 만든 자료 목록 (DB에서 로드, 새로고침 후에도 유지) */}
+              {savedStudentItems.length > 0 && (
+                <div>
+                  <p className="text-[11px] font-semibold text-[#9ca3af] mb-2">내가 만든 자료</p>
+                  <div className="flex flex-col gap-1.5">
+                    {savedStudentItems.map((item) => {
+                      const def = STUDIO_ITEMS_DEF.find((d) => d.id === item.type);
+                      return (
+                        <div
+                          key={item.id}
+                          onClick={() => onOpenStudioItem(item.id)}
+                          className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-[#e7e9ed] bg-white cursor-pointer hover:border-[#155dfc] hover:bg-[#f5f8ff] transition-all"
+                        >
+                          <span className="text-base shrink-0">{def?.icon ?? "📄"}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[12px] font-semibold text-[#374151] truncate">{item.title || def?.label || item.type}</p>
+                            <p className="text-[10px] text-[#9ca3af]">{def?.label ?? item.type}</p>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
