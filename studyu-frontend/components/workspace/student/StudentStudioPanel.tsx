@@ -9,7 +9,6 @@ import {
   Mic,
   Map,
   Layout,
-  Video,
   Image as ImageIcon,
   Database,
   ChevronDown,
@@ -55,7 +54,6 @@ const STUDIO_CREATION_OPTIONS = [
   { id: "quiz", label: "퀴즈", icon: FileQuestion, color: "text-yellow-600", bg: "bg-yellow-50" },
   { id: "report", label: "보고서", icon: FileText, color: "text-indigo-500", bg: "bg-indigo-50" },
   { id: "flashcard", label: "플래시카드", icon: Book, color: "text-pink-500", bg: "bg-pink-50" },
-  { id: "video", label: "동영상 개요", icon: Video, color: "text-red-500", bg: "bg-red-50" },
   { id: "infographic", label: "인포그래픽", icon: ImageIcon, color: "text-teal-500", bg: "bg-teal-50" },
   { id: "table", label: "데이터 표", icon: Database, color: "text-cyan-500", bg: "bg-cyan-50" },
 ];

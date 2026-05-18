@@ -121,8 +121,6 @@ const studioTaskItems: StudioTaskItem[] = [
     presets:["강의 요약 오디오","핵심 개념 설명","Q&A 형식","스토리텔링 방식","토론 형식","인터뷰 형식"] },
   { id:"slides",     label:"슬라이드 자료",   icon:"📊", iconBg:"bg-blue-50",    subtitle:"프레젠테이션 슬라이드 생성",
     presets:["강의 슬라이드","요약 슬라이드","발표 자료","학습 정리 슬라이드","비교 분석 슬라이드","사례 연구 슬라이드"] },
-  { id:"video",      label:"동영상 개요",     icon:"🎬", iconBg:"bg-red-50",     subtitle:"동영상 학습 자료 개요",
-    presets:["강의 개요","실습 영상 개요","애니메이션 시나리오","튜토리얼 개요","다큐멘터리 형식","인터뷰 개요"] },
   { id:"mindmap",    label:"마인드맵",        icon:"🧠", iconBg:"bg-green-50",   subtitle:"개념 연결 마인드맵",
     presets:["개념 구조도","인과관계 맵","비교 분석 맵","학습 흐름도","키워드 맵","프로세스 맵"] },
   { id:"report",     label:"보고서",          icon:"📝", iconBg:"bg-amber-50",   subtitle:"학습 내용 보고서 작성",
@@ -892,7 +890,6 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       icon:
         item.type === "audio" ? "🎧" :
         item.type === "slides" ? "📊" :
-        item.type === "video" ? "🎬" :
         item.type === "mindmap" ? "🗺️" :
         item.type === "report" ? "📝" :
         item.type === "flashcard" ? "🃏" :
@@ -903,7 +900,6 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       iconBg:
         item.type === "audio" ? "bg-purple-50" :
         item.type === "slides" ? "bg-blue-50" :
-        item.type === "video" ? "bg-red-50" :
         item.type === "mindmap" ? "bg-green-50" :
         item.type === "report" ? "bg-amber-50" :
         item.type === "flashcard" ? "bg-pink-50" :
@@ -989,7 +985,6 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
         description: (item.content?.description as string) || "",
         sections: (item.content?.sections as any[]) || [],
       } : undefined,
-      videoData: item.type === "video" ? { slides: (item.content?.slides as any[]) || [] } : undefined,
       content: item.content,
     }));
   }
@@ -1449,14 +1444,6 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
       : pickerSources;
     const docIds = usedSources.flatMap((s) => (s.docId ? [s.docId] : []));
     const effectiveDocIds = docIds.length > 0 ? docIds : activeDocIds;
-
-    if (["video"].includes(item.id)) {
-      setOpenPickerWeekId(null);
-      setSelectedPickerItem(null);
-      setStudioCreateType(item.id);
-      setStudioCreateWeekId(weekId);
-      return;
-    }
 
     setGeneratingTask(true);
     console.log(`[studio] 🚀 ${item.id} 생성 시작 | format="${detailConfig.format}" | docs=${JSON.stringify(effectiveDocIds)} | lang=${detailConfig.language}`);
@@ -2141,7 +2128,6 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                     <span style={{ fontSize: "0.9rem" }}>
                                       {item.type === "audio" ? "🎧" :
                                        item.type === "slides" ? "📊" :
-                                       item.type === "video" ? "🎬" :
                                        item.type === "mindmap" ? "🗺️" :
                                        item.type === "report" ? "📝" :
                                        item.type === "flashcard" ? "🃏" :

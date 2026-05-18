@@ -192,10 +192,6 @@ export function StudioItemViewer({ item, onClose, sessionState, onSessionStateCh
     );
   }
 
-  if (t === "video") {
-    return <VideoItemViewer item={item} c={c} toText={toText} onClose={onClose} />;
-  }
-
   return (
     <div className="p-10 flex flex-col items-center justify-center h-full text-center">
       <p className="text-gray-500 mb-4">현재 화면에서 지원하지 않는 항목입니다.</p>
@@ -206,90 +202,3 @@ export function StudioItemViewer({ item, onClose, sessionState, onSessionStateCh
   );
 }
 
-function VideoItemViewer({ item, c, toText, onClose }: { item: any; c: any; toText: (v: unknown, f?: string) => string; onClose: () => void }) {
-  const slides = c.slides || item.videoData?.slides || [];
-  const title = toText(item.title, "동영상 개요");
-  const [rendering, setRendering] = useState(false);
-  const [videoSrc, setVideoSrc] = useState<string | null>(null);
-  const [renderError, setRenderError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!slides.length) return;
-    setRendering(true);
-    setRenderError(null);
-    fetch("/api/render-video", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slides }),
-    })
-      .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
-      .then(({ ok, data }) => {
-        if (!ok) throw new Error(data.error ?? "렌더링 실패");
-        setVideoSrc(`data:video/mp4;base64,${data.videoBase64}`);
-      })
-      .catch((e: unknown) => setRenderError(e instanceof Error ? e.message : "렌더링 실패"))
-      .finally(() => setRendering(false));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  return (
-    <div className="h-full bg-white flex flex-col overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-3 shrink-0">
-        <button
-          onClick={onClose}
-          className="shrink-0 flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-blue-600 transition-colors"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24">
-            <path
-              d="M19 12H5M12 5l-7 7 7 7"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-          돌아가기
-        </button>
-        <div className="h-4 w-px bg-gray-200 shrink-0" />
-        <span className="text-sm font-medium text-gray-700 truncate min-w-0">{title}</span>
-      </div>
-
-      <div className="flex-1 flex items-center justify-center bg-black">
-        {videoSrc ? (
-          <video controls autoPlay src={videoSrc} className="max-w-full max-h-full" style={{ maxHeight: "calc(100vh - 120px)" }} />
-        ) : renderError ? (
-          <div className="text-center text-white space-y-3">
-            <p className="text-sm text-red-400">{renderError}</p>
-            <button
-              onClick={() => {
-                setRenderError(null);
-                setRendering(true);
-                fetch("/api/render-video", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ slides }),
-                })
-                  .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
-                  .then(({ ok, data }) => {
-                    if (!ok) throw new Error(data.error ?? "렌더링 실패");
-                    setVideoSrc(`data:video/mp4;base64,${data.videoBase64}`);
-                  })
-                  .catch((e: unknown) => setRenderError(e instanceof Error ? e.message : "렌더링 실패"))
-                  .finally(() => setRendering(false));
-              }}
-              className="px-4 py-2 rounded-lg bg-white text-gray-800 text-sm font-medium hover:bg-gray-100"
-            >
-              다시 시도
-            </button>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center gap-3 text-white">
-            <svg className="w-8 h-8 animate-spin text-white/60" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40" strokeDashoffset="10"/>
-            </svg>
-            <p className="text-sm text-white/70">동영상 렌더링 중... (최대 3분 소요)</p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
