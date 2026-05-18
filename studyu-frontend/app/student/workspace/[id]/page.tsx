@@ -194,6 +194,12 @@ export default function StudentWorkspacePage() {
 
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatWidth, setChatWidth] = useState(380);
+  const [sourceWidth, setSourceWidth] = useState(420);
+
+  // 퀴즈 참고 자료 패널용 상태
+  const [quizSourceOpen, setQuizSourceOpen] = useState(false);
+  const [quizSourceSlide, setQuizSourceSlide] = useState<number | null>(null);
+  const [quizSourceScrollText, setQuizSourceScrollText] = useState<string | undefined>(undefined);
 
   const centerScrollRef = useRef<HTMLDivElement | null>(null);
   const centerScrollTopRef = useRef(0);
@@ -517,12 +523,12 @@ export default function StudentWorkspacePage() {
     setSelectedSourceSummaryLoading(false);
   };
 
-  const openSourceDocument = async (doc: DocumentInfo) => {
+  const openSourceDocument = async (doc: DocumentInfo, keepItem?: boolean) => {
     if (selectedSourceUrl.startsWith("blob:")) {
       URL.revokeObjectURL(selectedSourceUrl);
     }
     setActiveDocIds([doc.id]);
-    setSelectedItem(null);
+    if (!keepItem) setSelectedItem(null);
     setSelectedSource(doc);
     setSelectedSourceUrl("");
     setSelectedSourceDownloadUrl("");
@@ -715,10 +721,18 @@ export default function StudentWorkspacePage() {
     setSelectedSourceMediaType(null);
     setSelectedSourceSeekRequest(null);
     setActiveDocIds([]);
+    setQuizSourceOpen(false);
+    setQuizSourceSlide(null);
+    setQuizSourceScrollText(undefined);
     shouldRestoreCenterScrollRef.current = true;
   };
 
   const handleTopNavBack = () => {
+    if (selectedSource && quizSourceOpen) {
+      closeSource();
+      return;
+    }
+
     if (selectedSource) {
       closeSource();
       return;
@@ -770,6 +784,112 @@ export default function StudentWorkspacePage() {
           const CHAT_TYPES = new Set(["quiz", "mindmap", "plan", "table", "data", "flashcard"]);
           const normalizeType = (t: string) => ({ memo: "notepad", summary: "report", plan: "mindmap", data: "table" }[t] || t);
           const itemNeedsNoChat = selectedItem && CHAT_TYPES.has(normalizeType(selectedItem.type ?? ""));
+
+          // ── 1. 퀴즈 참고 자료: 문서 뷰어(왼) + Ask AI(중) + 퀴즈(우) ──
+          if (quizSourceOpen && selectedSource && selectedItem && itemNeedsNoChat) {
+            const srcExt = selectedSource.filename.toLowerCase().split(".").pop() ?? selectedSource.file_type;
+            const isPpt = (srcExt === "pptx" || srcExt === "ppt") && !selectedSource.storage_path?.startsWith("http");
+            const isPdf = srcExt === "pdf";
+            const isDocx = srcExt === "docx";
+            const isHwpx = srcExt === "hwpx" || srcExt === "hwp";
+            return (
+              <div className="flex flex-1 overflow-hidden">
+                {/* 왼쪽: 문서 뷰어 (너비 조절 가능) */}
+                <Resizable
+                  size={{ width: sourceWidth, height: '100%' }}
+                  minWidth={280}
+                  maxWidth={700}
+                  enable={{ right: true }}
+                  onResizeStop={(_e, _dir, _ref, d) => setSourceWidth(prev => prev + d.width)}
+                  handleStyles={{ right: { width: '12px', right: '-6px', zIndex: 50, cursor: 'col-resize' } }}
+                  handleComponent={{ right: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
+                  className="shrink-0 overflow-hidden bg-[#fcfcfd] flex flex-col relative min-h-0 border-r border-[#e7e9ed]"
+                >
+                  <StudentSourceViewer
+                    source={selectedSource}
+                    sourceUrl={selectedSourceUrl}
+                    sourceFileUrl={selectedSourceDownloadUrl || selectedSourceUrl}
+                    loading={isSourceLoading}
+                    error={selectedSourceError}
+                    transcriptText={selectedSourceTranscript}
+                    mediaTimeline={selectedSourceTimeline}
+                    seekRequest={selectedSourceSeekRequest}
+                    onMediaInfoChange={({ kind, duration }) => {
+                      setSelectedSourceMediaType(kind);
+                      setSelectedSourceMediaDuration(duration);
+                    }}
+                    scrollToText={quizSourceScrollText}
+                    onClose={closeSource}
+                    customViewer={(isPpt || isDocx || isHwpx) ? (
+                      <PptSlideViewer
+                        docId={selectedSource.id}
+                        currentSlide={quizSourceSlide}
+                        onSlideChange={(n) => setQuizSourceSlide(n)}
+                      />
+                    ) : undefined}
+                  />
+                </Resizable>
+                {/* 가운데: Ask AI */}
+                <Resizable
+                  size={{ width: chatWidth, height: '100%' }}
+                  minWidth={260}
+                  maxWidth={520}
+                  enable={{ right: true }}
+                  onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
+                  handleStyles={{ right: { width: '12px', right: '-6px', zIndex: 50, cursor: 'col-resize' } }}
+                  handleComponent={{ right: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
+                  className="shrink-0 border-r border-[#e7e9ed] bg-white flex flex-col"
+                >
+                  <StudentChatPanel
+                    activeDocIds={activeDocIds}
+                    docs={docs}
+                    notebookId={notebookId}
+                    selectedLLM={selectedLLM}
+                    selectedDifficulty={selectedDifficulty}
+                    difficultyReady={prefsHydrated}
+                    activeSourceId={selectedSource.id}
+                    activeSourceMediaType={selectedSourceMediaType}
+                    activeSourceMediaDuration={selectedSourceMediaDuration}
+                    onSeekToTimestamp={(seconds) => setSelectedSourceSeekRequest({ seconds, nonce: Date.now() })}
+                    onCitationClick={handleCitationClick}
+                    onSlideClick={isPpt ? (n) => setQuizSourceSlide(n) : undefined}
+                    onPageClick={(isPdf || isDocx || isHwpx) ? (n) => {
+                      if (isPdf) {
+                        setSelectedSourceUrl((prev) => {
+                          const base = prev.split("#")[0];
+                          return `${base}#page=${n}`;
+                        });
+                      } else {
+                        setQuizSourceSlide(n);
+                      }
+                    } : undefined}
+                    currentSlide={(isPpt || isDocx || isHwpx || isPdf) ? quizSourceSlide : undefined}
+                  />
+                </Resizable>
+                {/* 오른쪽: 퀴즈 */}
+                <div className="flex-1 overflow-hidden bg-white flex flex-col relative min-h-0">
+                  <StudioItemViewer
+                    item={selectedItem}
+                    onClose={() => { setSelectedItem(null); closeSource(); shouldRestoreCenterScrollRef.current = true; }}
+                    docs={docs}
+                    onRequestSource={(docId, page, text, timestamp) => {
+                      const doc = docs.find((d: any) => d.id === docId);
+                      if (!doc) return;
+                      if (selectedSource.id !== docId) {
+                        setQuizSourceSlide(page);
+                        setQuizSourceScrollText(text ?? undefined);
+                        void openSourceDocument(doc as DocumentInfo, true);
+                      } else {
+                        if (page != null) setQuizSourceSlide(page);
+                        if (text) setQuizSourceScrollText(text);
+                        if (timestamp != null) setSelectedSourceSeekRequest({ seconds: timestamp, nonce: Date.now() });
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          }
 
           if (selectedSource) {
             const srcExt = selectedSource.filename.toLowerCase().split(".").pop() ?? selectedSource.file_type;
@@ -863,15 +983,29 @@ export default function StudentWorkspacePage() {
             );
           }
 
-          if (selectedItem && itemNeedsNoChat) return (
-            /* 퀴즈·마인드맵·표·플래시카드: 단독 전체화면 */
-            <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative">
-              <StudioItemViewer
-                item={selectedItem}
-                onClose={() => { setSelectedItem(null); shouldRestoreCenterScrollRef.current = true; }}
-              />
-            </div>
-          );
+          if (selectedItem && itemNeedsNoChat) {
+            const handleQuizRequestSource = (docId: string, page: number | null, text?: string | null, timestamp?: number | null) => {
+              const doc = docs.find((d: any) => d.id === docId);
+              if (!doc) return;
+              setQuizSourceOpen(true);
+              setQuizSourceSlide(page);
+              setQuizSourceScrollText(text ?? undefined);
+              void openSourceDocument(doc as DocumentInfo, true);
+              if (timestamp != null) setSelectedSourceSeekRequest({ seconds: timestamp, nonce: Date.now() });
+            };
+
+            return (
+              /* 퀴즈·마인드맵·표·플래시카드: 단독 전체화면 */
+              <div className="flex-1 overflow-hidden bg-[#fcfcfd] flex flex-col relative">
+                <StudioItemViewer
+                  item={selectedItem}
+                  onClose={() => { setSelectedItem(null); shouldRestoreCenterScrollRef.current = true; }}
+                  docs={docs}
+                  onRequestSource={handleQuizRequestSource}
+                />
+              </div>
+            );
+          }
 
           if (selectedItem) return (
             /* 일반 스튜디오 아이템: 뷰어 + 우측 채팅 (Resizable) */
@@ -880,6 +1014,7 @@ export default function StudentWorkspacePage() {
                 <StudioItemViewer
                   item={selectedItem}
                   onClose={() => { setSelectedItem(null); shouldRestoreCenterScrollRef.current = true; }}
+                  docs={docs}
                 />
               </div>
               <Resizable

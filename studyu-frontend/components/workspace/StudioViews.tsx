@@ -431,13 +431,114 @@ export function MemoView({
   );
 }
 
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+/** 퀴즈 참고자료 슬라이드인 패널 */
+function QuizSourcePanel({
+  sourceRef,
+  docs,
+  onClose,
+}: {
+  sourceRef: { page?: number | null; timestamp?: number | null; text?: string } | null | undefined;
+  docs: { id: string; filename?: string; name?: string; file_type?: string }[];
+  onClose: () => void;
+}) {
+  const [slideUrl, setSlideUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // page가 있고 docs가 있으면 슬라이드 이미지 로드
+  useEffect(() => {
+    if (!sourceRef?.page || docs.length === 0) { setSlideUrl(null); return; }
+    const doc = docs[0]; // 퀴즈 생성 시 여러 doc가 있어도 첫 번째 doc 기준
+    setLoading(true);
+    fetch(`${API}/api/documents/${doc.id}/slides`, { credentials: "include" })
+      .then((r) => r.json())
+      .then((data) => {
+        const slides: { page: number; url: string }[] = data.slides || data || [];
+        const matched = slides.find((s) => s.page === sourceRef.page);
+        setSlideUrl(matched?.url ?? null);
+      })
+      .catch(() => setSlideUrl(null))
+      .finally(() => setLoading(false));
+  }, [sourceRef?.page, docs]);
+
+  const docName = docs[0]?.filename || docs[0]?.name || "문서";
+  const pageLabel = sourceRef?.page ? `페이지 ${sourceRef.page}` : null;
+  const timestampLabel = sourceRef?.timestamp != null
+    ? (() => {
+        const s = Math.floor(sourceRef.timestamp);
+        const m = Math.floor(s / 60);
+        const sec = s % 60;
+        return `${m}:${String(sec).padStart(2, "0")}`;
+      })()
+    : null;
+
+  return (
+    <div className="flex flex-col h-full bg-white overflow-y-auto">
+      {/* 헤더 */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-gray-800">📄 참고 자료</span>
+        </div>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div className="p-4 space-y-3">
+        {/* 문서명 + 페이지/타임스탬프 배지 */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-gray-700 truncate max-w-[160px]">{docName}</span>
+          {pageLabel && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">{pageLabel}</span>
+          )}
+          {timestampLabel && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 font-medium">🕒 {timestampLabel}</span>
+          )}
+        </div>
+
+        {/* 슬라이드 이미지 */}
+        {loading && (
+          <div className="flex items-center justify-center h-32 text-gray-400 text-xs">불러오는 중...</div>
+        )}
+        {!loading && slideUrl && (
+          <div className="rounded-xl overflow-hidden border border-gray-200 shadow-sm">
+            <img src={slideUrl} alt={pageLabel || "페이지"} className="w-full object-contain" />
+          </div>
+        )}
+
+        {/* 원문 텍스트 하이라이트 */}
+        {sourceRef?.text && (
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-gray-500">원문</p>
+            <div className="rounded-xl p-3 bg-yellow-50 border border-yellow-200">
+              <p className="text-sm text-gray-800 leading-relaxed">
+                {sourceRef.text}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {!sourceRef?.text && !loading && !slideUrl && (
+          <p className="text-xs text-gray-400">참고 자료 정보가 없습니다.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function QuizView({
   quiz,
+  sourceDocs,
   onBack,
   initialState,
   onStateChange,
+  onRequestSource,
 }: {
   quiz: any;
+  sourceDocs?: { id: string; filename?: string; name?: string; file_type?: string }[];
   onBack: () => void;
   initialState?: {
     idx?: number;
@@ -455,6 +556,7 @@ export function QuizView({
     done: boolean;
     score: number;
   }) => void;
+  onRequestSource?: (docId: string, page: number | null, text?: string | null, timestamp?: number | null) => void;
 }) {
   const questions = Array.isArray(quiz?.questions) ? quiz.questions : [];
   const [idx, setIdx] = useState(initialState?.idx ?? 0);
@@ -550,85 +652,111 @@ export function QuizView({
   }
 
   return (
-    <div className="h-full bg-white flex flex-col">
+    <div className="h-full bg-white flex flex-col overflow-hidden">
       <StudioHeader
         title={`${toText(quiz?.title, "퀴즈")} ${idx + 1}/${total}`}
         onBack={onBack}
         actions={<DownloadBtn onClick={quizDownload} />}
       />
-      <div className="p-4 flex-1 overflow-y-auto">
-        <div className="rounded-2xl p-4 mb-3 bg-white border border-gray-200">
-        <h3 className="text-base font-semibold text-gray-900">{toText(q.question, "문항")}</h3>
-          <div className="space-y-2 mt-4">
-            {(q.options || []).map((opt: string, i: number) => {
-              let bg = "white";
-              let borderColor = "#e0e0e0";
-              let color = "#202124";
-              if (answered) {
-                if (i === correctAnswerIndex) {
-                  bg = "#e6f4ea";
-                  borderColor = "#34a853";
-                  color = "#137333";
-                } else if (i === selected) {
-                  bg = "#fce8e6";
-                  borderColor = "#ea4335";
-                  color = "#c5221f";
+      {/* 퀴즈 본문 */}
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* 퀴즈 본문 */}
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="rounded-2xl p-4 mb-3 bg-white border border-gray-200">
+            <h3 className="text-base font-semibold text-gray-900">{toText(q.question, "문항")}</h3>
+            <div className="space-y-2 mt-4">
+              {(q.options || []).map((opt: string, i: number) => {
+                let bg = "white";
+                let borderColor = "#e0e0e0";
+                let color = "#202124";
+                if (answered) {
+                  if (i === correctAnswerIndex) {
+                    bg = "#e6f4ea";
+                    borderColor = "#34a853";
+                    color = "#137333";
+                  } else if (i === selected) {
+                    bg = "#fce8e6";
+                    borderColor = "#ea4335";
+                    color = "#c5221f";
+                  }
+                } else if (selected === i) {
+                  bg = "#e8f0fe";
+                  borderColor = "#1a73e8";
+                  color = "#1a73e8";
                 }
-              } else if (selected === i) {
-                bg = "#e8f0fe";
-                borderColor = "#1a73e8";
-                color = "#1a73e8";
-              }
-              return (
-                <button
-                  key={i}
-                  onClick={() => select(i)}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm text-left transition-all border"
-                  style={{ background: bg, borderColor, color }}
-                >
-                  <span className="w-6 h-6 rounded-full border flex items-center justify-center shrink-0 text-xs font-bold" style={{ borderColor }}>
-                    {OPTION_ALPHA[i] || i + 1}
-                  </span>
-                  {opt}
-                </button>
-              );
-            })}
+                return (
+                  <button
+                    key={i}
+                    onClick={() => select(i)}
+                    className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm text-left transition-all border"
+                    style={{ background: bg, borderColor, color }}
+                  >
+                    <span className="w-6 h-6 rounded-full border flex items-center justify-center shrink-0 text-xs font-bold" style={{ borderColor }}>
+                      {OPTION_ALPHA[i] || i + 1}
+                    </span>
+                    {opt}
+                  </button>
+                );
+              })}
+            </div>
           </div>
+
+          {answered && (
+            <div className="rounded-xl p-4 text-sm text-gray-700 bg-blue-50 border border-blue-100 mb-3 space-y-3">
+              <div className={`rounded-lg px-3 py-2 text-sm font-medium ${isCorrectSelection ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
+                {isCorrectSelection ? "정답입니다." : "오답입니다."}
+              </div>
+              <div>
+                <p className="font-medium text-blue-800 mb-1">정답</p>
+                <p>{correctAnswerLabel ? `${correctAnswerLabel}. ${correctAnswerText}` : "정답 정보를 확인할 수 없습니다."}</p>
+              </div>
+              <div>
+                <p className="font-medium text-blue-800 mb-1">해설</p>
+                <p>{toText(q.explanation, "해설이 없습니다.")}</p>
+              </div>
+            </div>
+          )}
+
+          {!answered && (
+            <button onClick={() => setShowHint((v) => !v)} className="text-xs text-blue-600 hover:underline mb-3">
+              {showHint ? "힌트 숨기기" : "힌트 보기"}
+            </button>
+          )}
+
+          {showHint && !answered && (
+            <div className="rounded-xl p-3 text-sm text-gray-600 bg-yellow-50 border border-yellow-200 mb-3">
+              💡 {toText(q.hint)}
+            </div>
+          )}
+
+          {/* 참고 자료 버튼 */}
+          {onRequestSource && (q?.source_ref?.text || q?.source_ref?.page != null) && (
+            <button
+              onClick={() => {
+                const doc = sourceDocs?.[0];
+                if (!doc) return;
+                onRequestSource(
+                  doc.id,
+                  q.source_ref?.page ?? null,
+                  q.source_ref?.text ?? null,
+                  q.source_ref?.timestamp ?? null,
+                );
+              }}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors mb-3 bg-gray-50 border-gray-200 text-gray-600 hover:bg-blue-50 hover:border-blue-200 hover:text-blue-700"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+              </svg>
+              참고 자료 보기
+            </button>
+          )}
+
+          {answered && (
+            <button onClick={next} className="w-full py-3 rounded-xl text-sm font-semibold bg-blue-600 text-white">
+              {idx + 1 >= total ? "결과 보기" : "다음 문제"}
+            </button>
+          )}
         </div>
-
-        {answered && (
-          <div className="rounded-xl p-4 text-sm text-gray-700 bg-blue-50 border border-blue-100 mb-3 space-y-3">
-            <div className={`rounded-lg px-3 py-2 text-sm font-medium ${isCorrectSelection ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
-              {isCorrectSelection ? "정답입니다." : "오답입니다."}
-            </div>
-            <div>
-              <p className="font-medium text-blue-800 mb-1">정답</p>
-              <p>{correctAnswerLabel ? `${correctAnswerLabel}. ${correctAnswerText}` : "정답 정보를 확인할 수 없습니다."}</p>
-            </div>
-            <div>
-              <p className="font-medium text-blue-800 mb-1">해설</p>
-              <p>{toText(q.explanation, "해설이 없습니다.")}</p>
-            </div>
-          </div>
-        )}
-
-        {!answered && (
-          <button onClick={() => setShowHint((v) => !v)} className="text-xs text-blue-600 hover:underline mb-3">
-            {showHint ? "힌트 숨기기" : "힌트 보기"}
-          </button>
-        )}
-
-        {showHint && !answered && (
-          <div className="rounded-xl p-3 text-sm text-gray-600 bg-yellow-50 border border-yellow-200 mb-3">
-            💡 {toText(q.hint)}
-          </div>
-        )}
-
-        {answered && (
-          <button onClick={next} className="w-full py-3 rounded-xl text-sm font-semibold bg-blue-600 text-white">
-            {idx + 1 >= total ? "결과 보기" : "다음 문제"}
-          </button>
-        )}
       </div>
     </div>
   );

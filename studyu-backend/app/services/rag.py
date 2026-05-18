@@ -4307,7 +4307,12 @@ def generate_content(
       {options_format},
       "answerIndex": 0,
       "hint": "정답을 직접 언급하지 않고 방향만 제시하는 힌트",
-      "explanation": "정답인 이유를 설명하는 해설"
+      "explanation": "정답인 이유를 설명하는 해설",
+      "source_ref": {{
+        "page": 1,
+        "timestamp": null,
+        "text": "이 문제의 근거가 된 원문에서 가장 관련성 높은 문장 1~2줄을 그대로 인용"
+      }}
     }}
   ]
 }}
@@ -4318,6 +4323,9 @@ def generate_content(
 - hint는 정답을 직접 언급하지 말 것
 - questions 배열에 정확히 {quiz_count}개의 항목 포함
 - title은 문서 내용을 구체적으로 반영할 것
+- source_ref.page: 문서 내용에 [페이지 N] 또는 [슬라이드 N] 마커가 있으면 해당 번호, 없으면 null
+- source_ref.timestamp: 동영상/오디오 문서에서 [00:00] 같은 타임스탬프가 있으면 초 단위 숫자, 없으면 null
+- source_ref.text: 문서 내용에서 이 문제의 근거가 된 원문 문장을 그대로 인용 (최대 100자)
 
 문서 내용:
 {context}"""

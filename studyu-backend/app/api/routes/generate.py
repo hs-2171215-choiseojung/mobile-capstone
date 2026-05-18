@@ -141,6 +141,7 @@ async def generate(
                 "questions": parsed.get("questions", []),
                 "difficulty": req.difficulty or "intermediate",
                 "week_id": req.week_id,
+                "doc_ids": doc_ids,
             },
             notebook_id=req.notebook_id,
         )

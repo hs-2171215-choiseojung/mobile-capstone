@@ -38,9 +38,11 @@ interface StudioItemViewerProps {
   onClose: () => void;
   sessionState?: any;
   onSessionStateChange?: (state: any) => void;
+  docs?: { id: string; filename?: string; name?: string; file_type?: string }[];
+  onRequestSource?: (docId: string, page: number | null, text?: string | null, timestamp?: number | null) => void;
 }
 
-export function StudioItemViewer({ item, onClose, sessionState, onSessionStateChange }: StudioItemViewerProps) {
+export function StudioItemViewer({ item, onClose, sessionState, onSessionStateChange, docs, onRequestSource }: StudioItemViewerProps) {
   if (!item) return null;
 
   const toText = (value: unknown, fallback = ""): string => {
@@ -56,6 +58,15 @@ export function StudioItemViewer({ item, onClose, sessionState, onSessionStateCh
   const c = item.content || {};
 
   if (t === "quiz") {
+    // content.doc_ids가 있으면 우선 사용, 없으면 상위에서 넘어온 docs 사용
+    const quizDocIds: string[] = c.doc_ids || [];
+    const sourceDocs = quizDocIds.length > 0
+      ? quizDocIds.map((id: string) => {
+          const found = (docs || []).find((d) => d.id === id);
+          return found || { id };
+        })
+      : (docs || []);
+
     return (
       <QuizView
         quiz={
@@ -67,9 +78,11 @@ export function StudioItemViewer({ item, onClose, sessionState, onSessionStateCh
             difficulty: c.difficulty || "intermediate",
           }
         }
+        sourceDocs={sourceDocs}
         onBack={onClose}
         initialState={sessionState ?? undefined}
         onStateChange={onSessionStateChange}
+        onRequestSource={onRequestSource}
       />
     );
   }

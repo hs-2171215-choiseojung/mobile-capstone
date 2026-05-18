@@ -2238,6 +2238,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                           onClose={closeStudioViewer}
                           sessionState={viewerStudioSessionItemId === viewerStudioItem?.id ? viewerStudioSessionState : null}
                           onSessionStateChange={setViewerStudioSessionState}
+                          docs={docs}
                         />
                       </div>
                     </div>,
@@ -2261,6 +2262,7 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                           onClose={closeStudioViewer}
                           sessionState={viewerStudioSessionItemId === viewerStudioItem?.id ? viewerStudioSessionState : null}
                           onSessionStateChange={setViewerStudioSessionState}
+                          docs={docs}
                         />
                       </div>
                     </div>
