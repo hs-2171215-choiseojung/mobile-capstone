@@ -468,6 +468,19 @@ export function StudyPlanChatPanel({
     return session?.access_token ?? null;
   };
 
+  // ── 내가 만든 스튜디오 아이템 삭제 ──
+  const handleDeleteStudentItem = async (itemId: string) => {
+    const token = await getToken();
+    if (!token) return;
+    try {
+      await fetch(`${API_STUDENT}/api/studio/${itemId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setSavedStudentItems((prev) => prev.filter((i) => i.id !== itemId));
+    } catch {}
+  };
+
   // ── 내가 만든 스튜디오 아이템 로드 ──
   const fetchStudentStudioItems = async () => {
     try {
@@ -1074,14 +1087,26 @@ export function StudyPlanChatPanel({
                       return (
                         <div
                           key={item.id}
-                          onClick={() => onOpenStudioItem(item.id)}
-                          className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-[#e7e9ed] bg-white cursor-pointer hover:border-[#155dfc] hover:bg-[#f5f8ff] transition-all"
+                          className="group flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-[#e7e9ed] bg-white hover:border-[#155dfc] hover:bg-[#f5f8ff] transition-all"
                         >
-                          <span className="text-base shrink-0">{def?.icon ?? "📄"}</span>
-                          <div className="flex-1 min-w-0">
+                          <span
+                            className="text-base shrink-0 cursor-pointer"
+                            onClick={() => onOpenStudioItem(item.id)}
+                          >{def?.icon ?? "📄"}</span>
+                          <div
+                            className="flex-1 min-w-0 cursor-pointer"
+                            onClick={() => onOpenStudioItem(item.id)}
+                          >
                             <p className="text-[12px] font-semibold text-[#374151] truncate">{item.title || def?.label || item.type}</p>
                             <p className="text-[10px] text-[#9ca3af]">{def?.label ?? item.type}</p>
                           </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDeleteStudentItem(item.id); }}
+                            className="shrink-0 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-50 text-[#d1d5db] hover:text-red-400 transition-all"
+                            title="삭제"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       );
                     })}
