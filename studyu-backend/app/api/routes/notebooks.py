@@ -151,13 +151,13 @@ async def join_notebook(
         supabase_admin.table("notebooks")
         .select("*")
         .eq("invite_code", invite_code)
-        .single()
+        .limit(1)
         .execute()
     )
     if not result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="유효하지 않은 초대 코드입니다.")
 
-    notebook = result.data
+    notebook = result.data[0] if result.data else None
     notebook_id = notebook["id"]
 
     existing = (
@@ -248,10 +248,10 @@ async def get_notebook(
         supabase_admin.table("notebooks")
         .select("*, documents(*)")
         .eq("id", notebook_id)
-        .single()
+        .limit(1)
         .execute()
     )
-    notebook = result.data
+    notebook = result.data[0] if result.data else None
     if not notebook:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

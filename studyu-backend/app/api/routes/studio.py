@@ -30,10 +30,10 @@ async def list_studio_items(
             supabase_admin.table("notebooks")
             .select("id, user_id")
             .eq("id", notebook_id)
-            .single()
+            .limit(1)
             .execute()
-            .data
         )
+        nb = nb.data[0] if nb.data else None
         if not nb:
             raise HTTPException(status_code=404, detail="노트북을 찾을 수 없습니다.")
 
