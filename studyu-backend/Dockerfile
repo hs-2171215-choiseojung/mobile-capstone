@@ -20,9 +20,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# sentence-transformers 모델 빌드 시점에 다운로드 (런타임 지연 방지)
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')"
-
 # 소스 코드 복사
 COPY . .
 

@@ -89,6 +89,7 @@ interface StudyPlanChatPanelProps {
   onOpenDoc: (docId: string) => void;
   onOpenStudioItem: (itemId: string) => void;
   docs?: DocItem[];
+  studioItems?: any[];
   onStudioItemCreated?: () => void;
   studioQueue?: StudioQueueItem[];
   onStudioQueueChange?: Dispatch<SetStateAction<StudioQueueItem[]>>;
@@ -109,6 +110,39 @@ function loadPersistedState(notebookId: string) {
   return null;
 }
 
+// ─── 자료 유형 배지 ───────────────────────────────────────────────────────────
+
+function getMaterialType(step: StudyPlanStep, docs: DocItem[], studioItems: any[]) {
+  if (step.item_type === "document") {
+    const doc = docs.find(d => d.id === step.item_id);
+    const raw = doc?.type || doc?.filename?.split(".").pop()?.toLowerCase() || "";
+    const name = doc?.filename || doc?.name || "";
+    if (/^https?:\/\/|^youtu\.be/i.test(name)) return { label: "YouTube", icon: "🎬", color: "bg-red-50 text-red-500" };
+    if (["mp4","mov","avi","mkv","webm"].includes(raw)) return { label: "영상", icon: "🎬", color: "bg-red-50 text-red-500" };
+    if (["mp3","m4a","wav","aac"].includes(raw)) return { label: "오디오", icon: "🎧", color: "bg-purple-50 text-purple-600" };
+    if (["jpg","jpeg","png","gif","webp"].includes(raw)) return { label: "이미지", icon: "🖼️", color: "bg-orange-50 text-orange-500" };
+    if (["pptx","ppt"].includes(raw)) return { label: "PPTX", icon: "📊", color: "bg-blue-50 text-blue-600" };
+    if (raw === "pdf") return { label: "PDF", icon: "📄", color: "bg-red-50 text-red-600" };
+    if (raw === "docx") return { label: "DOCX", icon: "📝", color: "bg-blue-50 text-blue-600" };
+    if (["hwp","hwpx"].includes(raw)) return { label: "한글", icon: "📝", color: "bg-teal-50 text-teal-600" };
+    return { label: "파일", icon: "📄", color: "bg-gray-50 text-gray-500" };
+  }
+  const item = studioItems.find(s => s.id === step.item_id);
+  const type = item?.type || "";
+  const map: Record<string, { label: string; icon: string; color: string }> = {
+    quiz:        { label: "퀴즈",      icon: "✅", color: "bg-emerald-50 text-emerald-600" },
+    flashcard:   { label: "플래시카드", icon: "🃏", color: "bg-pink-50 text-pink-600" },
+    summary:     { label: "요약본",    icon: "📋", color: "bg-amber-50 text-amber-600" },
+    report:      { label: "보고서",    icon: "📝", color: "bg-amber-50 text-amber-600" },
+    mindmap:     { label: "마인드맵",  icon: "🧠", color: "bg-green-50 text-green-600" },
+    slides:      { label: "슬라이드",  icon: "📊", color: "bg-blue-50 text-blue-600" },
+    table:       { label: "표",        icon: "📋", color: "bg-slate-50 text-slate-600" },
+    audio:       { label: "오디오",    icon: "🎧", color: "bg-purple-50 text-purple-600" },
+    infographic: { label: "인포그래픽", icon: "📈", color: "bg-orange-50 text-orange-600" },
+  };
+  return map[type] || { label: "AI 자료", icon: "🤖", color: "bg-indigo-50 text-indigo-500" };
+}
+
 // ─── EditablePlanCard ─────────────────────────────────────────────────────────
 
 function EditablePlanCard({
@@ -117,12 +151,16 @@ function EditablePlanCard({
   onOpenDoc,
   onOpenStudioItem,
   headerAction,
+  docs = [],
+  studioItems = [],
 }: {
   plan: StudyPlanResult;
   onPlanChange: (plan: StudyPlanResult) => void;
   onOpenDoc: (id: string) => void;
   onOpenStudioItem: (id: string) => void;
   headerAction?: ReactNode;
+  docs?: DocItem[];
+  studioItems?: any[];
 }) {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
@@ -230,6 +268,12 @@ function EditablePlanCard({
                   {actionIcon(step.action)} {step.item_name}
                 </div>
                 <div className="flex items-center gap-1.5 flex-wrap">
+                  {/* 자료 유형 배지 */}
+                  {(() => { const t = getMaterialType(step, docs, studioItems); return (
+                    <span className={`inline-flex items-center gap-0.5 text-[10px] px-2 py-0.5 rounded-full font-medium ${t.color}`}>
+                      {t.icon} {t.label}
+                    </span>
+                  ); })()}
                   {/* 액션 뱃지 — 클릭 시 드롭다운 */}
                   {editActionIdx === i ? (
                     <select
@@ -320,7 +364,6 @@ const STUDIO_ITEMS_DEF = [
   { id: "table",     label: "데이터 표",        icon: "📋", presets: ["핵심 내용 정리표","비교 분석 표","개념 정의 표"] },
 ] as const;
 
-type StudioItemId = typeof STUDIO_ITEMS_DEF[number]["id"];
 
 interface StudioQueueItem {
   queueId: string;
@@ -343,6 +386,7 @@ export function StudyPlanChatPanel({
   onOpenDoc,
   onOpenStudioItem,
   docs = [],
+  studioItems = [],
   onStudioItemCreated,
   studioQueue: studioQueueProp,
   onStudioQueueChange,
@@ -927,6 +971,8 @@ export function StudyPlanChatPanel({
               }}
               onOpenDoc={onOpenDoc}
               onOpenStudioItem={onOpenStudioItem}
+              docs={docs}
+              studioItems={studioItems}
               headerAction={
                 <button
                   onClick={() => savePlanToNote(msg.week, msg.plan)}
@@ -1344,6 +1390,8 @@ export function StudyPlanChatPanel({
                       onPlanChange={newPlan => handleNotepadPlanChange(newPlan, noteWeek, noteText)}
                       onOpenDoc={onOpenDoc}
                       onOpenStudioItem={onOpenStudioItem}
+                      docs={docs}
+                      studioItems={studioItems}
                     />
                   </div>
                 )}

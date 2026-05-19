@@ -1094,8 +1094,7 @@ function MemoView({
     setSaving(true);
     try {
       await onSave(initialId, title, content, selectedWeekId);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      onBack();
     } finally {
       setSaving(false);
     }
@@ -2340,7 +2339,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
       await fetch(`${API}/api/studio/memo/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ title, content }),
+        body: JSON.stringify({ title, content, week_id: weekId ?? undefined }),
       });
       setSavedItems((prev) =>
         prev.map((item) =>
@@ -2358,7 +2357,7 @@ export default function StudioPanel({ notebookId, activeDocIds, docs, getToken, 
       const res = await fetch(`${API}/api/studio/memo`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ title, content, notebook_id: notebookId }),
+        body: JSON.stringify({ title, content, notebook_id: notebookId, week_id: weekId ?? undefined }),
       });
       const data = await res.json();
       const newId = data.item_id;

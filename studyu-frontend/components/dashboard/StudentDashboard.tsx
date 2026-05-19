@@ -4,6 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import {
+  readStudentNotebookExitStates,
+  removeStudentNotebookExitState,
+  type StudentNotebookExitReason,
+} from "@/components/workspace/student/studentNotebookExitState";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -24,6 +29,13 @@ interface Props {
   notebooks?: Notebook[];
   enrolledNotebooks: Notebook[];
   userName: string;
+}
+
+interface ExitedNotebook {
+  id: string;
+  title: string;
+  reason: StudentNotebookExitReason;
+  updated_at: string;
 }
 
 function toText(value: MaybeTitle, fallback = "제목 없음"): string {
@@ -90,6 +102,7 @@ function removeRecentNotebook(id: string): string[] {
 export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, userName }: Props) {
   const router = useRouter();
   const [enrolledNotebooks, setEnrolledNotebooks] = useState<Notebook[]>(() => initialEnrolled.map(normalizeNotebook));
+  const [exitedNotebooks, setExitedNotebooks] = useState<ExitedNotebook[]>([]);
   const [recentNotebookOrder, setRecentNotebookOrder] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<"newest" | "oldest" | "name">("newest");
@@ -115,6 +128,14 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
 
   useEffect(() => {
     setRecentNotebookOrder(getRecentNotebookOrder());
+    setExitedNotebooks(
+      readStudentNotebookExitStates().map((item) => ({
+        id: item.notebookId,
+        title: item.title,
+        reason: item.reason,
+        updated_at: item.updatedAt,
+      }))
+    );
   }, []);
 
   const recent = useMemo(() => {
@@ -126,6 +147,9 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
       .filter((nb): nb is Notebook => Boolean(nb))
       .slice(0, 3);
   }, [enrolledNotebooks, recentNotebookOrder]);
+
+  const getExitLabel = (reason: StudentNotebookExitReason) =>
+    reason === "removed" ? "나가진 노트북" : "없는 노트북";
 
   async function toggleEnrolledStar(id: string) {
     setEnrolledNotebooks((prev) =>
@@ -192,6 +216,9 @@ export default function StudentDashboard({ enrolledNotebooks: initialEnrolled, u
       if (!joinedNotebookId) {
         throw new Error("참여는 되었지만 노트북 정보를 찾을 수 없습니다.");
       }
+
+      removeStudentNotebookExitState(joinedNotebookId);
+      setExitedNotebooks((prev) => prev.filter((nb) => nb.id !== joinedNotebookId));
 
       const { data: joinedNotebook, error: joinedNotebookError } = await supabase
         .from("notebooks")

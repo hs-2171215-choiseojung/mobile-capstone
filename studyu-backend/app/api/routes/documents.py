@@ -22,6 +22,7 @@ import uuid
 from typing import Any, Optional
 from urllib.parse import urlparse, quote as url_quote
 
+import httpx
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from openai import OpenAI
@@ -55,6 +56,42 @@ STORAGE_BUCKET = "documents"
 SLIDE_ASSETS_PREFIX = "slide-assets"
 
 _MEDIA_SUMMARY_BLOCK_RE = re.compile(r"\[MEDIA_SUMMARY\].*?\[/MEDIA_SUMMARY\]\s*", re.DOTALL)
+
+
+def _build_url_display_name(url: str, provided_filename: Optional[str] = None) -> str:
+    if provided_filename:
+        return provided_filename[:80]
+
+    youtube_title = _fetch_youtube_title(url)
+    if youtube_title:
+        return youtube_title[:80]
+
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lstrip("www.")
+        path_parts = [p for p in parsed.path.strip("/").split("/") if p]
+        display_name = f"{domain}/{path_parts[0]}" if path_parts else domain
+        return display_name[:80]
+    except Exception:
+        return url[:80]
+
+
+def _fetch_youtube_title(url: str) -> str | None:
+    if _extract_youtube_video_id(url) is None:
+        return None
+
+    try:
+        response = httpx.get(
+            "https://www.youtube.com/oembed",
+            params={"url": url, "format": "json"},
+            headers={"User-Agent": "StudyU/1.0"},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        title = str(response.json().get("title", "")).strip()
+        return title or None
+    except Exception:
+        return None
 
 
 def _markdown_summary_to_media_payload(answer: str) -> dict[str, Any]:
@@ -1003,17 +1040,7 @@ async def ingest_url_document(
     file_type enum 문제 우회: storage_path에 URL을 저장하고 file_type은 기본값 사용.
     """
     # 표시 파일명 결정
-    if req.filename:
-        display_name = req.filename[:80]
-    else:
-        try:
-            parsed = urlparse(req.url)
-            domain = parsed.netloc.lstrip("www.")
-            path_parts = [p for p in parsed.path.strip("/").split("/") if p]
-            display_name = f"{domain}/{path_parts[0]}" if path_parts else domain
-            display_name = display_name[:80]
-        except Exception:
-            display_name = req.url[:80]
+    display_name = _build_url_display_name(req.url, req.filename)
 
     doc_id = str(uuid.uuid4())
 

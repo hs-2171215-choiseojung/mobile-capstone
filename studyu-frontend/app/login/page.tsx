@@ -26,20 +26,21 @@ export default function LoginPage() {
     try {
       const supabase = createClient()
 
-      const { error } = await supabase.auth.signInWithOAuth({
+      const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          // Google 로그인 성공 후 돌아올 URL
           redirectTo: `${window.location.origin}/auth/callback`,
+          skipBrowserRedirect: true,
         },
       })
 
       if (error) {
         setError(error.message)
         setLoading(false)
+      } else if (data?.url) {
+        // Chrome FedCM 가로채기 우회: 직접 window.location 할당
+        window.location.href = data.url
       }
-      // 성공하면 Google 로그인 페이지로 리다이렉트되므로
-      // 여기서 setLoading(false)를 할 필요 없음
     } catch (err) {
       setError('로그인 중 오류가 발생했습니다.')
       setLoading(false)
@@ -69,13 +70,10 @@ export default function LoginPage() {
         setError(error.message)
         setLoading(false)
       } else {
-        // 로그인 성공 → 사용자 정보 확인
         const { data: { user } } = await supabase.auth.getUser()
         if (user?.user_metadata?.role) {
-          // 역할이 있으면 → 대시보드로 이동
           router.push('/dashboard')
         } else {
-          // 역할이 없으면 → 온보딩으로 이동
           router.push('/onboarding')
         }
       }

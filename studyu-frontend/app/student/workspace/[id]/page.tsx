@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ChevronDown, BotMessageSquare } from 'lucide-react';
@@ -12,7 +12,14 @@ import { StudentChatPanel, SourceChunk } from "@/components/workspace/student/St
 import { StudyPlanChatPanel } from "@/components/workspace/student/StudyPlanChatPanel";
 import { StudioItemViewer } from "@/components/workspace/student/StudioItemViewer";
 import { StudentSourceViewer } from "@/components/workspace/student/StudentSourceViewer";
+import StudentNotebookExitScreen from "@/components/workspace/student/StudentNotebookExitScreen";
 import { PptSlideViewer } from "@/components/workspace/PptSlideViewer";
+import {
+  getStudentNotebookExitState,
+  removeStudentNotebookExitState,
+  saveStudentNotebookExitState,
+  type StudentNotebookExitReason,
+} from "@/components/workspace/student/studentNotebookExitState";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const RECENT_NOTEBOOKS_STORAGE_KEY = "student-recent-notebooks";
@@ -119,6 +126,8 @@ export default function StudentWorkspacePage() {
   const notebookId = params.id as string;
 
   const [notebookTitle, setNotebookTitle] = useState<string>("");
+  const [notebookExitReason, setNotebookExitReason] = useState<StudentNotebookExitReason | null>(null);
+  const [workspaceFetchError, setWorkspaceFetchError] = useState(false);
 
   const [activeDocIds, setActiveDocIds] = useState<string[]>([]);
   const [docs, setDocs] = useState<any[]>([]);
@@ -155,7 +164,7 @@ export default function StudentWorkspacePage() {
     setChatRequestedSlide(null);
   }, [selectedSource?.id]);
 
-  const [selectedLLM, setSelectedLLM] = useState('claude-haiku-4-5-20251001');
+  const [selectedLLM, setSelectedLLM] = useState('gpt-4o');
   const [selectedDifficulty, setSelectedDifficulty] = useState<'beginner' | 'intermediate' | 'advanced'>('intermediate');
   const [prefsHydrated, setPrefsHydrated] = useState(false);
   useEffect(() => {
@@ -229,7 +238,7 @@ export default function StudentWorkspacePage() {
     toText(value).trim().toLowerCase();
 
   const isReadyDocument = (doc: Partial<DocumentInfo> | null | undefined) =>
-    !!doc?.id && (!doc.status || doc.status === "ready");
+    !!doc?.id && doc.status !== "processing";
 
   const getDocumentIdentityKey = (doc: Partial<DocumentInfo>) => {
     const id = typeof doc.id === "string" ? doc.id.trim() : "";
@@ -270,31 +279,136 @@ export default function StudentWorkspacePage() {
     return uniqueDocs;
   };
 
+  const showNotebookExitScreen = useCallback(
+    (reason: StudentNotebookExitReason, nextTitle?: string) => {
+      const resolvedTitle = (nextTitle || notebookTitle || "노트북").trim() || "노트북";
+
+      setNotebookTitle(resolvedTitle);
+      setNotebookExitReason(reason);
+      setWorkspaceFetchError(false);
+      setIsDataLoading(false);
+      setDocs([]);
+      setStudioItems([]);
+      setWeekPlans([]);
+      setActiveDocIds([]);
+      setSelectedItem(null);
+      setSelectedSource(null);
+      setSelectedSourceUrl("");
+      setSelectedSourceDownloadUrl("");
+      setSelectedSourceError("");
+      setSelectedSourceTranscript(undefined);
+      setSelectedSourceTimeline([]);
+      setSelectedSourceSummary(null);
+      setSelectedSourceSummaryLoading(false);
+      setSelectedSourceMediaDuration(0);
+      setSelectedSourceMediaType(null);
+      setSelectedSourceSeekRequest(null);
+      setHighlightRange(null);
+      setCitationScrollText(undefined);
+      setCurrentSlide(null);
+      setChatRequestedSlide(null);
+      setQuizSourceOpen(false);
+      setQuizSourceSlide(null);
+      setQuizSourceScrollText(undefined);
+      setIsChatOpen(false);
+      saveStudentNotebookExitState(notebookId, resolvedTitle, reason);
+    },
+    [notebookId, notebookTitle]
+  );
+
+  const clearNotebookExitScreen = useCallback(() => {
+    setNotebookExitReason(null);
+    removeStudentNotebookExitState(notebookId);
+  }, [notebookId]);
+
+  useEffect(() => {
+    if (!notebookId) return;
+
+    const savedExitState = getStudentNotebookExitState(notebookId);
+    if (!savedExitState) return;
+
+    setNotebookTitle(savedExitState.title || "노트북");
+    setNotebookExitReason(savedExitState.reason);
+    setWorkspaceFetchError(false);
+    setIsDataLoading(false);
+  }, [notebookId]);
+
   const fetchData = async () => {
     setIsDataLoading(true);
+    setWorkspaceFetchError(false);
     try {
-    const supabase = createClient();
-    const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData.session?.access_token;
-    if (!token) return;
+      const supabase = createClient();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) {
+        setIsDataLoading(true);
+        return;
+      }
 
-    const [notebookRes, studioRes, studyPlanRes] = await Promise.all([
-      fetch(`${API}/api/notebooks/${notebookId}`, {
+      const notebookRes = await fetch(`${API}/api/notebooks/${notebookId}`, {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
-      }),
-      fetch(`${API}/api/studio?notebook_id=${notebookId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      }),
-      fetch(`${API}/api/notebooks/${notebookId}/study-plan`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      }),
-    ]);
+      });
 
-    if (notebookRes.ok) {
+      if (notebookRes.status === 403) {
+        showNotebookExitScreen("removed", notebookTitle || "노트북");
+        return;
+      }
+
+      if (notebookRes.status === 404) {
+        showNotebookExitScreen("deleted", notebookTitle || "노트북");
+        return;
+      }
+
+      if (!notebookRes.ok) {
+        if (notebookRes.status >= 400 && notebookRes.status < 500) {
+          showNotebookExitScreen("deleted", notebookTitle || "노트북");
+          return;
+        }
+        setWorkspaceFetchError(true);
+        return;
+      }
+
+      const [studioRes, studyPlanRes] = await Promise.all([
+        fetch(`${API}/api/studio?notebook_id=${notebookId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        }),
+        fetch(`${API}/api/notebooks/${notebookId}/study-plan`, {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        }),
+      ]);
+
+      if (studioRes.status === 403 || studyPlanRes.status === 403) {
+        showNotebookExitScreen("removed", notebookTitle || "노트북");
+        return;
+      }
+
+      if (studioRes.status === 404 || studyPlanRes.status === 404) {
+        showNotebookExitScreen("deleted", notebookTitle || "노트북");
+        return;
+      }
+
+      if (!studioRes.ok || !studyPlanRes.ok) {
+        if (
+          (studioRes.status >= 400 && studioRes.status < 500) ||
+          (studyPlanRes.status >= 400 && studyPlanRes.status < 500)
+        ) {
+          showNotebookExitScreen("deleted", notebookTitle || "노트북");
+          return;
+        }
+        setWorkspaceFetchError(true);
+        return;
+      }
+
       const notebookData = await notebookRes.json();
+      if (!notebookData || typeof notebookData !== "object" || !toText((notebookData as Record<string, unknown>).id)) {
+        showNotebookExitScreen("deleted", notebookTitle || "노트북");
+        return;
+      }
+
+      clearNotebookExitScreen();
       const customTitle = (() => {
         try { return localStorage.getItem(`notebook-custom-title:${notebookId}`) || ""; } catch { return ""; }
       })();
@@ -304,24 +418,14 @@ export default function StudentWorkspacePage() {
           ? notebookData.documents.filter((doc: Partial<DocumentInfo>) => isReadyDocument(doc))
           : []
       );
-    } else {
-      setNotebookTitle("");
-      setDocs([]);
-    }
 
-    if (studyPlanRes.ok) {
       const studyPlanData = await studyPlanRes.json();
       setWeekPlans(Array.isArray(studyPlanData?.plan_data) ? studyPlanData.plan_data : []);
-    } else {
-      setWeekPlans([]);
-    }
 
-    if (studioRes.ok) {
       const studioData = await studioRes.json();
       setStudioItems(Array.isArray(studioData) ? studioData : []);
-    } else {
-      setStudioItems([]);
-    }
+    } catch {
+      setWorkspaceFetchError(true);
     } finally {
       setIsDataLoading(false);
     }
@@ -338,6 +442,14 @@ export default function StudentWorkspacePage() {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
       });
+      if (res.status === 403) {
+        showNotebookExitScreen("removed", notebookTitle || "노트북");
+        return;
+      }
+      if (res.status === 404) {
+        showNotebookExitScreen("deleted", notebookTitle || "노트북");
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         setStudioItems(Array.isArray(data) ? data : []);
@@ -346,8 +458,51 @@ export default function StudentWorkspacePage() {
   };
 
   useEffect(() => {
-    if (notebookId) fetchData();
+    if (!notebookId) return;
+
+    fetchData();
+
+    const supabase = createClient();
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.access_token) {
+        fetchData();
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, [notebookId]);
+
+  useEffect(() => {
+    if (!notebookId || notebookExitReason) return;
+
+    const intervalId = window.setInterval(async () => {
+      try {
+        const supabase = createClient();
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
+        if (!token) return;
+
+        const response = await fetch(`${API}/api/notebooks/${notebookId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+
+        if (response.status === 403) {
+          showNotebookExitScreen("removed", notebookTitle || "노트북");
+        } else if (response.status === 404) {
+          showNotebookExitScreen("deleted", notebookTitle || "노트북");
+        }
+      } catch {
+        // ignore polling errors
+      }
+    }, 10000);
+
+    return () => window.clearInterval(intervalId);
+  }, [notebookId, notebookExitReason, notebookTitle, showNotebookExitScreen]);
 
   useEffect(() => {
     if (!notebookId) return;
@@ -405,6 +560,12 @@ export default function StudentWorkspacePage() {
           return { ...matched, sourceDocId: docId, resolvedDocId: matched.id };
         }
 
+        // docId 없을 때 파일명으로 fallback 매칭
+        const nameMatched = displayDocsByName.get(normalizeDocumentName(sourceName));
+        if (nameMatched) {
+          return { ...nameMatched, sourceDocId: nameMatched.id, resolvedDocId: nameMatched.id };
+        }
+
         return {
           id: `week-source-${week.id ?? index + 1}-${sourceIndex}`,
           sourceDocId: "",
@@ -423,6 +584,7 @@ export default function StudentWorkspacePage() {
     const weekItemsFromTag = studioItems.filter((item) => {
       if (!item?.id) return false;
       if (assignedStudioItemIds.has(item.id)) return false;
+      if (item.type === "notepad" || item.type === "study_plan") return false;
       return item?.content?.week_id === (week.id ?? index + 1);
     });
     const instruct =
@@ -441,19 +603,26 @@ export default function StudentWorkspacePage() {
   });
 
 
+  // mergeUniqueDocuments가 resolvedDocId를 제거하므로 file_type 유무로 doc/studio 구분
+  // 플레이스홀더는 id가 "week-source-"로 시작하므로 제외
   const weeklyDocIds: Record<number, string[]> = Object.fromEntries(
     cards.map((c) => [
       c.weekNumber,
-      c.items.filter((i: any) => i.resolvedDocId).map((i: any) => i.resolvedDocId as string),
+      c.items
+        .filter((i: any) => i.id && ('file_type' in i) && !String(i.id).startsWith('week-source-'))
+        .map((i: any) => i.id as string),
     ])
   );
 
   const weeklyStudioIds: Record<number, string[]> = Object.fromEntries(
     cards.map((c) => [
       c.weekNumber,
-      c.items.filter((i: any) => !i.resolvedDocId && i.id).map((i: any) => i.id as string),
+      c.items
+        .filter((i: any) => i.id && !('file_type' in i))
+        .map((i: any) => i.id as string),
     ])
   );
+
 
   useEffect(() => {
     if (!notebookId) return;
@@ -523,6 +692,14 @@ export default function StudentWorkspacePage() {
       const response = await fetch(`${API}/api/documents/${docId}/media-summary`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (response.status === 403) {
+        showNotebookExitScreen("removed", notebookTitle || "노트북");
+        return;
+      }
+      if (response.status === 404) {
+        showNotebookExitScreen("deleted", notebookTitle || "노트북");
+        return;
+      }
       const data = await response.json().catch(() => null);
       if (!response.ok || !data) {
         setSelectedSourceSummary(null);
@@ -543,10 +720,18 @@ export default function StudentWorkspacePage() {
     const token = sessionData.session?.access_token;
     if (!token) return;
 
-    await fetch(`${API}/api/documents/${docId}/media-summary`, {
+    const response = await fetch(`${API}/api/documents/${docId}/media-summary`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });
+    if (response.status === 403) {
+      showNotebookExitScreen("removed", notebookTitle || "노트북");
+      return;
+    }
+    if (response.status === 404) {
+      showNotebookExitScreen("deleted", notebookTitle || "노트북");
+      return;
+    }
     setSelectedSourceSummary(null);
     setSelectedSourceSummaryLoading(false);
   };
@@ -608,6 +793,14 @@ export default function StudentWorkspacePage() {
         const accessResponse = await fetch(`${API}/api/documents/${doc.id}/access-url`, {
           headers: { Authorization: `Bearer ${token}` },
         });
+        if (accessResponse.status === 403) {
+          showNotebookExitScreen("removed", notebookTitle || "노트북");
+          return;
+        }
+        if (accessResponse.status === 404) {
+          showNotebookExitScreen("deleted", notebookTitle || "노트북");
+          return;
+        }
         const accessData = await accessResponse.json().catch(() => ({}));
 
         if (accessResponse.ok && accessData?.url) {
@@ -628,6 +821,14 @@ export default function StudentWorkspacePage() {
         const textRes = await fetch(`${API}/api/documents/${doc.id}/chunks`, {
           headers: { Authorization: `Bearer ${token}` },
         });
+        if (textRes.status === 403) {
+          showNotebookExitScreen("removed", notebookTitle || "노트북");
+          return;
+        }
+        if (textRes.status === 404) {
+          showNotebookExitScreen("deleted", notebookTitle || "노트북");
+          return;
+        }
         const textData = await textRes.json().catch(() => ({}));
 
         if (resolvedAccessUrl) {
@@ -650,6 +851,14 @@ export default function StudentWorkspacePage() {
       const nextSourceTextPromise = needsText
         ? fetch(`${API}/api/documents/${doc.id}/chunks`, { headers: { Authorization: `Bearer ${token}` } })
             .then(async (r) => {
+              if (r.status === 403) {
+                showNotebookExitScreen("removed", notebookTitle || "노트북");
+                return;
+              }
+              if (r.status === 404) {
+                showNotebookExitScreen("deleted", notebookTitle || "노트북");
+                return;
+              }
               const data = await r.json().catch(() => ({}));
               if (!r.ok) {
                 const detail = typeof data?.detail === "string" ? data.detail : "텍스트를 불러오지 못했습니다.";
@@ -798,6 +1007,16 @@ export default function StudentWorkspacePage() {
     </>
   );
 
+  if (notebookExitReason) {
+    return (
+      <StudentNotebookExitScreen
+        title={notebookTitle}
+        reason={notebookExitReason}
+        onBackClick={handleTopNavBack}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen bg-white overflow-hidden">
       <TopNavBar
@@ -809,7 +1028,7 @@ export default function StudentWorkspacePage() {
 
         {/* 채팅 없이 단독으로 열리는 스튜디오 타입 */}
         {(() => {
-          const CHAT_TYPES = new Set(["quiz", "mindmap", "plan", "table", "data", "flashcard"]);
+          const CHAT_TYPES = new Set(["quiz", "mindmap", "plan", "table", "data", "flashcard", "notepad"]);
           const normalizeType = (t: string) => ({ memo: "notepad", summary: "report", plan: "mindmap", data: "table" }[t] || t);
           const itemNeedsNoChat = selectedItem && CHAT_TYPES.has(normalizeType(selectedItem.type ?? ""));
 
@@ -1255,6 +1474,7 @@ export default function StudentWorkspacePage() {
                       if (item) setSelectedItem(item);
                     }}
                     docs={displayDocs}
+                    studioItems={studioItems}
                     studioQueue={studioQueue}
                     onStudioQueueChange={setStudioQueue}
                     onStudioItemCreated={() => refreshStudioOnly()}

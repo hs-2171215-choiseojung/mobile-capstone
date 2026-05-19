@@ -89,29 +89,9 @@ def _convert_messages_for_anthropic(messages: list[dict]) -> tuple[str, list[dic
 
 _DEFAULT_MODEL = "gpt-4o"
 
-# sentence-transformers 모델 싱글톤 (첫 호출 시 다운로드)
-import threading as _threading
-_embedding_model = None
-_embedding_lock = _threading.Lock()
-
-def _get_embedding_model():
-    global _embedding_model
-    if _embedding_model is None:
-        with _embedding_lock:
-            if _embedding_model is None:  # double-checked locking
-                from sentence_transformers import SentenceTransformer
-                import os
-                # 로컬 캐시 폴더 사용 (인터넷 없이도 작동)
-                cache_folder = os.path.join(os.path.dirname(__file__), "..", "..", "models")
-                try:
-                    _embedding_model = SentenceTransformer(
-                        "paraphrase-multilingual-MiniLM-L12-v2",
-                        cache_folder=cache_folder
-                    )
-                except Exception as e:
-                    print(f"[warn] 로컬 캐시 로드 실패, 온라인 다운로드 시도: {e}")
-                    _embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
-    return _embedding_model
+# 임베딩 모델: OpenAI text-embedding-3-small (1536차원)
+# 기존에 sentence-transformers(384차원)로 저장된 청크는 _cosine_similarity의
+# 차원 불일치 폴백 경로로 자동 처리됨.
 
 
 def _call_llm(
@@ -1078,13 +1058,19 @@ def _db_safe_insert(table: str, records: list[dict]) -> None:
 # ─────────────────────────────────────────────
 
 def _embed_batch(texts: list[str], batch_size: int = 100) -> list[list[float]]:
-    """sentence-transformers 로컬 모델로 임베딩 생성 (API 키 불필요)."""
-    model = _get_embedding_model()
+    """OpenAI text-embedding-3-small로 임베딩 생성 (1536차원)."""
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
     all_embeddings: list[list[float]] = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
-        vecs = model.encode(batch, normalize_embeddings=True)
-        all_embeddings.extend(vecs.tolist())
+        # OpenAI는 빈 문자열을 거부하므로 공백 한 칸으로 치환
+        safe_batch = [t if t and t.strip() else " " for t in batch]
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=safe_batch,
+        )
+        for item in response.data:
+            all_embeddings.append(item.embedding)
     return all_embeddings
 
 
