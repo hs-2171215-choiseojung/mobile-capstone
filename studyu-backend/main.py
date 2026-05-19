@@ -34,14 +34,6 @@ async def lifespan(app: FastAPI):
 
     async def _warmup():
         try:
-            from app.services.rag import _get_embedding_model
-            await _asyncio.to_thread(_get_embedding_model)
-            print("[startup] 임베딩 모델 로딩 완료")
-        except Exception as e:
-            print(f"[warn] 임베딩 모델 사전 로딩 실패: {e}")
-            print("[info] 첫 요청 시 모델을 로드합니다...")
-
-        try:
             await _asyncio.to_thread(
                 supabase_admin.storage.update_bucket,
                 "documents",
