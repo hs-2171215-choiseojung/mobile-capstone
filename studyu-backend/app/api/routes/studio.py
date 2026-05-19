@@ -205,19 +205,23 @@ class MemoRequest(BaseModel):
     title: str
     content: str
     notebook_id: str | None = None
+    week_id: int | None = None
 
 
 @router.post("/studio/memo")
 async def create_memo(req: MemoRequest, user: dict = Depends(get_current_user)):
     """메모 생성 후 저장된 item_id 반환."""
     item_id = str(uuid.uuid4())
+    content_data: dict = {"text": req.content}
+    if req.week_id is not None:
+        content_data["week_id"] = req.week_id
     row = {
         "id": item_id,
         "user_id": user["id"],
         "type": "memo",
         "title": req.title or "제목 없음",
         "subtitle": "메모",
-        "content": {"text": req.content},
+        "content": content_data,
     }
     if req.notebook_id:
         row["notebook_id"] = req.notebook_id
@@ -239,8 +243,11 @@ async def update_memo(item_id: str, req: MemoRequest, user: dict = Depends(get_c
     )
     if not rows:
         raise HTTPException(status_code=404, detail="메모를 찾을 수 없습니다.")
+    content_data: dict = {"text": req.content}
+    if req.week_id is not None:
+        content_data["week_id"] = req.week_id
     supabase_admin.table("studio_items").update({
         "title": req.title or "제목 없음",
-        "content": {"text": req.content},
+        "content": content_data,
     }).eq("id", item_id).execute()
     return {"ok": True}

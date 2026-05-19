@@ -229,7 +229,7 @@ export default function StudentWorkspacePage() {
     toText(value).trim().toLowerCase();
 
   const isReadyDocument = (doc: Partial<DocumentInfo> | null | undefined) =>
-    !!doc?.id && (!doc.status || doc.status === "ready");
+    !!doc?.id && doc.status !== "processing";
 
   const getDocumentIdentityKey = (doc: Partial<DocumentInfo>) => {
     const id = typeof doc.id === "string" ? doc.id.trim() : "";
@@ -405,6 +405,12 @@ export default function StudentWorkspacePage() {
           return { ...matched, sourceDocId: docId, resolvedDocId: matched.id };
         }
 
+        // docId 없을 때 파일명으로 fallback 매칭
+        const nameMatched = displayDocsByName.get(normalizeDocumentName(sourceName));
+        if (nameMatched) {
+          return { ...nameMatched, sourceDocId: nameMatched.id, resolvedDocId: nameMatched.id };
+        }
+
         return {
           id: `week-source-${week.id ?? index + 1}-${sourceIndex}`,
           sourceDocId: "",
@@ -423,6 +429,7 @@ export default function StudentWorkspacePage() {
     const weekItemsFromTag = studioItems.filter((item) => {
       if (!item?.id) return false;
       if (assignedStudioItemIds.has(item.id)) return false;
+      if (item.type === "notepad" || item.type === "study_plan") return false;
       return item?.content?.week_id === (week.id ?? index + 1);
     });
     const instruct =
@@ -441,19 +448,26 @@ export default function StudentWorkspacePage() {
   });
 
 
+  // mergeUniqueDocuments가 resolvedDocId를 제거하므로 file_type 유무로 doc/studio 구분
+  // 플레이스홀더는 id가 "week-source-"로 시작하므로 제외
   const weeklyDocIds: Record<number, string[]> = Object.fromEntries(
     cards.map((c) => [
       c.weekNumber,
-      c.items.filter((i: any) => i.resolvedDocId).map((i: any) => i.resolvedDocId as string),
+      c.items
+        .filter((i: any) => i.id && ('file_type' in i) && !String(i.id).startsWith('week-source-'))
+        .map((i: any) => i.id as string),
     ])
   );
 
   const weeklyStudioIds: Record<number, string[]> = Object.fromEntries(
     cards.map((c) => [
       c.weekNumber,
-      c.items.filter((i: any) => !i.resolvedDocId && i.id).map((i: any) => i.id as string),
+      c.items
+        .filter((i: any) => i.id && !('file_type' in i))
+        .map((i: any) => i.id as string),
     ])
   );
+
 
   useEffect(() => {
     if (!notebookId) return;
@@ -1255,6 +1269,7 @@ export default function StudentWorkspacePage() {
                       if (item) setSelectedItem(item);
                     }}
                     docs={displayDocs}
+                    studioItems={studioItems}
                     studioQueue={studioQueue}
                     onStudioQueueChange={setStudioQueue}
                     onStudioItemCreated={() => refreshStudioOnly()}
