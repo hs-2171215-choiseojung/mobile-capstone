@@ -82,7 +82,8 @@ function NodeItem({
               onRequestSource(
                 docs[0].id,
                 node.source_ref?.page ?? null,
-                node.source_ref?.text ?? null,
+                // source_ref.text가 없으면 노드 텍스트를 fallback으로 사용
+                node.source_ref?.text || node.text || null,
                 node.source_ref?.timestamp ?? null,
               );
             }}
