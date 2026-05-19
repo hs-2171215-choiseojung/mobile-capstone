@@ -1094,8 +1094,7 @@ function MemoView({
     setSaving(true);
     try {
       await onSave(initialId, title, content, selectedWeekId);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      onBack();
     } finally {
       setSaving(false);
     }

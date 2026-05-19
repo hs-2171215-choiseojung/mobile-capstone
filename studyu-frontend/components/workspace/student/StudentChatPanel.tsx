@@ -697,7 +697,6 @@ export function StudentChatPanel({
       setMessages([]);
     }
     setInitialQuestions([...DEFAULT_INITIAL_QUESTIONS]);
-    setDocInitialSuggestions([]);
     setIsLoaded(true);
   }, [chatKey]);
 

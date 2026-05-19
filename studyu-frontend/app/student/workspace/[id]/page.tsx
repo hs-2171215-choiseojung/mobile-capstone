@@ -164,7 +164,7 @@ export default function StudentWorkspacePage() {
     setChatRequestedSlide(null);
   }, [selectedSource?.id]);
 
-  const [selectedLLM, setSelectedLLM] = useState('claude-haiku-4-5-20251001');
+  const [selectedLLM, setSelectedLLM] = useState('gpt-4o');
   const [selectedDifficulty, setSelectedDifficulty] = useState<'beginner' | 'intermediate' | 'advanced'>('intermediate');
   const [prefsHydrated, setPrefsHydrated] = useState(false);
   useEffect(() => {
@@ -1028,7 +1028,7 @@ export default function StudentWorkspacePage() {
 
         {/* 채팅 없이 단독으로 열리는 스튜디오 타입 */}
         {(() => {
-          const CHAT_TYPES = new Set(["quiz", "mindmap", "plan", "table", "data", "flashcard"]);
+          const CHAT_TYPES = new Set(["quiz", "mindmap", "plan", "table", "data", "flashcard", "notepad"]);
           const normalizeType = (t: string) => ({ memo: "notepad", summary: "report", plan: "mindmap", data: "table" }[t] || t);
           const itemNeedsNoChat = selectedItem && CHAT_TYPES.has(normalizeType(selectedItem.type ?? ""));
 
