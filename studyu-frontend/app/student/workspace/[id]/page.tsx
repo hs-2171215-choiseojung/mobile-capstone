@@ -220,6 +220,9 @@ export default function StudentWorkspacePage() {
   const [quizSourceSlide, setQuizSourceSlide] = useState<number | null>(null);
   const [quizSourceScrollText, setQuizSourceScrollText] = useState<string | undefined>(undefined);
 
+  // 퀴즈 문제 번호 등 현재 상태 보존 (참고 자료 열어도 위치 유지)
+  const [quizSessionState, setQuizSessionState] = useState<any>(undefined);
+
   const centerScrollRef = useRef<HTMLDivElement | null>(null);
   const centerScrollTopRef = useRef(0);
   const shouldRestoreCenterScrollRef = useRef(false);
@@ -1066,6 +1069,7 @@ export default function StudentWorkspacePage() {
                       setSelectedSourceMediaDuration(duration);
                     }}
                     scrollToText={quizSourceScrollText}
+                    initialPage={isPdf ? quizSourceSlide : undefined}
                     onClose={closeSource}
                     customViewer={(isPpt || isDocx || isHwpx) ? (
                       <PptSlideViewer
@@ -1115,10 +1119,30 @@ export default function StudentWorkspacePage() {
                 </Resizable>
                 {/* 오른쪽: 퀴즈 */}
                 <div className="flex-1 overflow-hidden bg-white flex flex-col relative min-h-0">
+                  {/* 참고 자료 닫기 배너 */}
+                  <div className="flex items-center justify-between px-3 py-1.5 bg-blue-50 border-b border-blue-100 shrink-0">
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-blue-600">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                      </svg>
+                      참고 자료 보는 중
+                    </span>
+                    <button
+                      onClick={() => { setQuizSourceOpen(false); closeSource(); }}
+                      className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700 hover:bg-blue-100 px-2 py-0.5 rounded-md transition-colors"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                      </svg>
+                      닫기
+                    </button>
+                  </div>
                   <StudioItemViewer
                     item={selectedItem}
                     onClose={() => { setSelectedItem(null); closeSource(); shouldRestoreCenterScrollRef.current = true; }}
                     docs={docs}
+                    sessionState={quizSessionState}
+                    onSessionStateChange={setQuizSessionState}
                     onRequestSource={(docId, page, text, timestamp) => {
                       const doc = docs.find((d: any) => d.id === docId);
                       if (!doc) return;
@@ -1248,6 +1272,8 @@ export default function StudentWorkspacePage() {
                   item={selectedItem}
                   onClose={() => { setSelectedItem(null); shouldRestoreCenterScrollRef.current = true; }}
                   docs={docs}
+                  sessionState={quizSessionState}
+                  onSessionStateChange={setQuizSessionState}
                   onRequestSource={handleQuizRequestSource}
                 />
               </div>
@@ -1419,6 +1445,7 @@ export default function StudentWorkspacePage() {
                               }}
                               onOpenItem={(item) => {
                                 centerScrollTopRef.current = centerScrollRef.current?.scrollTop ?? 0;
+                                setQuizSessionState(undefined);
                                 setSelectedItem(item);
                               }}
                               onOpenDoc={(doc) => {

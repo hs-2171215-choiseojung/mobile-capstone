@@ -110,6 +110,7 @@ export interface SharedSourceViewerProps {
   highlightRange?: { start: number; length: number };
   scrollToText?: string;
   customViewer?: ReactNode;
+  initialPage?: number | null;
 }
 
 export function SharedSourceViewer({
@@ -126,6 +127,7 @@ export function SharedSourceViewer({
   highlightRange,
   scrollToText,
   customViewer,
+  initialPage,
 }: SharedSourceViewerProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -147,10 +149,13 @@ export function SharedSourceViewer({
   const [activeTab, setActiveTab] = useState<"document" | "text">("document");
   const [showMediaTranscript, setShowMediaTranscript] = useState(false);
 
-  // highlightRange 가 설정되면 자동으로 텍스트 탭으로 전환 (DOCX/HWP/HWPX)
+  // highlightRange 가 설정되면 자동으로 텍스트 탭으로 전환 (DOCX/HWP/HWPX) — PPTX/PPT 제외
   useEffect(() => {
-    if (highlightRange) setActiveTab("text");
-  }, [highlightRange]);
+    if (!highlightRange) return;
+    const ext = source.filename.toLowerCase().split(".").pop() ?? "";
+    if (ext === "pptx" || ext === "ppt") return; // 슬라이드 뷰어에서 currentSlide로 처리
+    setActiveTab("text");
+  }, [highlightRange, source.filename]);
 
   useEffect(() => {
     if (highlightRange && highlightMarkRef.current) {
@@ -158,52 +163,212 @@ export function SharedSourceViewer({
     }
   }, [highlightRange]);
 
-  // scrollToText 가 설정되면 DOM에서 해당 텍스트를 찾아 스크롤
+  // scrollToText 가 설정되면 DOM에서 해당 텍스트를 찾아 스크롤 + 하이라이트
   useEffect(() => {
     if (!scrollToText) return;
+    const ext = source.filename.toLowerCase().split(".").pop() ?? "";
+    if (ext === "pptx" || ext === "ppt") {
+      // PPTX/PPT: 슬라이드 뷰어(문서 보기)를 유지하고 currentSlide prop으로 이동
+      setActiveTab("document");
+      return;
+    }
     setActiveTab("text");
     const search = scrollToText.slice(0, 80).trim();
     if (!search) return;
     let cancelled = false;
     const timeouts: ReturnType<typeof setTimeout>[] = [];
+
+    const removeHighlights = (container: HTMLElement) => {
+      // <mark data-quiz-ref> 언래핑
+      container.querySelectorAll("mark[data-quiz-ref]").forEach((mark) => {
+        const parent = mark.parentNode;
+        if (parent) {
+          while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+          parent.removeChild(mark);
+        }
+      });
+      // 블록 요소에 붙인 인라인 스타일 제거
+      container.querySelectorAll("[data-quiz-ref]").forEach((el) => {
+        (el as HTMLElement).removeAttribute("data-quiz-ref");
+        (el as HTMLElement).style.removeProperty("background-color");
+        (el as HTMLElement).style.removeProperty("border-radius");
+        (el as HTMLElement).style.removeProperty("outline");
+        (el as HTMLElement).style.removeProperty("outline-offset");
+      });
+    };
+
     const attempt = (retries: number) => {
       if (cancelled) return;
       const container = textScrollRef.current;
       if (!container) {
-        if (retries > 0) timeouts.push(setTimeout(() => attempt(retries - 1), 100));
+        if (retries > 0) timeouts.push(setTimeout(() => attempt(retries - 1), 200));
         return;
       }
-      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-      let node: Text | null;
-      while ((node = walker.nextNode() as Text | null)) {
-        if (node.textContent && node.textContent.includes(search)) {
-          const el = node.parentElement;
-          if (el) {
-            el.scrollIntoView({ behavior: "smooth", block: "center" });
+      removeHighlights(container);
+
+      // 검색 변형 목록: 정확 일치 → 소문자 비교 → 앞 40자 단축 → 마크다운 기호 제거
+      const lowerSearch = search.toLowerCase();
+      const shortSearch = search.length > 40 ? search.slice(0, 40) : "";
+      const shortLower = shortSearch ? shortSearch.toLowerCase() : "";
+      // DOCX → 마크다운 변환 시 **CPU** 같은 깨진 기호가 textContent에 남는 경우 대응
+      const stripMd = (t: string) => t.replace(/\*+|_+|`+/g, " ").replace(/\s+/g, " ").trim();
+      const strippedSearch = stripMd(search);
+      const strippedShort = strippedSearch.length > 40 ? strippedSearch.slice(0, 40) : strippedSearch;
+      // "디스크 유틸리티 사용" → "디스크 유틸리티" (마지막 단어 제거)
+      // 짧은 노드 텍스트 fallback 시 한국어 조사/접미어로 인한 불일치 해결
+      const withoutLastWord = (() => {
+        const s = strippedSearch.trim();
+        if (s.length > 25) return ""; // 긴 텍스트는 stripMd 검색으로 충분
+        const lastSpace = s.lastIndexOf(" ");
+        return lastSpace > 0 ? s.slice(0, lastSpace) : "";
+      })();
+
+      const matchBlock = (text: string) => {
+        const stripped = stripMd(text);
+        const strippedLower = stripped.toLowerCase();
+        return (
+          text.includes(search) ||
+          text.toLowerCase().includes(lowerSearch) ||
+          (shortSearch !== "" && (text.includes(shortSearch) || text.toLowerCase().includes(shortLower))) ||
+          strippedLower.includes(strippedSearch.toLowerCase()) ||
+          strippedLower.includes(strippedShort.toLowerCase()) ||
+          (withoutLastWord.length >= 3 && strippedLower.includes(withoutLastWord.toLowerCase()))
+        );
+      };
+
+      // 1단계: 블록 레벨 요소의 textContent 전체에서 검색
+      // (마크다운 렌더링 시 bold/italic 등으로 텍스트가 여러 인라인 노드로 분리된 경우 대응)
+      const blocks = Array.from(
+        container.querySelectorAll<HTMLElement>("p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, pre")
+      );
+      let targetEl: HTMLElement | null = null;
+      for (const block of blocks) {
+        if (matchBlock(block.textContent ?? "")) {
+          targetEl = block;
+          break;
+        }
+      }
+
+      // 2단계: 블록에서 못 찾으면 텍스트 노드 직접 탐색
+      if (!targetEl) {
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        let node: Text | null;
+        while ((node = walker.nextNode() as Text | null)) {
+          if (matchBlock(node.textContent ?? "") && node.parentElement) {
+            targetEl = node.parentElement;
             break;
           }
         }
       }
+
+      if (!targetEl) {
+        // 아직 렌더링 안 됐을 수 있으므로 재시도
+        if (retries > 0) timeouts.push(setTimeout(() => attempt(retries - 1), 300));
+        return;
+      }
+
+      // 3단계: targetEl 안의 텍스트 노드에서 정확한 위치에 <mark> 삽입 시도
+      // 정확 → 소문자 → 단축 순으로 시도
+      const findInNode = (t: string): { idx: number; len: number } | null => {
+        let idx = t.indexOf(search);
+        if (idx !== -1) return { idx, len: search.length };
+        idx = t.toLowerCase().indexOf(lowerSearch);
+        if (idx !== -1) return { idx, len: lowerSearch.length };
+        if (shortSearch) {
+          idx = t.indexOf(shortSearch);
+          if (idx !== -1) return { idx, len: shortSearch.length };
+          idx = t.toLowerCase().indexOf(shortLower);
+          if (idx !== -1) return { idx, len: shortLower.length };
+        }
+        return null;
+      };
+
+      const innerWalker = document.createTreeWalker(targetEl, NodeFilter.SHOW_TEXT);
+      let textNode: Text | null;
+      let highlighted = false;
+      let markedEl: HTMLElement | null = null;
+      while ((textNode = innerWalker.nextNode() as Text | null)) {
+        const hit = findInNode(textNode.textContent ?? "");
+        if (hit) {
+          try {
+            const range = document.createRange();
+            range.setStart(textNode, hit.idx);
+            range.setEnd(textNode, hit.idx + hit.len);
+            const mark = document.createElement("mark");
+            mark.setAttribute("data-quiz-ref", "1");
+            mark.style.cssText = "background-color:#fde68a;border-radius:3px;padding:0 2px;box-shadow:0 0 0 2px #fbbf24;";
+            range.surroundContents(mark);
+            markedEl = mark;
+            highlighted = true;
+            break;
+          } catch { /* 범위가 인라인 요소 경계를 넘는 경우 → fallback */ }
+        }
+      }
+
+      if (!highlighted) {
+        // fallback: 블록 요소 전체를 노란 배경 + 테두리로 강조
+        targetEl.setAttribute("data-quiz-ref", "1");
+        targetEl.style.cssText += ";background-color:#fde68a;border-radius:4px;outline:2px solid #fbbf24;outline-offset:2px;";
+        targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else {
+        // mark 삽입 성공: mark 위치로 스크롤 (targetEl이 전체 span일 경우 잘못된 위치로 스크롤되는 문제 수정)
+        markedEl?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
     };
-    timeouts.push(setTimeout(() => attempt(3), 150));
+
+    timeouts.push(setTimeout(() => attempt(6), 150));
     return () => { cancelled = true; timeouts.forEach(clearTimeout); };
-  }, [scrollToText]);
+  // loading·markdownText 가 바뀔 때도 재시도 (문서 로드/마크다운 변환 완료 후 하이라이트)
+  }, [scrollToText, loading, markdownText]);
 
   function renderTranscript(text: string, range?: { start: number; length: number }) {
-    if (!range || range.start < 0 || range.length <= 0) return <>{text}</>;
-    const start = Math.max(0, Math.min(range.start, text.length));
-    const end = Math.min(start + range.length, text.length);
-    if (start >= end) return <>{text}</>;
+    const lines = text.split('\n');
+    if (!range || range.start < 0 || range.length <= 0) {
+      return (
+        <>
+          {lines.map((line, i) => (
+            <p key={i} className="mb-1">{line || '\u00a0'}</p>
+          ))}
+        </>
+      );
+    }
+    // highlight range 를 각 줄(paragraph)에 적용
+    const hlStart = Math.max(0, Math.min(range.start, text.length));
+    const hlEnd = Math.min(hlStart + range.length, text.length);
+    if (hlStart >= hlEnd) {
+      return (
+        <>
+          {lines.map((line, i) => (
+            <p key={i} className="mb-1">{line || '\u00a0'}</p>
+          ))}
+        </>
+      );
+    }
+    let offset = 0;
     return (
       <>
-        {text.slice(0, start)}
-        <mark
-          ref={(el) => { highlightMarkRef.current = el; }}
-          className="bg-yellow-300 text-gray-900 rounded-sm"
-        >
-          {text.slice(start, end)}
-        </mark>
-        {text.slice(end)}
+        {lines.map((line, i) => {
+          const lineStart = offset;
+          const lineEnd = offset + line.length;
+          offset += line.length + 1; // +1 for '\n'
+          if (hlStart >= lineEnd || hlEnd <= lineStart) {
+            return <p key={i} className="mb-1">{line || '\u00a0'}</p>;
+          }
+          const s = Math.max(0, hlStart - lineStart);
+          const e = Math.min(line.length, hlEnd - lineStart);
+          return (
+            <p key={i} className="mb-1">
+              {s > 0 && line.slice(0, s)}
+              <mark
+                ref={(el) => { highlightMarkRef.current = el; }}
+                className="bg-yellow-300 text-gray-900 rounded-sm"
+              >
+                {line.slice(s, e)}
+              </mark>
+              {e < line.length && line.slice(e)}
+            </p>
+          );
+        })}
       </>
     );
   }
@@ -526,7 +691,7 @@ export function SharedSourceViewer({
               {fileExt === "hwpx" && markdownText ? (
                 <MarkdownViewer content={markdownText} />
               ) : transcriptText ? (
-                <span className="text-gray-700 whitespace-pre-wrap">{renderTranscript(transcriptText, highlightRange)}</span>
+                <div className="text-gray-700 text-sm leading-relaxed">{renderTranscript(transcriptText, highlightRange)}</div>
               ) : markdownLoading ? (
                 <span className="text-gray-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />불러오는 중...</span>
               ) : (
@@ -547,7 +712,7 @@ export function SharedSourceViewer({
               ) : (fileExt === "docx" || fileExt === "hwpx") && markdownLoading ? (
                 <span className="text-gray-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />마크다운 변환 중...</span>
               ) : transcriptText ? (
-                <span className="text-gray-700 whitespace-pre-wrap">{renderTranscript(transcriptText, highlightRange)}</span>
+                <div className="text-gray-700 text-sm leading-relaxed">{renderTranscript(transcriptText, highlightRange)}</div>
               ) : (
                 <span className="text-gray-400">텍스트를 불러오는 중입니다...</span>
               )}
@@ -692,9 +857,9 @@ export function SharedSourceViewer({
           <div className="w-full h-full">{customViewer}</div>
         ) : (
           <iframe
-            key={mediaUrl}
+            key={initialPage ? `${mediaUrl}#page${initialPage}` : mediaUrl}
             ref={iframeRef}
-            src={mediaUrl}
+            src={initialPage ? `${mediaUrl}#page=${initialPage}` : mediaUrl}
             title={source.filename}
             className="w-full h-full rounded-lg border border-gray-200 bg-white"
           />
