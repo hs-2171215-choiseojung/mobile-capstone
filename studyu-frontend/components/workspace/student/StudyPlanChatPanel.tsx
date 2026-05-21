@@ -372,6 +372,7 @@ interface StudioQueueItem {
   status: "generating" | "done" | "error";
   itemId?: string;
   errorMsg?: string;
+  sourceInfo?: string;  // 소스 파일명 + 옵션 (e.g. "doc1.pdf 외 2개 · 객관식 퀴즈 · 10문제")
 }
 
 const API_STUDENT = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -537,11 +538,13 @@ export function StudyPlanChatPanel({
       });
       if (res.ok) {
         const items = await res.json();
-        setSavedStudentItems(
-          Array.isArray(items)
-            ? items.filter((i: any) => i.user_id === session.user.id)
-            : []
-        );
+        const loaded = Array.isArray(items)
+          ? items.filter((i: any) => i.user_id === session.user.id)
+          : [];
+        setSavedStudentItems(loaded);
+        // done 큐 항목 중 DB에 로드된 것은 큐에서 제거
+        const loadedIds = new Set(loaded.map((i: any) => i.id));
+        setStudioQueue((prev) => prev.filter((q) => !(q.status === "done" && q.itemId && loadedIds.has(q.itemId))));
       }
     } catch {}
   };
@@ -818,7 +821,14 @@ export function StudyPlanChatPanel({
 
     // 큐에 추가하고 즉시 그리드로 복귀
     const queueId = genId();
-    setStudioQueue((prev) => [...prev, { queueId, label: item.label, icon: item.icon, status: "generating" }]);
+    // sourceInfo: 소스 파일명 + 옵션 빌드 (이 시점 studioConfig는 아직 리셋 전)
+    const srcNames = effectiveDocIds.map((id) => docs.find((d) => d.id === id)?.filename ?? id);
+    const srcLabel = srcNames.length <= 2
+      ? srcNames.join(", ")
+      : `${srcNames[0]} 외 ${srcNames.length - 1}개`;
+    const optParts = [studioConfig.format, studioConfig.length !== "10문제" ? studioConfig.length : null, studioConfig.instructions ? `"${studioConfig.instructions.slice(0, 20)}${studioConfig.instructions.length > 20 ? "..." : ""}"` : null].filter(Boolean);
+    const sourceInfo = [srcLabel, ...optParts].filter(Boolean).join(" · ");
+    setStudioQueue((prev) => [...prev, { queueId, label: item.label, icon: item.icon, status: "generating", sourceInfo }]);
     setStudioStep("grid");
     setStudioSelectedItem(null);
     setStudioConfig({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: docs.map((d) => d.id) });
@@ -864,9 +874,18 @@ export function StudyPlanChatPanel({
         if (!res.ok) { const d = await res.json(); throw new Error(d.detail ?? "생성 실패"); }
         const respData = await res.json();
         const newItemId: string | undefined = respData?.item_id ?? respData?.id;
-        setStudioQueue((prev) => prev.map((q) => q.queueId === queueId ? { ...q, status: "done", itemId: newItemId } : q));
+        if (newItemId) {
+          // 완료 즉시: 큐에서 제거 + savedStudentItems에 임시 항목 추가 (fetch 전까지 표시)
+          setStudioQueue((prev) => prev.filter((q) => q.queueId !== queueId));
+          setSavedStudentItems((prev) => [
+            { id: newItemId, type: item.id, title: item.label, subtitle: sourceInfo, user_id: "", created_at: new Date().toISOString() },
+            ...prev.filter((i) => i.id !== newItemId),
+          ]);
+        } else {
+          setStudioQueue((prev) => prev.map((q) => q.queueId === queueId ? { ...q, status: "done", itemId: newItemId } : q));
+        }
         onStudioItemCreated?.();
-        fetchStudentStudioItems();
+        fetchStudentStudioItems();  // 실제 DB 데이터(제목 등)로 덮어씌움
       } catch (e) {
         const msg = e instanceof Error ? e.message : "오류가 발생했습니다.";
         setStudioQueue((prev) => prev.map((q) => q.queueId === queueId ? { ...q, status: "error", errorMsg: msg } : q));
@@ -1081,84 +1100,88 @@ export function StudyPlanChatPanel({
                 </div>
               </div>
 
-              {/* 생성 큐 목록 */}
-              {studioQueue.length > 0 && (
-                <div>
-                  <p className="text-[11px] font-semibold text-[#9ca3af] mb-2">만들고 있는 자료</p>
-                  <div className="flex flex-col gap-1.5">
-                    {studioQueue.map((q) => (
-                      <div
-                        key={q.queueId}
-                        onClick={() => {
-                          if (q.status === "done" && q.itemId) onOpenStudioItem(q.itemId);
-                        }}
-                        className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl border transition-all ${
-                          q.status === "done"
-                            ? "border-emerald-200 bg-emerald-50 cursor-pointer hover:border-emerald-400"
-                            : q.status === "error"
-                            ? "border-red-200 bg-red-50"
-                            : "border-[#e7e9ed] bg-white"
-                        }`}
-                      >
-                        <span className="text-base shrink-0">{q.icon}</span>
-                        <div className="flex-1 min-w-0">
-                          <p className={`text-[12px] font-semibold truncate ${
-                            q.status === "done" ? "text-emerald-700" : q.status === "error" ? "text-red-600" : "text-[#374151]"
-                          }`}>{q.label}</p>
-                          {q.status === "error" && q.errorMsg && (
-                            <p className="text-[10px] text-red-400 truncate">{q.errorMsg}</p>
-                          )}
-                          {q.status === "done" && (
-                            <p className="text-[10px] text-emerald-500">완료 · 탭하여 열기</p>
-                          )}
-                          {q.status === "generating" && (
-                            <p className="text-[10px] text-[#9ca3af]">생성 중...</p>
-                          )}
-                        </div>
-                        {q.status === "generating" && <Loader2 className="w-3.5 h-3.5 text-[#9ca3af] animate-spin shrink-0" />}
-                        {q.status === "done" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* 내가 만든 자료 목록 — 생성 중 항목 + 완료 항목 통합 (NotebookLM 스타일) */}
+              {(studioQueue.length > 0 || savedStudentItems.length > 0) && (() => {
+                // done 큐 항목의 itemId → savedStudentItems에서 중복 제거
+                const queueDoneIds = new Set(
+                  studioQueue.filter((q) => q.status === "done" && q.itemId).map((q) => q.itemId!)
+                );
+                const filteredSaved = savedStudentItems.filter((item) => !queueDoneIds.has(item.id));
 
-              {/* 내가 만든 자료 목록 (DB에서 로드, 새로고침 후에도 유지) */}
-              {savedStudentItems.length > 0 && (
-                <div>
-                  <p className="text-[11px] font-semibold text-[#9ca3af] mb-2">내가 만든 자료</p>
-                  <div className="flex flex-col gap-1.5">
-                    {savedStudentItems.map((item) => {
-                      const def = STUDIO_ITEMS_DEF.find((d) => d.id === item.type);
-                      return (
+                return (
+                  <div>
+                    <p className="text-[11px] font-semibold text-[#9ca3af] mb-2">내가 만든 자료</p>
+                    <div className="flex flex-col gap-1.5">
+                      {/* 생성 큐 항목 (generating / done / error) */}
+                      {studioQueue.map((q) => (
                         <div
-                          key={item.id}
-                          className="group flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-[#e7e9ed] bg-white hover:border-[#155dfc] hover:bg-[#f5f8ff] transition-all"
+                          key={q.queueId}
+                          onClick={() => {
+                            if (q.status === "done" && q.itemId) onOpenStudioItem(q.itemId);
+                          }}
+                          className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl border transition-all ${
+                            q.status === "done"
+                              ? "border-[#e7e9ed] bg-white cursor-pointer hover:border-[#155dfc] hover:bg-[#f5f8ff]"
+                              : q.status === "error"
+                              ? "border-red-200 bg-red-50"
+                              : "border-[#e7e9ed] bg-white"
+                          }`}
                         >
-                          <span
-                            className="text-base shrink-0 cursor-pointer"
-                            onClick={() => onOpenStudioItem(item.id)}
-                          >{def?.icon ?? "📄"}</span>
-                          <div
-                            className="flex-1 min-w-0 cursor-pointer"
-                            onClick={() => onOpenStudioItem(item.id)}
-                          >
-                            <p className="text-[12px] font-semibold text-[#374151] truncate">{item.title || def?.label || item.type}</p>
-                            <p className="text-[10px] text-[#9ca3af]">{def?.label ?? item.type}</p>
+                          <span className="text-base shrink-0">{q.icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-[12px] font-semibold truncate ${
+                              q.status === "error" ? "text-red-600" : "text-[#374151]"
+                            }`}>{q.label}</p>
+                            {q.status === "generating" && q.sourceInfo && (
+                              <p className="text-[10px] text-[#9ca3af] truncate">{q.sourceInfo}</p>
+                            )}
+                            {q.status === "generating" && !q.sourceInfo && (
+                              <p className="text-[10px] text-[#9ca3af]">생성 중...</p>
+                            )}
+                            {q.status === "done" && q.sourceInfo && (
+                              <p className="text-[10px] text-[#9ca3af] truncate">{q.sourceInfo}</p>
+                            )}
+                            {q.status === "error" && q.errorMsg && (
+                              <p className="text-[10px] text-red-400 truncate">{q.errorMsg}</p>
+                            )}
                           </div>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleDeleteStudentItem(item.id); }}
-                            className="shrink-0 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-50 text-[#d1d5db] hover:text-red-400 transition-all"
-                            title="삭제"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
+                          {q.status === "generating" && <Loader2 className="w-3.5 h-3.5 text-[#9ca3af] animate-spin shrink-0" />}
                         </div>
-                      );
-                    })}
+                      ))}
+
+                      {/* 완료된 저장 항목 */}
+                      {filteredSaved.map((item) => {
+                        const def = STUDIO_ITEMS_DEF.find((d) => d.id === item.type);
+                        return (
+                          <div
+                            key={item.id}
+                            className="group flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-[#e7e9ed] bg-white hover:border-[#155dfc] hover:bg-[#f5f8ff] transition-all"
+                          >
+                            <span
+                              className="text-base shrink-0 cursor-pointer"
+                              onClick={() => onOpenStudioItem(item.id)}
+                            >{def?.icon ?? "📄"}</span>
+                            <div
+                              className="flex-1 min-w-0 cursor-pointer"
+                              onClick={() => onOpenStudioItem(item.id)}
+                            >
+                              <p className="text-[12px] font-semibold text-[#374151] truncate">{item.title || def?.label || item.type}</p>
+                              <p className="text-[10px] text-[#9ca3af] truncate">{item.subtitle || def?.label || item.type}</p>
+                            </div>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleDeleteStudentItem(item.id); }}
+                              className="shrink-0 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-50 text-[#d1d5db] hover:text-red-400 transition-all"
+                              title="삭제"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
           )}
 
