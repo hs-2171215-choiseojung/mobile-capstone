@@ -93,6 +93,7 @@ interface StudyPlanChatPanelProps {
   onStudioItemCreated?: () => void;
   studioQueue?: StudioQueueItem[];
   onStudioQueueChange?: Dispatch<SetStateAction<StudioQueueItem[]>>;
+  onMyDocUploaded?: (doc: { id: string; filename: string; file_type: string }) => void;
 }
 
 // ─── 로컬스토리지 ─────────────────────────────────────────────────────────────
@@ -391,6 +392,7 @@ export function StudyPlanChatPanel({
   onStudioItemCreated,
   studioQueue: studioQueueProp,
   onStudioQueueChange,
+  onMyDocUploaded,
 }: StudyPlanChatPanelProps) {
   // ── 탭 ──
   const [activeTab, setActiveTab] = useState<"plan" | "notepad" | "studio">(() => {
@@ -409,6 +411,17 @@ export function StudyPlanChatPanel({
   const [studioError, setStudioError] = useState<string | null>(null);
   // 내가 만든 스튜디오 아이템 (DB에서 로드, 새로고침 시에도 유지)
   const [savedStudentItems, setSavedStudentItems] = useState<any[]>([]);
+  // 학생이 직접 올린 소스 파일
+  const [myDocs, setMyDocs] = useState<{id: string, filename: string, type: string}[]>([]);
+  const [myDocsLoading, setMyDocsLoading] = useState(false);
+  const [uploadingMyDoc, setUploadingMyDoc] = useState(false);
+  const myDocFileRef = useRef<HTMLInputElement>(null);
+
+  // 학생이 올린 소스를 제외한 강사 소스만
+  const instructorDocs = useMemo(
+    () => docs.filter((doc) => !myDocs.some((md) => md.id === doc.id)),
+    [docs, myDocs]
+  );
 
   // ── 챗 상태 ──
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -552,6 +565,72 @@ export function StudyPlanChatPanel({
   useEffect(() => {
     if (notebookId) fetchStudentStudioItems();
   }, [notebookId]);
+
+  // ── 내가 올린 소스 로드 ──
+  const fetchMyDocs = useCallback(async () => {
+    const token = await getToken();
+    if (!token) return;
+    setMyDocsLoading(true);
+    try {
+      const res = await fetch(`${API}/api/student/documents/my?notebook_id=${notebookId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMyDocs(data.documents || []);
+      }
+    } catch {}
+    finally { setMyDocsLoading(false); }
+  }, [notebookId]);
+
+  useEffect(() => {
+    if (notebookId) fetchMyDocs();
+  }, [notebookId, fetchMyDocs]);
+
+  // ── 내 파일 업로드 ──
+  const uploadMyDoc = async (file: File) => {
+    const token = await getToken();
+    if (!token) return;
+    setUploadingMyDoc(true);
+    try {
+      const form = new FormData();
+      form.append("notebook_id", notebookId);
+      form.append("file", file);
+      const res = await fetch(`${API}/api/student/documents/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || "업로드에 실패했습니다.");
+        return;
+      }
+      const newDoc = await res.json();
+      const docExt = file.name.toLowerCase().split(".").pop() ?? "";
+      setMyDocs((prev) => [{ id: newDoc.id, filename: newDoc.filename, type: docExt }, ...prev]);
+      // 방금 올린 파일 자동 선택
+      setStudioConfig((c) => ({ ...c, selectedDocIds: [...c.selectedDocIds, newDoc.id] }));
+      // page.tsx의 allDocs에도 반영
+      onMyDocUploaded?.({ id: newDoc.id, filename: newDoc.filename, file_type: docExt });
+    } catch { alert("업로드 중 오류가 발생했습니다."); }
+    finally { setUploadingMyDoc(false); }
+  };
+
+  // ── 내 파일 삭제 ──
+  const deleteMyDoc = async (docId: string) => {
+    const token = await getToken();
+    if (!token) return;
+    try {
+      await fetch(`${API}/api/student/documents/${docId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setMyDocs((prev) => prev.filter((d) => d.id !== docId));
+      setStudioConfig((c) => ({ ...c, selectedDocIds: c.selectedDocIds.filter((id) => id !== docId) }));
+    } catch {}
+  };
 
   // ── 메모 전체 로드 ──
   const loadAllNotes = useCallback(async () => {
@@ -814,7 +893,8 @@ export function StudyPlanChatPanel({
   const handleStudioGenerate = async () => {
     if (!studioSelectedItem) return;
     const item = studioSelectedItem;
-    const effectiveDocIds = studioConfig.selectedDocIds.length > 0 ? studioConfig.selectedDocIds : docs.map((d) => d.id);
+    const allAvailableDocs = [...docs, ...myDocs];
+    const effectiveDocIds = studioConfig.selectedDocIds.length > 0 ? studioConfig.selectedDocIds : allAvailableDocs.map((d) => d.id);
     if (effectiveDocIds.length === 0) { setStudioError("소스를 선택해주세요."); return; }
     const token = await getToken();
     if (!token) { setStudioError("로그인이 필요합니다."); return; }
@@ -822,7 +902,7 @@ export function StudyPlanChatPanel({
     // 큐에 추가하고 즉시 그리드로 복귀
     const queueId = genId();
     // sourceInfo: 소스 파일명 + 옵션 빌드 (이 시점 studioConfig는 아직 리셋 전)
-    const srcNames = effectiveDocIds.map((id) => docs.find((d) => d.id === id)?.filename ?? id);
+    const srcNames = effectiveDocIds.map((id) => allAvailableDocs.find((d) => d.id === id)?.filename ?? id);
     const srcLabel = srcNames.length <= 2
       ? srcNames.join(", ")
       : `${srcNames[0]} 외 ${srcNames.length - 1}개`;
@@ -831,7 +911,7 @@ export function StudyPlanChatPanel({
     setStudioQueue((prev) => [...prev, { queueId, label: item.label, icon: item.icon, status: "generating", sourceInfo }]);
     setStudioStep("grid");
     setStudioSelectedItem(null);
-    setStudioConfig({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: docs.map((d) => d.id) });
+    setStudioConfig({ format: "", instructions: "", length: "10문제", language: "한국어", selectedDocIds: [...docs, ...myDocs].map((d) => d.id) });
     setStudioError(null);
 
     // 백그라운드에서 API 호출
@@ -1087,7 +1167,7 @@ export function StudyPlanChatPanel({
                       key={item.id}
                       onClick={() => {
                         setStudioSelectedItem(item);
-                        setStudioConfig((c) => ({ ...c, format: item.id === "quiz" ? item.presets[0] : "", selectedDocIds: docs.map((d) => d.id) }));
+                        setStudioConfig((c) => ({ ...c, format: item.id === "quiz" ? item.presets[0] : "", selectedDocIds: [] }));
                         setStudioStep("config");
                         setStudioError(null);
                       }}
@@ -1098,6 +1178,69 @@ export function StudyPlanChatPanel({
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* 내가 올린 소스 */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[12px] font-semibold text-[#374151]">내가 올린 소스 <span className="text-[#9ca3af] font-normal">(선택)</span></p>
+                  <button
+                    onClick={() => myDocFileRef.current?.click()}
+                    disabled={uploadingMyDoc}
+                    className="text-[11px] text-purple-500 font-semibold hover:text-purple-700 disabled:opacity-50 flex items-center gap-0.5"
+                  >
+                    {uploadingMyDoc ? "업로드 중…" : "+ 파일 추가"}
+                  </button>
+                </div>
+                <input
+                  ref={myDocFileRef}
+                  type="file"
+                  className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadMyDoc(f); e.target.value = ""; }}
+                />
+                {myDocsLoading ? (
+                  <p className="text-[11px] text-gray-400 py-1">로딩 중…</p>
+                ) : myDocs.length === 0 ? (
+                  <button
+                    onClick={() => myDocFileRef.current?.click()}
+                    className="w-full border-2 border-dashed border-gray-200 rounded-xl py-3 text-[11px] text-gray-400 hover:border-purple-300 hover:text-purple-400 transition-all"
+                  >
+                    + 파일을 추가해 AI 자료 생성에 활용하세요
+                  </button>
+                ) : (
+                  <div className="space-y-1.5">
+                    {myDocs.map((doc) => {
+                      const ext = (doc.type ?? "").toLowerCase();
+                      const icon = ext === "pdf" ? "📜" : ["jpg","jpeg","png","gif","webp"].includes(ext) ? "🖼️" : "📄";
+                      return (
+                        <div key={doc.id} className="flex items-center gap-1">
+                          <div
+                            onClick={() => onOpenDoc(doc.id)}
+                            className="flex-1 flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 border-purple-200 bg-purple-50 text-left cursor-pointer hover:bg-purple-100 transition-all"
+                          >
+                            <span className="text-base">{icon}</span>
+                            <span className="flex-1 truncate text-[12px] font-semibold text-purple-700">{doc.filename}</span>
+                            <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#8b5cf6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          </div>
+                          <button
+                            onClick={() => deleteMyDoc(doc.id)}
+                            className="p-1.5 text-gray-300 hover:text-red-400 transition-colors shrink-0"
+                            title="삭제"
+                          >
+                            <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <button
+                      onClick={() => myDocFileRef.current?.click()}
+                      disabled={uploadingMyDoc}
+                      className="w-full border-2 border-dashed border-gray-200 rounded-xl py-2 text-[11px] text-gray-400 hover:border-purple-300 hover:text-purple-400 disabled:opacity-50 transition-all"
+                    >
+                      {uploadingMyDoc ? "업로드 중…" : "+ 파일 추가"}
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* 내가 만든 자료 목록 — 생성 중 항목 + 완료 항목 통합 (NotebookLM 스타일) */}
@@ -1197,12 +1340,39 @@ export function StudyPlanChatPanel({
               </div>
 
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {/* 소스 선택 */}
-                {docs.length > 0 && (
+                {/* 참고 소스 선택 (강사 업로드) */}
+                {instructorDocs.length > 0 && (
                   <div>
-                    <p className="text-[12px] font-semibold text-[#374151] mb-2">참고 소스 <span className="text-[#9ca3af] font-normal">(선택)</span></p>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[12px] font-semibold text-[#374151]">참고 소스 <span className="text-[#9ca3af] font-normal">(선택)</span></p>
+                      {(() => {
+                        const allSelected = instructorDocs.length > 0 && instructorDocs.every((d) => studioConfig.selectedDocIds.includes(d.id));
+                        const someSelected = instructorDocs.some((d) => studioConfig.selectedDocIds.includes(d.id));
+                        return (
+                          <button
+                            onClick={() => {
+                              const allIds = instructorDocs.map((d) => d.id);
+                              if (allSelected) {
+                                setStudioConfig((c) => ({ ...c, selectedDocIds: c.selectedDocIds.filter((id) => !allIds.includes(id)) }));
+                              } else {
+                                setStudioConfig((c) => ({ ...c, selectedDocIds: [...new Set([...c.selectedDocIds, ...allIds])] }));
+                              }
+                            }}
+                            className="flex items-center gap-1 text-[11px] font-medium text-gray-500 hover:text-blue-500 transition-colors"
+                          >
+                            <span className={`inline-flex w-3.5 h-3.5 rounded border-2 items-center justify-center flex-shrink-0 ${
+                              allSelected ? "border-blue-400 bg-blue-400" : someSelected ? "border-blue-300 bg-blue-100" : "border-gray-300"
+                            }`}>
+                              {allSelected && <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1.5 4L3.5 6L7.5 2.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                              {!allSelected && someSelected && <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M2 4.5H7" stroke="#3b82f6" strokeWidth="1.5" strokeLinecap="round"/></svg>}
+                            </span>
+                            {allSelected ? "전체 해제" : "전체 선택"}
+                          </button>
+                        );
+                      })()}
+                    </div>
                     <div className="space-y-1.5">
-                      {docs.map((doc) => {
+                      {instructorDocs.map((doc) => {
                         const checked = studioConfig.selectedDocIds.includes(doc.id);
                         const ext = (doc.type ?? "").toLowerCase();
                         const icon = ext === "pdf" ? "📜" : ext === "url" ? "🔗" : ["jpg","jpeg","png","gif","webp"].includes(ext) ? "🖼️" : "📄";
@@ -1222,6 +1392,99 @@ export function StudyPlanChatPanel({
                     </div>
                   </div>
                 )}
+
+                {/* 내가 올린 소스 */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-[12px] font-semibold text-[#374151]">내가 올린 소스 <span className="text-[#9ca3af] font-normal">(선택)</span></p>
+                    <div className="flex items-center gap-2">
+                      {myDocs.length > 0 && (() => {
+                        const allSelected = myDocs.every((d) => studioConfig.selectedDocIds.includes(d.id));
+                        const someSelected = myDocs.some((d) => studioConfig.selectedDocIds.includes(d.id));
+                        return (
+                          <button
+                            onClick={() => {
+                              const allIds = myDocs.map((d) => d.id);
+                              if (allSelected) {
+                                setStudioConfig((c) => ({ ...c, selectedDocIds: c.selectedDocIds.filter((id) => !allIds.includes(id)) }));
+                              } else {
+                                setStudioConfig((c) => ({ ...c, selectedDocIds: [...new Set([...c.selectedDocIds, ...allIds])] }));
+                              }
+                            }}
+                            className="flex items-center gap-1 text-[11px] font-medium text-gray-500 hover:text-purple-500 transition-colors"
+                          >
+                            <span className={`inline-flex w-3.5 h-3.5 rounded border-2 items-center justify-center flex-shrink-0 ${
+                              allSelected ? "border-purple-400 bg-purple-400" : someSelected ? "border-purple-300 bg-purple-100" : "border-gray-300"
+                            }`}>
+                              {allSelected && <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1.5 4L3.5 6L7.5 2.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                              {!allSelected && someSelected && <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M2 4.5H7" stroke="#8b5cf6" strokeWidth="1.5" strokeLinecap="round"/></svg>}
+                            </span>
+                            {allSelected ? "전체 해제" : "전체 선택"}
+                          </button>
+                        );
+                      })()}
+                      <button
+                        onClick={() => myDocFileRef.current?.click()}
+                        disabled={uploadingMyDoc}
+                        className="text-[11px] text-purple-500 font-semibold hover:text-purple-700 disabled:opacity-50 flex items-center gap-0.5"
+                      >
+                        {uploadingMyDoc ? "업로드 중…" : "+ 파일 추가"}
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    ref={myDocFileRef}
+                    type="file"
+                    className="hidden"
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadMyDoc(f); e.target.value = ""; }}
+                  />
+                  {myDocsLoading ? (
+                    <p className="text-[11px] text-gray-400 py-1">로딩 중…</p>
+                  ) : myDocs.length === 0 ? (
+                    <button
+                      onClick={() => myDocFileRef.current?.click()}
+                      className="w-full border-2 border-dashed border-gray-200 rounded-xl py-3 text-[11px] text-gray-400 hover:border-purple-300 hover:text-purple-400 transition-all"
+                    >
+                      + 파일을 추가해 AI 자료 생성에 활용하세요
+                    </button>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {myDocs.map((doc) => {
+                        const checked = studioConfig.selectedDocIds.includes(doc.id);
+                        const ext = (doc.type ?? "").toLowerCase();
+                        const icon = ext === "pdf" ? "📜" : ["jpg","jpeg","png","gif","webp"].includes(ext) ? "🖼️" : "📄";
+                        return (
+                          <div key={doc.id} className="flex items-center gap-1">
+                            <button
+                              onClick={() => setStudioConfig((c) => ({ ...c, selectedDocIds: checked ? c.selectedDocIds.filter((id) => id !== doc.id) : [...c.selectedDocIds, doc.id] }))}
+                              className={`flex-1 flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 text-left transition-all ${
+                                checked ? "border-purple-400 bg-purple-50" : "border-gray-100 hover:border-gray-300 bg-gray-50"
+                              }`}
+                            >
+                              <span className="text-base">{icon}</span>
+                              <span className={`flex-1 truncate text-[12px] font-semibold ${checked ? "text-purple-700" : "text-gray-600"}`}>{doc.filename}</span>
+                              {checked && <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#8b5cf6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                            </button>
+                            <button
+                              onClick={() => deleteMyDoc(doc.id)}
+                              className="p-1.5 text-gray-300 hover:text-red-400 transition-colors shrink-0"
+                              title="삭제"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                            </button>
+                          </div>
+                        );
+                      })}
+                      <button
+                        onClick={() => myDocFileRef.current?.click()}
+                        disabled={uploadingMyDoc}
+                        className="w-full border-2 border-dashed border-gray-200 rounded-xl py-2 text-[11px] text-gray-400 hover:border-purple-300 hover:text-purple-400 disabled:opacity-50 transition-all"
+                      >
+                        {uploadingMyDoc ? "업로드 중…" : "+ 파일 추가"}
+                      </button>
+                    </div>
+                  )}
+                </div>
 
                 {/* 형식 선택 — 강사 모달과 동일한 스타일 */}
                 <div>

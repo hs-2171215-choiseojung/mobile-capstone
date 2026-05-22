@@ -131,6 +131,7 @@ export default function StudentWorkspacePage() {
 
   const [activeDocIds, setActiveDocIds] = useState<string[]>([]);
   const [docs, setDocs] = useState<any[]>([]);
+  const [myDocs, setMyDocs] = useState<DocumentInfo[]>([]);
   const [studioItems, setStudioItems] = useState<any[]>([]);
   const [weekPlans, setWeekPlans] = useState<WeekPlan[]>([]);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
@@ -228,6 +229,15 @@ export default function StudentWorkspacePage() {
   const shouldRestoreCenterScrollRef = useRef(false);
   const weekCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
+  // 강사 문서 + 학생 업로드 문서 통합 목록
+  const allDocs = useMemo(() => {
+    const merged = [...docs];
+    for (const md of myDocs) {
+      if (!merged.find((d) => d.id === md.id)) merged.push(md);
+    }
+    return merged;
+  }, [docs, myDocs]);
+
   const toText = (value: unknown, fallback = ""): string => {
     if (typeof value === "string") return value;
     if (typeof value === "number") return String(value);
@@ -291,6 +301,7 @@ export default function StudentWorkspacePage() {
       setWorkspaceFetchError(false);
       setIsDataLoading(false);
       setDocs([]);
+      setMyDocs([]);
       setStudioItems([]);
       setWeekPlans([]);
       setActiveDocIds([]);
@@ -421,6 +432,27 @@ export default function StudentWorkspacePage() {
           ? notebookData.documents.filter((doc: Partial<DocumentInfo>) => isReadyDocument(doc))
           : []
       );
+
+      // 학생 업로드 문서 로드
+      try {
+        const myDocsRes = await fetch(`${API}/api/student/documents/my?notebook_id=${notebookId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+        if (myDocsRes.ok) {
+          const myDocsData = await myDocsRes.json();
+          if (Array.isArray(myDocsData?.documents)) {
+            setMyDocs(myDocsData.documents.map((md: any) => ({
+              id: md.id,
+              filename: md.filename,
+              file_type: md.type || md.file_type || "file",
+              status: "ready",
+            })));
+          }
+        }
+      } catch {
+        // 학생 문서 로드 실패 무시
+      }
 
       const studyPlanData = await studyPlanRes.json();
       setWeekPlans(Array.isArray(studyPlanData?.plan_data) ? studyPlanData.plan_data : []);
@@ -1140,11 +1172,11 @@ export default function StudentWorkspacePage() {
                   <StudioItemViewer
                     item={selectedItem}
                     onClose={() => { setSelectedItem(null); closeSource(); shouldRestoreCenterScrollRef.current = true; }}
-                    docs={docs}
+                    docs={allDocs}
                     sessionState={quizSessionState}
                     onSessionStateChange={setQuizSessionState}
                     onRequestSource={(docId, page, text, timestamp) => {
-                      const doc = docs.find((d: any) => d.id === docId);
+                      const doc = allDocs.find((d: any) => d.id === docId);
                       if (!doc) return;
                       if (selectedSource.id !== docId) {
                         setQuizSourceSlide(page);
@@ -1256,7 +1288,7 @@ export default function StudentWorkspacePage() {
 
           if (selectedItem && itemNeedsNoChat) {
             const handleQuizRequestSource = (docId: string, page: number | null, text?: string | null, timestamp?: number | null) => {
-              const doc = docs.find((d: any) => d.id === docId);
+              const doc = allDocs.find((d: any) => d.id === docId);
               if (!doc) return;
               setQuizSourceOpen(true);
               setQuizSourceSlide(page);
@@ -1271,7 +1303,7 @@ export default function StudentWorkspacePage() {
                 <StudioItemViewer
                   item={selectedItem}
                   onClose={() => { setSelectedItem(null); shouldRestoreCenterScrollRef.current = true; }}
-                  docs={docs}
+                  docs={allDocs}
                   sessionState={quizSessionState}
                   onSessionStateChange={setQuizSessionState}
                   onRequestSource={handleQuizRequestSource}
@@ -1287,7 +1319,7 @@ export default function StudentWorkspacePage() {
                 <StudioItemViewer
                   item={selectedItem}
                   onClose={() => { setSelectedItem(null); shouldRestoreCenterScrollRef.current = true; }}
-                  docs={docs}
+                  docs={allDocs}
                 />
               </div>
               <Resizable
@@ -1492,8 +1524,9 @@ export default function StudentWorkspacePage() {
                     onStudyPlanSaved={() => fetchData()}
                     onOpenDoc={(docId) => {
                       const doc = displayDocsMap.get(docId)
-                        ?? displayDocs.find((d) => d.filename?.trim().toLowerCase() === docId.trim().toLowerCase());
-                      if (doc) void openSourceDocument(doc);
+                        ?? displayDocs.find((d) => d.filename?.trim().toLowerCase() === docId.trim().toLowerCase())
+                        ?? allDocs.find((d: any) => d.id === docId);
+                      if (doc) void openSourceDocument(doc as DocumentInfo);
                     }}
                     onOpenStudioItem={(itemId) => {
                       const item = studioItems.find((s) => s.id === itemId)
@@ -1505,6 +1538,12 @@ export default function StudentWorkspacePage() {
                     studioQueue={studioQueue}
                     onStudioQueueChange={setStudioQueue}
                     onStudioItemCreated={() => refreshStudioOnly()}
+                    onMyDocUploaded={(doc) => {
+                      setMyDocs((prev) => {
+                        if (prev.find((d: any) => d.id === doc.id)) return prev;
+                        return [...prev, { id: doc.id, filename: doc.filename, file_type: doc.file_type, status: "ready" }];
+                      });
+                    }}
                   />
                 </Resizable>
               )}

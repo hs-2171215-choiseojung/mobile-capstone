@@ -4,13 +4,24 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File, Form
 
 from app.core.auth import get_current_user
 from app.core.supabase import supabase_admin
-from app.api.routes.documents import STORAGE_BUCKET
+from app.api.routes.documents import (
+    STORAGE_BUCKET,
+    STORAGE_CONTENT_TYPES,
+    STORABLE_EXTENSIONS,
+    MAX_FILE_SIZE,
+    MAX_VIDEO_SIZE,
+    _generate_and_upload_slides,
+    _generate_and_upload_docx_pages,
+    _generate_and_upload_hwpx_pages,
+)
+from app.services.rag import ingest_document, SUPPORTED_EXTENSIONS, VIDEO_AUDIO_EXTENSIONS
 
 router = APIRouter()
 
@@ -222,3 +233,204 @@ async def get_student_document_preview_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{document_id}.pdf"'},
     )
+
+
+# ──────────────────────────────────────────────────────────────
+# 학생 직접 파일 업로드
+# ──────────────────────────────────────────────────────────────
+
+def _check_enrollment(notebook_id: str, student_id: str) -> None:
+    """학생이 해당 노트북에 enrolled 되어 있는지 확인."""
+    enrolled = (
+        supabase_admin.table("notebook_enrollments")
+        .select("id")
+        .eq("notebook_id", notebook_id)
+        .eq("student_id", student_id)
+        .execute()
+        .data
+    )
+    if not enrolled:
+        raise HTTPException(status_code=403, detail="수강 중인 노트북이 아닙니다.")
+
+
+@router.post("/student/documents/upload")
+async def upload_student_document(
+    notebook_id: str = Form(...),
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """학생이 직접 파일을 업로드합니다. → Storage 저장 + documents 테이블 + RAG 청킹."""
+    _check_enrollment(notebook_id, user["id"])
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일명이 없습니다.")
+
+    ext = file.filename.lower().rsplit(".", 1)[-1] if "." in file.filename else ""
+    if ext not in SUPPORTED_EXTENSIONS:
+        supported = ", ".join(f".{e}" for e in sorted(SUPPORTED_EXTENSIONS))
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 파일 형식입니다. 지원 형식: {supported}")
+
+    file_bytes = await file.read()
+
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="빈 파일입니다.")
+
+    if ext in VIDEO_AUDIO_EXTENSIONS and len(file_bytes) > MAX_VIDEO_SIZE:
+        raise HTTPException(status_code=400, detail="비디오/오디오 파일은 25MB 이하만 가능합니다.")
+    if len(file_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="파일 크기는 200MB 이하만 가능합니다.")
+
+    # 중복 업로드 검사 (같은 학생, 같은 노트북, 같은 파일명)
+    try:
+        existing = (
+            supabase_admin.table("documents")
+            .select("id")
+            .eq("notebook_id", notebook_id)
+            .eq("user_id", user["id"])
+            .eq("filename", file.filename.replace("\x00", ""))
+            .eq("status", "ready")
+            .execute()
+        )
+        if existing.data:
+            raise HTTPException(status_code=409, detail="같은 이름의 파일이 이미 업로드되어 있습니다.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    doc_id = str(uuid.uuid4())
+
+    # 1. Storage 저장
+    storage_path = ""
+    if ext in STORABLE_EXTENSIONS:
+        content_type = STORAGE_CONTENT_TYPES.get(ext, "application/octet-stream")
+        storage_path = f"student-uploads/{user['id']}/{doc_id}.{ext}"
+        try:
+            supabase_admin.storage.from_(STORAGE_BUCKET).upload(
+                storage_path,
+                file_bytes,
+                {"content-type": content_type},
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"파일 저장 실패: {str(e)}")
+
+    # 2. documents 테이블 등록
+    try:
+        supabase_admin.table("documents").insert({
+            "id": doc_id,
+            "notebook_id": notebook_id,
+            "user_id": user["id"],
+            "filename": file.filename.replace("\x00", ""),
+            "file_type": ext,
+            "file_size": len(file_bytes),
+            "storage_path": storage_path,
+            "status": "processing",
+        }).execute()
+    except Exception as e:
+        if storage_path:
+            supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
+        raise HTTPException(status_code=500, detail=f"문서 등록 실패: {str(e)}")
+
+    # 3. 슬라이드 에셋 생성 (docx/pptx/ppt/hwpx)
+    if ext in ("pptx", "ppt"):
+        try:
+            _generate_and_upload_slides(file_bytes, doc_id)
+        except Exception as _e:
+            print(f"[student_upload] 슬라이드 에셋 생성 실패 (무시): {_e}")
+    elif ext == "docx":
+        try:
+            _generate_and_upload_docx_pages(file_bytes, doc_id)
+        except Exception as _e:
+            print(f"[student_upload] docx 페이지 에셋 생성 실패 (무시): {_e}")
+    elif ext == "hwpx":
+        try:
+            _generate_and_upload_hwpx_pages(file_bytes, doc_id)
+        except Exception as _e:
+            print(f"[student_upload] hwpx 페이지 에셋 생성 실패 (무시): {_e}")
+
+    # 4. RAG 청킹
+    try:
+        chunk_count, page_count = ingest_document(
+            file_bytes, doc_id, filename=file.filename,
+        )
+    except Exception as e:
+        supabase_admin.table("documents").update({"status": "error"}).eq("id", doc_id).execute()
+        if storage_path:
+            supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
+        raise HTTPException(status_code=500, detail=f"문서 분석 실패: {str(e)}")
+
+    # 4. 상태 ready로 업데이트
+    supabase_admin.table("documents").update({
+        "status": "ready",
+        "chunk_count": chunk_count,
+        "page_count": page_count,
+    }).eq("id", doc_id).execute()
+
+    return {
+        "id": doc_id,
+        "filename": file.filename,
+        "status": "ready",
+        "chunk_count": chunk_count,
+    }
+
+
+@router.get("/student/documents/my")
+async def get_my_student_documents(
+    notebook_id: str = Query(...),
+    user: dict = Depends(get_current_user),
+):
+    """현재 학생이 해당 노트북에 직접 업로드한 파일 목록을 반환합니다."""
+    _check_enrollment(notebook_id, user["id"])
+
+    res = (
+        supabase_admin.table("documents")
+        .select("id, filename, file_type, file_size, status, created_at")
+        .eq("notebook_id", notebook_id)
+        .eq("user_id", user["id"])
+        .eq("status", "ready")
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    docs = [
+        {
+            "id": d["id"],
+            "filename": d["filename"],
+            "type": d.get("file_type") or "",
+            "file_size": d.get("file_size") or 0,
+            "created_at": d.get("created_at"),
+        }
+        for d in (res.data or [])
+    ]
+    return {"documents": docs}
+
+
+@router.delete("/student/documents/{document_id}")
+async def delete_my_student_document(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """학생이 직접 올린 파일을 삭제합니다."""
+    doc_res = (
+        supabase_admin.table("documents")
+        .select("id, user_id, storage_path, notebook_id")
+        .eq("id", document_id)
+        .limit(1)
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    doc = doc_res.data[0]
+    if doc["user_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="삭제 권한이 없습니다.")
+
+    storage_path = (doc.get("storage_path") or "").strip()
+    if storage_path and not storage_path.startswith(("http://", "https://")):
+        try:
+            supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
+        except Exception:
+            pass
+
+    supabase_admin.table("documents").delete().eq("id", document_id).execute()
+    return {"ok": True}
