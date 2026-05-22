@@ -1355,7 +1355,7 @@ export function StudyPlanChatPanel({
                               if (allSelected) {
                                 setStudioConfig((c) => ({ ...c, selectedDocIds: c.selectedDocIds.filter((id) => !allIds.includes(id)) }));
                               } else {
-                                setStudioConfig((c) => ({ ...c, selectedDocIds: [...new Set([...c.selectedDocIds, ...allIds])] }));
+                                setStudioConfig((c) => ({ ...c, selectedDocIds: [...c.selectedDocIds, ...allIds.filter((id) => !c.selectedDocIds.includes(id))] }));
                               }
                             }}
                             className="flex items-center gap-1 text-[11px] font-medium text-gray-500 hover:text-blue-500 transition-colors"
@@ -1408,7 +1408,7 @@ export function StudyPlanChatPanel({
                               if (allSelected) {
                                 setStudioConfig((c) => ({ ...c, selectedDocIds: c.selectedDocIds.filter((id) => !allIds.includes(id)) }));
                               } else {
-                                setStudioConfig((c) => ({ ...c, selectedDocIds: [...new Set([...c.selectedDocIds, ...allIds])] }));
+                                setStudioConfig((c) => ({ ...c, selectedDocIds: [...c.selectedDocIds, ...allIds.filter((id) => !c.selectedDocIds.includes(id))] }));
                               }
                             }}
                             className="flex items-center gap-1 text-[11px] font-medium text-gray-500 hover:text-purple-500 transition-colors"
