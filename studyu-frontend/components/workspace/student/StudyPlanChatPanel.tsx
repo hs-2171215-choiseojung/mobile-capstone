@@ -1463,7 +1463,6 @@ export function StudyPlanChatPanel({
                             >
                               <span className="text-base">{icon}</span>
                               <span className={`flex-1 truncate text-[12px] font-semibold ${checked ? "text-purple-700" : "text-gray-600"}`}>{doc.filename}</span>
-                              {checked && <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7L5.5 10L11.5 4" stroke="#8b5cf6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                             </button>
                             <button
                               onClick={() => deleteMyDoc(doc.id)}

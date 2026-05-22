@@ -315,13 +315,19 @@ async def upload_student_document(
             raise HTTPException(status_code=500, detail=f"파일 저장 실패: {str(e)}")
 
     # 2. documents 테이블 등록
+    # DB file_type 컬럼이 enum이므로 허용된 값으로 매핑
+    # (pdf, url, youtube, text, image) — 실제 확장자는 filename에서 추출
+    if ext in {"jpg", "jpeg", "png", "gif", "webp"}:
+        db_file_type = "image"
+    else:
+        db_file_type = "pdf"  # docx, pptx, ppt, hwpx, mp4, mp3 등
     try:
         supabase_admin.table("documents").insert({
             "id": doc_id,
             "notebook_id": notebook_id,
             "user_id": user["id"],
             "filename": file.filename.replace("\x00", ""),
-            "file_type": ext,
+            "file_type": db_file_type,
             "file_size": len(file_bytes),
             "storage_path": storage_path,
             "status": "processing",
@@ -396,7 +402,8 @@ async def get_my_student_documents(
         {
             "id": d["id"],
             "filename": d["filename"],
-            "type": d.get("file_type") or "",
+            # file_type은 DB enum 우회용이므로 실제 확장자는 filename에서 추출
+            "type": d["filename"].lower().rsplit(".", 1)[-1] if "." in (d.get("filename") or "") else (d.get("file_type") or ""),
             "file_size": d.get("file_size") or 0,
             "created_at": d.get("created_at"),
         }

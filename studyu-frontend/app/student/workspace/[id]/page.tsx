@@ -215,6 +215,7 @@ export default function StudentWorkspacePage() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatWidth, setChatWidth] = useState(380);
   const [sourceWidth, setSourceWidth] = useState(420);
+  const [quizChatWidth, setQuizChatWidth] = useState(320);
 
   // 퀴즈 참고 자료 패널용 상태
   const [quizSourceOpen, setQuizSourceOpen] = useState(false);
@@ -1114,11 +1115,11 @@ export default function StudentWorkspacePage() {
                 </Resizable>
                 {/* 가운데: Ask AI */}
                 <Resizable
-                  size={{ width: chatWidth, height: '100%' }}
+                  size={{ width: quizChatWidth, height: '100%' }}
                   minWidth={260}
                   maxWidth={520}
                   enable={{ right: true }}
-                  onResizeStop={(_e, _dir, _ref, d) => setChatWidth(prev => prev + d.width)}
+                  onResizeStop={(_e, _dir, _ref, d) => setQuizChatWidth(prev => prev + d.width)}
                   handleStyles={{ right: { width: '12px', right: '-6px', zIndex: 50, cursor: 'col-resize' } }}
                   handleComponent={{ right: <div className="w-full h-full flex items-center justify-center group"><div className="w-1 h-8 bg-[#e7e9ed] rounded-full group-hover:bg-[#155dfc] transition-colors" /></div> }}
                   className="shrink-0 border-r border-[#e7e9ed] bg-white flex flex-col"
@@ -1290,6 +1291,12 @@ export default function StudentWorkspacePage() {
             const handleQuizRequestSource = (docId: string, page: number | null, text?: string | null, timestamp?: number | null) => {
               const doc = allDocs.find((d: any) => d.id === docId);
               if (!doc) return;
+              if (!quizSourceOpen) {
+                // 처음 열릴 때만 화면 너비 기준 비율로 초기화
+                const w = window.innerWidth;
+                setSourceWidth(Math.round(w * 0.35));
+                setQuizChatWidth(Math.round(w * 0.28));
+              }
               setQuizSourceOpen(true);
               setQuizSourceSlide(page);
               setQuizSourceScrollText(text ?? undefined);
