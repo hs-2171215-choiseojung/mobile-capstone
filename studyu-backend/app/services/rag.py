@@ -3246,20 +3246,21 @@ def _get_media_doc_ids(doc_ids: list[str]) -> list[str]:
 
 LEVEL_PROMPTS = {
     "beginner": (
-        "반드시 쉬운 설명 모드로 답변하세요. 어려운 용어는 가능한 한 쉬운 일상 표현으로 풀어쓰고, "
-        "전문 용어를 써야 하면 바로 뒤에서 짧게 뜻을 설명하세요. "
-        "답변은 처음 배우는 사람도 따라올 수 있게 단계적으로 설명하고, 필요하면 짧은 예시를 1개만 포함하세요. "
-        "답변 길이는 보통 4~6문장 또는 3개 안팎의 불릿으로 유지하고, 전문적인 배경지식을 이미 안다고 가정하지 마세요."
+        "[Target: upper-elementary-school level] Explain in simple everyday language and avoid difficult or highly technical terms. "
+        "If a term must be used, briefly explain it with an analogy in parentheses or in the following sentence. "
+        "Explain step by step from the perspective of a beginner with no background knowledge, "
+        "and include exactly one intuitive example."
     ),
     "intermediate": (
-        "반드시 보통 설명 모드로 답변하세요. 핵심 개념과 이유를 중심으로 자세함과 간결함의 균형을 맞춰 설명하세요. "
-        "답변 길이는 보통 3~5문장 또는 2~3개 불릿으로 유지하고, 필요한 경우에만 짧은 예시를 덧붙이세요. "
-        "불필요한 배경 설명은 줄이고 질문에 직접 필요한 내용부터 답하세요."
+        "[Target: general adult level] Respond in a standard mode that balances expertise and readability. "
+        "Use accurate technical terms for key concepts, but reduce overly long background explanations and answer the direct core of the question first. "
+        "Keep the explanation logical and natural in flow, with a level of depth that is neither too shallow nor too deep."
     ),
     "advanced": (
-        "반드시 간략 설명 모드로 답변하세요. 가장 중요한 결론과 근거만 남기고 매우 짧고 압축적으로 답하세요. "
-        "가능하면 2~3문장 또는 2개 불릿 이내로 끝내고, 배경 설명·부연 설명·예시는 꼭 필요할 때만 최소화하세요. "
-        "질문이 명확하면 바로 답부터 말하고, 반복 표현이나 완곡한 서두는 생략하세요."
+        "[Target: expert / busy modern adult] Completely omit greetings, introductions, and unnecessary elaboration, and start with the conclusion. "
+        "Keep only the most important conclusion and supporting reason, summarizing in 2–4 sentences or using only 2–3 key bullet points. "
+        "Maintain extreme conciseness. Minimize background explanation, extra elaboration, and examples unless absolutely necessary. "
+        "If the question is clear, answer immediately and omit repetitive phrasing or softened openings. Be very short and compressed."
     ),
 }
 
@@ -3524,6 +3525,7 @@ def chat_with_docs(
     is_multi = len(doc_ids) > 1
     normalized_level = normalize_learning_level(level)
     level_hint = LEVEL_PROMPTS.get(normalized_level, LEVEL_PROMPTS["intermediate"])
+    level_block = f"【설명 수준】\n{level_hint}\n"
     filename_map = _get_doc_filename_map(doc_ids)
     doc_filenames = [filename_map.get(doc_id, doc_id) for doc_id in doc_ids]
 
@@ -3672,36 +3674,22 @@ def chat_with_docs(
     if has_video:
         joined_ref_lines = _format_reference_lines(references)
         video_note = (
-                "\n\n중요: 비디오 또는 오디오 파일이 포함되어 있습니다. "
-                "답변은 반드시 전사 텍스트를 바탕으로 작성하고, 관련 내용이 있으면 답변 본문 안에 바로 타임스탬프를 넣어주세요. "
-                "예: 드래그 장면(0:17): ..., 사라지는 장면(0:23-0:31): ... "
-                "답변 아래에 별도의 '관련 시점' 목록은 만들지 마세요. "
-                "타임스탬프를 고를 때는 어떤 용어를 소개하거나 이름을 붙이는 시점이 아니라, "
-                "질문과 직접 관련된 내용이 실제로 설명되거나 시연되기 시작하는 지점을 기준으로 삼으세요. "
-                "즉 제목을 붙이는 문장보다, 의미를 설명하는 문장, 행동이 드러나는 문장, 핵심 내용이 시작되는 문장을 우선하세요. "
-                "질문이 어떤 개념, 장면, 행동, 차이, 이유, 방법, 흐름, 인물, 사건, 주제의 위치를 묻는 경우에도 같은 원칙을 적용하세요. "
-                "질문과 직접 대응되는 설명 구간을 먼저 찾고 그 구간의 시간을 붙이세요. "
-                "근거가 여러 개면 시간들을 나열만 하지 말고, 정말 이어지는 설명이면 범위(예: 0:35-0:59)로 묶어서 쓰세요. "
-                "답변이 여러 포인트로 나뉘는 주제라면 짧은 도입 설명 뒤에 '-' 불릿 목록으로 나눠 설명해도 됩니다. "
-                "예: 한 문장 요약 후, '* 항목명(시간): 설명' 형식으로 2~4개 핵심 포인트를 정리하세요. "
-                "비교, 원인, 특징, 단계, 사례처럼 여러 요소를 구분해서 설명하는 질문에서는 불릿 형식을 우선적으로 사용하세요. "
-                "추측하지 말고 전사에 근거가 있는 내용만 답하세요. "
-                "답변은 Markdown 형식으로 작성하고, 핵심 개념·중요 결론·주의할 부분은 **굵게** 표시하세요. "
-                "문단 사이에는 빈 줄을 넣으세요. "
-                "설명이 여러 포인트로 나뉘면 불릿 목록(*)이나 번호 목록을 사용하되, 각 항목은 반드시 새로운 줄에서 시작하세요. "
-                "불릿 목록을 시작하기 전에도 빈 줄을 넣으세요. "
-                "핵심 주제가 바뀌면 빈 줄을 넣어 문단을 나누고, 한 문단을 너무 길게 이어 쓰지 마세요."
-            )
+            "\n\n【미디어 답변 규칙】\n"
+            "- 비디오 또는 오디오가 포함된 경우, 답변은 반드시 전사 텍스트를 근거로 작성하세요.\n"
+            "- 답변 본문 안에 최소 1개 이상의 타임스탬프를 반드시 직접 넣으세요. 타임스탬프가 없는 답변은 잘못된 답변입니다.\n"
+            "- 별도의 '관련 시점' 목록을 만들지 말고, 설명 바로 옆에 (0:17) 또는 (0:23-0:31) 형식으로 넣으세요.\n"
+            "- 타임스탬프는 용어나 제목이 처음 등장하는 시점보다, 질문과 직접 관련된 설명·시연·행동·핵심 내용이 실제로 시작되는 지점을 우선으로 선택하세요.\n"
+            "- 근거가 여러 개일 때 시간을 단순 나열하지 말고, 이어지는 설명이면 범위(예: 0:35-0:59)로 묶어 쓰세요.\n"
+            "- 여러 포인트를 구분해야 하는 질문은 짧은 도입 뒤에 불릿 목록으로 정리해도 됩니다. 예: '* 항목명(시간): 설명'\n"
+            "- 비교, 원인, 특징, 단계, 사례처럼 여러 요소를 나누어 설명하는 질문에서는 불릿 형식을 우선적으로 사용하세요.\n"
+            "- 추측하지 말고, 전사에서 확인되는 내용만 답하세요.\n"
+            "- 답변은 Markdown 형식으로 작성하고, 핵심 개념·중요 결론·주의할 부분은 **굵게** 표시하세요.\n"
+            "- 문단 사이에는 빈 줄을 넣고, 불릿 목록을 쓸 때는 각 항목을 반드시 새로운 줄에서 시작하세요."
+        )
         if joined_ref_lines:
-            video_note += f"\n\n관련 전사 구간:\n{joined_ref_lines}"
+            video_note += f"\n\n【관련 전사 구간】\n{joined_ref_lines}"
 
     # ── 이미지 타입별 분석 가이드 ─────────────────
-    if has_video:
-        video_note += (
-            "\n\nCritical requirement for media answers: include at least one timestamp directly in the answer body. "
-            "If the answer is based on video, audio, or YouTube transcript content, a response without any timestamp is invalid. "
-            "Use a concrete format such as (0:17) or (0:23-0:31), and place it next to the relevant explanation instead of adding a separate timestamp section."
-        )
 
     IMAGE_TYPE_GUIDE = {
         "photo": "피사체의 외형·행동·감정을 묘사하고, 배경과 전체적인 분위기도 언급하세요.",
@@ -3750,6 +3738,8 @@ def chat_with_docs(
         system_msg = f"""당신은 이미지를 깊이 분석하는 전문 비주얼 학습 튜터입니다.
 첨부된 이미지({image_names})를 직접 보고 질문에 성실히 답변하세요.
 
+{level_block}
+
 【이미지 정보】
 - 유형: {primary_type}
 - 등장 대상: {subjects_str}
@@ -3758,9 +3748,7 @@ def chat_with_docs(
 {type_guide}
 불명확한 부분은 "이미지에서 명확히 확인되지 않습니다"라고 솔직히 말하세요.
 
-{SUGGESTION_BLOCK}
-
-답변 시 {level_hint}"""
+{SUGGESTION_BLOCK}"""
         if ocr_text:
             system_msg += f"\n\n【이미지 내 텍스트(OCR)】\n{ocr_text}"
         if not is_related:
@@ -3772,7 +3760,8 @@ def chat_with_docs(
         system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
 총 {len(doc_ids)}개의 자료({names_str})가 제공됩니다. 이미지는 직접 확인하고, 문서는 아래 컨텍스트를 참조하세요.
 이미지와 문서 내용을 통합하여 종합적으로 답변하세요.
-답변 시 {level_hint}{video_note}
+
+{level_block}{video_note}
 
 <context>
 {context}
@@ -3789,7 +3778,8 @@ def chat_with_docs(
 총 {len(doc_ids)}개의 문서({names_str})가 제공됩니다.
 반드시 각 문서를 모두 참조하여 답변하세요.
 '**[문서명]** 에서는 ~', '**[문서명]** 에 따르면 ~' 형식으로 각 문서의 내용을 명확히 구분하여 서술하세요.
-답변 시 {level_hint}
+
+{level_block}
 제공된 문서 내용에서 최대한 찾아서 답변하세요.{video_note}
 
 <context>
@@ -3804,6 +3794,7 @@ def chat_with_docs(
             f"질문이 특정 슬라이드를 명시하지 않는 경우, [슬라이드 {current_slide}]의 내용을 우선적으로 참조하여 답변하세요.\n"
         ) if current_slide else ""
         system_msg = f"""당신은 '{ppt_name}' PPT 자료를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
+{level_block}
 {current_slide_hint}
 
 【슬라이드 인용 규칙】
@@ -3830,8 +3821,6 @@ def chat_with_docs(
 
 {SUGGESTION_BLOCK}
 
-답변 시 {level_hint}
-
 <context>
 {context}
 </context>"""
@@ -3844,6 +3833,7 @@ def chat_with_docs(
             f"질문이 특정 페이지를 명시하지 않는 경우, [페이지 {current_slide}]의 내용을 우선적으로 참조하여 답변하세요.\n"
         ) if current_slide else ""
         system_msg = f"""당신은 '{pdf_name}' PDF 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
+{level_block}
 {current_page_hint}
 
 【페이지 인용 규칙】
@@ -3868,8 +3858,6 @@ def chat_with_docs(
 
 {SUGGESTION_BLOCK}
 
-답변 시 {level_hint}
-
 <context>
 {context}
 </context>"""
@@ -3888,6 +3876,8 @@ def chat_with_docs(
         hwpx_name = doc_filenames[0] if doc_filenames else "한글 문서"
         system_msg = f"""당신은 '{hwpx_name}' 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
 
+{level_block}
+
 【페이지 인용 규칙】
 - 내용을 설명할 때는 반드시 해당 페이지 번호를 [페이지 N] 형식으로 명시하세요.
   예: "[페이지 3]에 따르면 ~", "이 내용은 [페이지 5]에서 확인할 수 있습니다."
@@ -3904,8 +3894,6 @@ def chat_with_docs(
 - 전체 요약·정리를 요청받은 경우, 앞 페이지에만 치우치지 말고 처음부터 끝 페이지까지 균형 있게 커버하세요.
 
 {SUGGESTION_BLOCK}
-
-답변 시 {level_hint}
 
 <context>
 {context}
@@ -3923,6 +3911,8 @@ def chat_with_docs(
         docx_name = doc_filenames[0] if doc_filenames else "Word 문서"
         system_msg = f"""당신은 '{docx_name}' 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
 
+{level_block}
+
 【페이지 인용 규칙】
 - 내용을 설명할 때는 반드시 해당 페이지 번호를 [페이지 N] 형식으로 명시하세요.
   예: "[페이지 3]에 따르면 ~", "이 내용은 [페이지 5]에서 확인할 수 있습니다."
@@ -3940,8 +3930,6 @@ def chat_with_docs(
 
 {SUGGESTION_BLOCK}
 
-답변 시 {level_hint}
-
 <context>
 {context}
 </context>"""
@@ -3956,6 +3944,8 @@ def chat_with_docs(
         url_list = "\n".join(f"- {u}" for u in url_sources) if url_sources else ""
         system_msg = f"""당신은 아래 웹사이트에서 추출한 텍스트를 참고하여 질문에 답변하는 AI 어시스턴트입니다.
 
+{level_block}
+
 참조 웹사이트:
 {url_list}
 
@@ -3967,8 +3957,7 @@ def chat_with_docs(
 5. 문단 사이에는 빈 줄을 넣으세요.
 6. 설명이 여러 포인트로 나뉘면 불릿 목록(*)이나 번호 목록을 사용하되, 각 항목은 반드시 새로운 줄에서 시작하세요.
 7. 불릿 목록을 시작하기 전에도 빈 줄을 넣으세요.
-8. 핵심 주제가 바뀌면 빈 줄을 넣어 문단을 나누고, 한 문단을 너무 길게 이어 쓰지 마세요.
-답변 시 {level_hint}{video_note}
+8. 핵심 주제가 바뀌면 빈 줄을 넣어 문단을 나누고, 한 문단을 너무 길게 이어 쓰지 마세요.{video_note}
 
 <context>
 {context}
@@ -3977,7 +3966,7 @@ def chat_with_docs(
     else:
         system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
 아래 문서 내용을 바탕으로 질문에 답변하세요.
-답변 시 {level_hint}
+{level_block}
 제공된 문서 내용에서 최대한 찾아서 답변하세요. 정말로 알 수 없을 때만 "문서에서 찾을 수 없습니다"라고 하세요.{video_note}
 
 <context>
@@ -4244,7 +4233,7 @@ def generate_content(
     difficulty_map = {"easy": "쉬운", "intermediate": "중간", "hard": "어려운"}
     language_map = {"ko": "한국어", "en": "영어", "ja": "일본어", "zh": "중국어"}
     tone_map = {"formal": "격식체", "casual": "친근한 구어체", "academic": "학술적 문체"}
-    level_ko = level_map.get(level, "보통")
+    level_ko = level_map.get(normalized_level, "보통")
     difficulty_ko = difficulty_map.get(difficulty, "중간")
     language_ko = language_map.get(language, "한국어")
     tone_ko = tone_map.get(tone, "격식체")
