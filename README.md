@@ -46,6 +46,32 @@ mobile-capstone/
 - ElevenLabs
 
 
+## 환경 변수
+
+### 프론트엔드
+| 환경변수 | 설명 |
+| --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | 프론트엔드에서 사용하는 Supabase 프로젝트 URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | 프론트엔드에서 사용하는 Supabase 공개 키 |
+| `NEXT_PUBLIC_API_URL` | 프론트엔드가 호출할 백엔드 API 주소 |
+| `NEXT_PUBLIC_SITE_URL` | 프론트엔드 서비스의 기준 주소 |
+
+### 백엔드
+| 환경변수 | 설명 |
+| --- | --- |
+| `SUPABASE_URL` | 백엔드에서 사용하는 Supabase 프로젝트 URL |
+| `SUPABASE_ANON_KEY` | Supabase 일반 클라이언트 접근용 키 |
+| `SUPABASE_SERVICE_ROLE_KEY` | 백엔드 관리자 권한 작업에 사용하는 Supabase 서비스 키 |
+| `OPENAI_API_KEY` | OpenAI 기반 생성 기능에 사용하는 API 키 |
+| `ANTHROPIC_API_KEY` | Anthropic 기반 생성 기능에 사용하는 API 키 |
+| `ELEVENLABS_API_KEY` | 음성 합성 기능에 사용하는 API 키 |
+| `FRONTEND_URL` | CORS 허용 및 연동 기준이 되는 프론트엔드 주소 |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Google Cloud STT 인증용 서비스 계정 파일 경로 |
+| `GCP_PROJECT_ID` | Google Cloud 프로젝트 ID |
+| `PROXY_USER_ID` | 외부 프록시 또는 인증 연동용 사용자 ID |
+| `PROXY_USER_PW` | 외부 프록시 또는 인증 연동용 비밀번호 |
+
+
 ## 실행 방법
 
 ### 준비 사항
@@ -68,17 +94,6 @@ npm install
 npm run dev
 ```
 
-기본 실행 주소: `http://localhost:3000`
-
-프론트엔드 환경 변수 설정(.env.local):
-
-```env.local
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_SITE_URL=http://localhost:3000
-```
-
 ### 3. 백엔드 실행
 ```bash
 cd studyu-backend
@@ -86,24 +101,6 @@ python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn main:app --reload
-```
-
-기본 실행 주소: `http://localhost:8000`
-
-백엔드 환경 변수 설정(.env):
-
-```env
-SUPABASE_URL=
-SUPABASE_ANON_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
-ELEVENLABS_API_KEY=
-FRONTEND_URL=http://localhost:3000
-GOOGLE_APPLICATION_CREDENTIALS=google-credentials.json
-GCP_PROJECT_ID=
-PROXY_USER_ID=
-PROXY_USER_PW=
 ```
 
 ### 4. 실행 확인
@@ -117,15 +114,15 @@ PROXY_USER_PW=
 
 ### 강사 사용 흐름
 - 로그인 후 강사 대시보드로 이동합니다.
-- 새 노트북을 만들고 PDF, 슬라이드, 문서, 링크 등의 학습 자료를 업로드합니다.
-- 초대 코드를 생성해 학생과 공유합니다.
-- 워크스페이스에서 AI를 활용해 학습 자료를 기반으로 결과물을 생성합니다.
+- 새 노트북을 만들고 PDF, 슬라이드, 문서, URL 등의 학습 자료를 업로드합니다.
+- 초대 코드를 생성해 학생에게 공유합니다.
+- 워크스페이스에서 AI를 활용해 학습 자료를 기반으로 AI 학습 콘텐츠를 생성합니다.
 
 ### 학생 사용 흐름
 - 로그인 후 초대 코드를 입력해 노트북에 참여합니다.
 - 학생 대시보드에서 참여 중인 노트북을 선택합니다.
 - 주차별 학습 계획을 확인하고 난이도에 맞는 자료 기반 AI 채팅으로 학습합니다.
-- 문서 뷰어, 학습 계획, 생성 결과물을 함께 활용하며 자기주도 학습을 진행할 수 있습니다.
+- 문서 뷰어, 학습 계획, AI 학습 콘텐츠를 함께 활용하며 자기주도 학습을 진행할 수 있습니다.
 
 
 ## 배포 링크
