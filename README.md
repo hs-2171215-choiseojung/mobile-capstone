@@ -1,181 +1,132 @@
-# STUDY:U Frontend
+# STUDY:U
+강의 자료와 학습 문서를 바탕으로 AI가 학생 맞춤형 학습을 도와주는 문서 기반 학습 플랫폼입니다.
 
-문서 기반 AI 학습 코치 — Next.js + Supabase
+[![Backend](https://img.shields.io/badge/backend-FastAPI-009688?logo=fastapi&logoColor=white)](#기술-스택)
+[![Frontend](https://img.shields.io/badge/frontend-Next.js%2014-000000?logo=nextdotjs&logoColor=white)](#기술-스택)
+[![Database](https://img.shields.io/badge/database-Supabase-3ECF8E?logo=supabase&logoColor=white)](#기술-스택)
 
----
 
-## 🚀 처음 세팅하기 (따라하기)
+## 프로젝트 소개
+STUDY:U는 강의 자료, 동영상, URL, 학습 문서를 바탕으로 학생 수준에 맞는 학습 경험을 제공하는 **AI 학습 워크스페이스**입니다.
 
-### 사전 준비물
+- 강사는 노트북을 만들고 다양한 형식의 학습 자료를 업로드한 뒤 학생을 초대할 수 있습니다.
+- 학생은 초대 코드를 통해 노트북에 참여하고, 난이도에 맞는 AI 질의응답과 맞춤형 학습 계획을 바탕으로 자기주도 학습을 진행할 수 있습니다.
+- 질의응답, 요약, 퀴즈, 마인드맵, 오디오 등 다양한 학습 콘텐츠를 하나의 플랫폼에서 통합적으로 활용할 수 있습니다.
+- 프론트엔드는 **Next.js**, 백엔드는 **FastAPI**, 인증과 데이터 저장은 **Supabase**를 사용합니다.
 
-- **Node.js 18+** 설치 확인: `node -v`
-- **Supabase 프로젝트** 생성 완료 (supabase_guide.md 참고)
-- **Google OAuth** 설정 완료 (supabase_guide.md 6번 참고)
-- **migration SQL** 실행 완료 (supabase_guide.md 5번 참고)
 
-### Step 1: 프로젝트 클론 & 패키지 설치
+## 프로젝트 구조
+```text
+mobile-capstone/
+├─ .github/workflows/          # 배포 워크플로우
+├─ studyu-frontend/            # Next.js 프론트엔드
+├─ studyu-backend/             # FastAPI 백엔드
+├─ uploads/                    # 로컬 업로드/생성 파일 디렉터리
+├─ DATABASE_SCHEMA.md          # 데이터베이스 구조 문서
+└─ supabase_migration.sql      # Supabase 마이그레이션 참고 파일
+```
 
+
+## 기술 스택
+
+### 프론트엔드
+- Next.js 14
+- React 18
+- TypeScript
+- Tailwind CSS
+
+### 백엔드
+- FastAPI
+- Python
+
+### AI 및 미디어
+- OpenAI
+- Anthropic
+- Google Cloud Speech-to-Text
+- ElevenLabs
+
+
+## 실행 방법
+
+### 준비 사항
+로컬에서 실행하기 전에 아래 항목이 필요합니다.
+- Node.js 18 이상
+- Python 3.10 이상 권장
+- Supabase 프로젝트
+- 사용하려는 기능에 맞는 외부 API 키
+
+### 1. 저장소 복제
 ```bash
-# 프로젝트 폴더로 이동
+git clone https://github.com/hs-2171215-choiseojung/mobile-capstone.git
+cd mobile-capstone
+```
+
+### 2. 프론트엔드 실행
+```bash
 cd studyu-frontend
-
-# 패키지 설치 (처음 한 번만)
 npm install
-```
-
-### Step 2: 환경 변수 설정
-
-```bash
-# 템플릿 파일 복사
-cp .env.example .env.local
-```
-
-`.env.local` 파일을 열어서 수정:
-
-```env
-# Supabase 대시보드 → Settings → API에서 복사
-NEXT_PUBLIC_SUPABASE_URL=https://여기에-프로젝트-url.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=여기에-anon-key-붙여넣기
-
-# 개발 서버 URL (그대로 두면 됨)
-NEXT_PUBLIC_SITE_URL=http://localhost:3000
-```
-
-### Step 3: Supabase에서 Redirect URL 추가
-
-Google Cloud Console → Credentials → OAuth 2.0 Client에서
-**Authorized redirect URIs**에 다음을 추가했는지 확인:
-
-```
-https://여기에-프로젝트-url.supabase.co/auth/v1/callback
-```
-
-### Step 4: 개발 서버 실행!
-
-```bash
 npm run dev
 ```
 
-브라우저에서 **http://localhost:3000** 접속
+기본 실행 주소: `http://localhost:3000`
 
-### Step 5: 테스트 흐름
+프론트엔드 환경 변수 설정(.env.local):
 
-```
-1. http://localhost:3000 접속
-   → 랜딩 페이지가 보임
-
-2. "로그인" 또는 "Google로 시작하기" 클릭
-   → 로그인 페이지로 이동
-
-3. "Google로 계속하기" 클릭
-   → Google 로그인 팝업이 뜸
-
-4. Google 계정 선택 & 로그인
-   → /auth/callback을 거쳐 /dashboard로 자동 이동
-
-5. 대시보드에서 확인:
-   - 이름, 이메일, 프로필 사진이 표시되는지
-   - "개발자 정보 보기"를 열어서:
-     - User ID가 있는지
-     - public.users 존재: ✅ Yes 인지
-   
-6. 로그아웃 클릭
-   → 로그인 페이지로 이동
+```env.local
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_SITE_URL=http://localhost:3000
 ```
 
----
-
-## 📁 폴더 구조 설명
-
-```
-studyu-frontend/
-├── app/                    ← Next.js App Router (페이지들)
-│   ├── layout.tsx          ← 전체 레이아웃 (html, body)
-│   ├── page.tsx            ← 랜딩 페이지 (/)
-│   ├── globals.css         ← 전역 CSS + Tailwind
-│   ├── login/
-│   │   └── page.tsx        ← 로그인 페이지 (/login)
-│   ├── auth/
-│   │   └── callback/
-│   │       └── route.ts    ← OAuth 콜백 처리 (/auth/callback)
-│   └── dashboard/
-│       └── page.tsx        ← 대시보드 (/dashboard) - 로그인 필요
-│
-├── components/             ← 재사용 가능한 컴포넌트
-│   └── auth/
-│       └── LogoutButton.tsx
-│
-├── lib/                    ← 유틸리티, 설정
-│   └── supabase/
-│       ├── client.ts       ← 브라우저용 Supabase 클라이언트
-│       └── server.ts       ← 서버용 Supabase 클라이언트
-│
-├── middleware.ts            ← 세션 갱신 + 인증 체크 미들웨어
-│
-├── .env.example            ← 환경 변수 템플릿
-├── .env.local              ← 실제 환경 변수 (git 제외!)
-├── package.json
-├── tailwind.config.js
-├── tsconfig.json
-└── next.config.js
+### 3. 백엔드 실행
+```bash
+cd studyu-backend
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn main:app --reload
 ```
 
----
+기본 실행 주소: `http://localhost:8000`
 
-## 🔑 핵심 개념: 파일별 역할
+백엔드 환경 변수 설정(.env):
 
-### Supabase 클라이언트가 2개인 이유
-
-| 파일 | 어디서 쓰는지 | 설명 |
-|------|------------|------|
-| `lib/supabase/client.ts` | `'use client'` 컴포넌트 | 브라우저에서 실행되는 코드용. 로그인 버튼, 데이터 fetch 등 |
-| `lib/supabase/server.ts` | Server Component, API Route | 서버에서 실행되는 코드용. 쿠키로 세션 관리 |
-
-Next.js에서는 **서버에서 렌더링되는 코드**와 **브라우저에서 실행되는 코드**가 나뉘어 있기 때문에
-Supabase 클라이언트도 2개가 필요합니다.
-
-### middleware.ts가 하는 일
-
-1. **모든 요청**에서 Supabase 세션(쿠키)을 확인하고 갱신
-2. 로그인 안 한 사용자가 `/dashboard`에 접근하면 → `/login`으로 리다이렉트
-3. 이미 로그인한 사용자가 `/login`에 접근하면 → `/dashboard`로 리다이렉트
-
-### auth/callback/route.ts가 하는 일
-
-Google 로그인 흐름:
-```
-사용자가 "Google로 계속하기" 클릭
-    ↓
-Google 로그인 페이지로 이동
-    ↓
-Google에서 로그인 성공
-    ↓
-Supabase가 /auth/callback?code=xxx 로 리다이렉트
-    ↓
-route.ts에서 code를 세션으로 교환
-    ↓
-/dashboard로 이동
+```env
+SUPABASE_URL=
+SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+ELEVENLABS_API_KEY=
+FRONTEND_URL=http://localhost:3000
+GOOGLE_APPLICATION_CREDENTIALS=google-credentials.json
+GCP_PROJECT_ID=
+PROXY_USER_ID=
+PROXY_USER_PW=
 ```
 
----
-
-## ⚠️ 문제 해결
-
-### "Google 로그인 버튼을 눌렀는데 아무 일도 안 일어남"
-→ `.env.local`에 Supabase URL과 anon key가 제대로 들어갔는지 확인
-→ 브라우저 콘솔(F12)에서 에러 메시지 확인
-
-### "Google 로그인은 됐는데 /auth/callback에서 에러"
-→ Supabase 대시보드 → Authentication → URL Configuration에서
-   Site URL이 `http://localhost:3000`으로 설정되어 있는지 확인
-
-### "대시보드에서 public.users 존재: ❌ No"
-→ migration SQL의 `handle_new_user` 트리거가 제대로 실행되지 않은 것
-→ SQL Editor에서 해당 트리거 부분만 다시 실행
-
-### "로그인 후 /login으로 계속 돌아감"
-→ middleware.ts가 제대로 동작하지 않는 것
-→ Supabase 대시보드 → Authentication → URL Configuration에서
-   Redirect URLs에 `http://localhost:3000/**` 추가
+### 4. 실행 확인
+- 프론트엔드: `http://localhost:3000`
+- 백엔드: `http://localhost:8000`
+- Swagger 문서: `http://localhost:8000/docs`
+- Health Check: `http://localhost:8000/api/health`
 
 
+## 사용 방법
+
+### 강사 사용 흐름
+- 로그인 후 강사 대시보드로 이동합니다.
+- 새 노트북을 만들고 PDF, 슬라이드, 문서, 링크 등의 학습 자료를 업로드합니다.
+- 초대 코드를 생성해 학생과 공유합니다.
+- 워크스페이스에서 AI를 활용해 학습 자료를 기반으로 결과물을 생성합니다.
+
+### 학생 사용 흐름
+- 로그인 후 초대 코드를 입력해 노트북에 참여합니다.
+- 학생 대시보드에서 참여 중인 노트북을 선택합니다.
+- 주차별 학습 계획을 확인하고 난이도에 맞는 자료 기반 AI 채팅으로 학습합니다.
+- 문서 뷰어, 학습 계획, 생성 결과물을 함께 활용하며 자기주도 학습을 진행할 수 있습니다.
+
+
+## 배포 링크
+- 서비스 바로가기: [https://tutor.everyi.ai/](https://tutor.everyi.ai/)
