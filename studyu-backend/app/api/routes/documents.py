@@ -1477,7 +1477,19 @@ async def get_slide_audio(
 
     desc_text = _slide_desc_cache.get(document_id, {}).get(slide_num)
     if not desc_text:
-        raise HTTPException(status_code=404, detail="슬라이드 설명이 아직 생성되지 않았습니다. 잠시 후 다시 시도해주세요.")
+        # 캐시에 없으면 DB의 chunk에서 직접 슬라이드 텍스트 추출
+        chunk_res = (
+            supabase_admin.table("document_chunks")
+            .select("content")
+            .eq("doc_id", document_id)
+            .ilike("content", f"%[슬라이드 {slide_num}]%")
+            .limit(1)
+            .execute()
+        )
+        if chunk_res.data and chunk_res.data[0].get("content"):
+            desc_text = chunk_res.data[0]["content"]
+        else:
+            raise HTTPException(status_code=404, detail="해당 슬라이드의 내용을 찾을 수 없습니다.")
 
     clean_text = re.sub(r"\[슬라이드\s*\d+\]", "", desc_text)
     clean_text = re.sub(r"📷|🎬", "", clean_text).strip()
@@ -1907,4 +1919,8 @@ async def delete_document(
             pass
 
     supabase_admin.table("documents").delete().eq("id", document_id).execute()
+
+    # 인메모리 캐시 무효화
+    _slide_desc_cache.pop(document_id, None)
+
     return {"message": "삭제 완료"}

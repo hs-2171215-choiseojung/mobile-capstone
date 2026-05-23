@@ -1229,13 +1229,13 @@ export function StudentChatPanel({
     }
 
     const hasCitationRefs = onCitationClick && /\[\d+\]/.test(content);
-    const hasSlideRefs = onSlideClick && /\[슬라이드[\s\d,~\-~]+\]/g.test(content);
+    const hasSlideRefs = onSlideClick && /\[슬라이드[\s\d,~\-]+\]/g.test(content);
     const hasPageRefs = onPageClick && /페이지\s*\d+/g.test(content);
     if (!enableTimestampLinks && !hasCitationRefs && !hasSlideRefs && !hasPageRefs) {
       return renderPlainText(content);
     }
 
-    const combinedPattern = /(\[(\d+)\])|(\[슬라이드[\s\d,~\-~]+\])|(\[[^\]]*페이지\s*(\d+)[^\]]*\])|((?<!\[)(?<!\w)페이지\s*(\d+)(?!\])(?!\w))|(\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?)/g;
+    const combinedPattern = /(\[(\d+)\])|(\[슬라이드[\s\d,~\-]+\])|(\[[^\]]*페이지\s*(\d+)[^\]]*\])|((?<!\[)(?<!\w)페이지\s*(\d+)(?!\])(?!\w))|(\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b(?:\s*-\s*\b(?:(\d+):)?([0-5]?\d):([0-5]\d)\b)?)/g;
     const matches = Array.from(content.matchAll(combinedPattern));
 
     if (matches.length === 0) {

@@ -88,9 +88,9 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         {/* 로고 */}
         <div className="text-center mb-8">
-          <Link href="/" className="inline-flex items-center gap-2">
-            <StudyULogo size={40} />
-            <span className="font-bold text-xl tracking-tight">
+          <Link href="/" className="inline-flex items-center gap-1">
+            <StudyULogo size={56} />
+            <span className="font-bold text-2xl tracking-tight">
               STUDY<span className="text-brand-600">:U</span>
             </span>
           </Link>
