@@ -15,7 +15,7 @@ import io
 import json
 import random
 import re
-from typing import Any
+from typing import Any, Iterator, Union
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pdfplumber
@@ -3517,9 +3517,14 @@ def chat_with_docs(
     current_slide: int | None = None,
     stream: bool = False,
     asked_questions: list[str] | None = None,
-) -> tuple[str, list[str], list[dict[str, Any]]]:
-    """문서 기반 RAG 질의응답. (answer, sources, references) 반환.
-    stream=True 이면 (generator, [], []) 를 반환하며 generator가 SSE 문자열을 yield."""
+) -> Union[
+    tuple[str, list[Any], list[dict[str, Any]], list[str]],
+    tuple[Iterator[str], list, list],
+]:
+    """문서 기반 RAG 질의응답.
+
+    stream=False (기본): (answer, sources, references, suggested_questions) 4-tuple
+    stream=True: (generator, [], []) — generator가 SSE 문자열을 yield"""
     import base64
 
     is_multi = len(doc_ids) > 1
@@ -4139,7 +4144,7 @@ def chat_with_docs(
             srcs: list[Any] = sc if sc else _get_filenames(_stream_meta["doc_ids"])
             yield f"data: {_json.dumps({'done': True, 'sources': srcs, 'references': final_refs, 'suggestions': _sugg_result})}\n\n"
 
-        return _token_generator(), [], []  # type: ignore
+        return _token_generator(), [], []
 
     max_tok = _get_level_max_tokens(normalized_level, is_full_doc_query=is_full_doc_query)
     if use_claude:
