@@ -4095,23 +4095,6 @@ def chat_with_docs(
         )
         answer = response.choices[0].message.content or ""
 
-    # ── 이미지 직접 참조 질문에서 잘못 붙은 📌 제거 ──
-    if has_images and _IMAGE_DIRECT_REF_RE.search(question):
-        if answer.lstrip().startswith("📌"):
-            lines = answer.split("\n")
-            filtered = []
-            skip_blank = False
-            for line in lines:
-                if line.lstrip().startswith("📌 이 질문은 업로드된"):
-                    skip_blank = True
-                    continue
-                if skip_blank and line.strip() == "":
-                    skip_blank = False
-                    continue
-                filtered.append(line)
-                skip_blank = False
-            answer = "\n".join(filtered).lstrip()
-
     # ── 근거 구절 정밀 추출 (evidence extraction) ──
     if source_chunks:
         _extract_evidence_passages(answer, source_chunks, client, safe_model)
