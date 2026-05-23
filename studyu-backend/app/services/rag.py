@@ -3246,21 +3246,21 @@ def _get_media_doc_ids(doc_ids: list[str]) -> list[str]:
 
 LEVEL_PROMPTS = {
     "beginner": (
-        "[Target: upper-elementary-school level] Explain in simple everyday language and avoid difficult or highly technical terms. "
-        "If a term must be used, briefly explain it with an analogy in parentheses or in the following sentence. "
-        "Explain step by step from the perspective of a beginner with no background knowledge, "
-        "and include exactly one intuitive example."
+        "[대상: 초등학생 고학년 수준] 어렵고 전문적인 용어는 배제하고 일상적인 언어로 쉽게 설명하세요. "
+        "용어를 반드시 써야 한다면 괄호나 바로 뒤 문장에서 비유를 들어 짧게 풀어쓰세요. "
+        "배경지식이 없는 입문자 관점에서 이해하기 쉽도록 단계별(Step-by-step)로 차근차근 설명하고, "
+        "직관적인 예시를 딱 1개만 포함하세요."
     ),
     "intermediate": (
-        "[Target: general adult level] Respond in a standard mode that balances expertise and readability. "
-        "Use accurate technical terms for key concepts, but reduce overly long background explanations and answer the direct core of the question first. "
-        "Keep the explanation logical and natural in flow, with a level of depth that is neither too shallow nor too deep."
+        "[대상: 일반 성인 수준] 전문성과 가독성의 균형을 맞춘 표준 모드로 답변하세요. "
+        "핵심 개념은 정확한 전문 용어를 사용하되, 장황한 배경 설명은 줄이고 질문에 직접적인 핵심부터 답하세요. "
+        "설명은 논리적이고 자연스러운 흐름을 유지하며, 너무 얕지도 깊지도 않은 적절한 깊이로 작성하세요."
     ),
     "advanced": (
-        "[Target: expert / busy modern adult] Completely omit greetings, introductions, and unnecessary elaboration, and start with the conclusion. "
-        "Keep only the most important conclusion and supporting reason, summarizing in 2–4 sentences or using only 2–3 key bullet points. "
-        "Maintain extreme conciseness. Minimize background explanation, extra elaboration, and examples unless absolutely necessary. "
-        "If the question is clear, answer immediately and omit repetitive phrasing or softened openings. Be very short and compressed."
+        "[대상: 전문가/바쁜 현대인] 인사말이나 서두, 불필요한 부연 설명을 완전히 생략하고 '결론'부터 핵심만 압축하여 답변하세요. "
+        "가장 중요한 결론과 근거만 남겨 2~4문장 이내로 요약하거나, 2~3개의 핵심 불릿 포인트(Bullet point)로만 구성하세요. "
+        "극도의 간결함을 유지해야 합니다. 배경 설명·부연 설명·예시는 꼭 필요할 때만 최소화하세요. "
+        "질문이 명확하면 바로 답부터 말하고, 반복 표현이나 완곡한 서두는 생략하세요. 매우 짧고 압축적으로 답하세요."
     ),
 }
 
@@ -3530,7 +3530,6 @@ def chat_with_docs(
     is_multi = len(doc_ids) > 1
     normalized_level = normalize_learning_level(level)
     level_hint = LEVEL_PROMPTS.get(normalized_level, LEVEL_PROMPTS["intermediate"])
-    level_block = f"【설명 수준】\n{level_hint}\n"
     filename_map = _get_doc_filename_map(doc_ids)
     doc_filenames = [filename_map.get(doc_id, doc_id) for doc_id in doc_ids]
 
@@ -3743,8 +3742,6 @@ def chat_with_docs(
         system_msg = f"""당신은 이미지를 깊이 분석하는 전문 비주얼 학습 튜터입니다.
 첨부된 이미지({image_names})를 직접 보고 질문에 성실히 답변하세요.
 
-{level_block}
-
 【이미지 정보】
 - 유형: {primary_type}
 - 등장 대상: {subjects_str}
@@ -3753,7 +3750,9 @@ def chat_with_docs(
 {type_guide}
 불명확한 부분은 "이미지에서 명확히 확인되지 않습니다"라고 솔직히 말하세요.
 
-{SUGGESTION_BLOCK}"""
+{SUGGESTION_BLOCK}
+
+답변 시 {level_hint}"""
         if ocr_text:
             system_msg += f"\n\n【이미지 내 텍스트(OCR)】\n{ocr_text}"
         if not is_related:
@@ -3765,8 +3764,7 @@ def chat_with_docs(
         system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
 총 {len(doc_ids)}개의 자료({names_str})가 제공됩니다. 이미지는 직접 확인하고, 문서는 아래 컨텍스트를 참조하세요.
 이미지와 문서 내용을 통합하여 종합적으로 답변하세요.
-
-{level_block}{video_note}
+답변 시 {level_hint}{video_note}
 
 <context>
 {context}
@@ -3783,8 +3781,7 @@ def chat_with_docs(
 총 {len(doc_ids)}개의 문서({names_str})가 제공됩니다.
 반드시 각 문서를 모두 참조하여 답변하세요.
 '**[문서명]** 에서는 ~', '**[문서명]** 에 따르면 ~' 형식으로 각 문서의 내용을 명확히 구분하여 서술하세요.
-
-{level_block}
+답변 시 {level_hint}
 제공된 문서 내용에서 최대한 찾아서 답변하세요.{video_note}
 
 <context>
@@ -3799,7 +3796,6 @@ def chat_with_docs(
             f"질문이 특정 슬라이드를 명시하지 않는 경우, [슬라이드 {current_slide}]의 내용을 우선적으로 참조하여 답변하세요.\n"
         ) if current_slide else ""
         system_msg = f"""당신은 '{ppt_name}' PPT 자료를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
-{level_block}
 {current_slide_hint}
 
 【슬라이드 인용 규칙】
@@ -3826,6 +3822,8 @@ def chat_with_docs(
 
 {SUGGESTION_BLOCK}
 
+답변 시 {level_hint}
+
 <context>
 {context}
 </context>"""
@@ -3838,7 +3836,6 @@ def chat_with_docs(
             f"질문이 특정 페이지를 명시하지 않는 경우, [페이지 {current_slide}]의 내용을 우선적으로 참조하여 답변하세요.\n"
         ) if current_slide else ""
         system_msg = f"""당신은 '{pdf_name}' PDF 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
-{level_block}
 {current_page_hint}
 
 【페이지 인용 규칙】
@@ -3863,6 +3860,8 @@ def chat_with_docs(
 
 {SUGGESTION_BLOCK}
 
+답변 시 {level_hint}
+
 <context>
 {context}
 </context>"""
@@ -3881,8 +3880,6 @@ def chat_with_docs(
         hwpx_name = doc_filenames[0] if doc_filenames else "한글 문서"
         system_msg = f"""당신은 '{hwpx_name}' 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
 
-{level_block}
-
 【페이지 인용 규칙】
 - 내용을 설명할 때는 반드시 해당 페이지 번호를 [페이지 N] 형식으로 명시하세요.
   예: "[페이지 3]에 따르면 ~", "이 내용은 [페이지 5]에서 확인할 수 있습니다."
@@ -3899,6 +3896,8 @@ def chat_with_docs(
 - 전체 요약·정리를 요청받은 경우, 앞 페이지에만 치우치지 말고 처음부터 끝 페이지까지 균형 있게 커버하세요.
 
 {SUGGESTION_BLOCK}
+
+답변 시 {level_hint}
 
 <context>
 {context}
@@ -3916,8 +3915,6 @@ def chat_with_docs(
         docx_name = doc_filenames[0] if doc_filenames else "Word 문서"
         system_msg = f"""당신은 '{docx_name}' 문서를 바탕으로 학생의 질문에 깊이 있게 답변하는 AI 학습 튜터입니다.
 
-{level_block}
-
 【페이지 인용 규칙】
 - 내용을 설명할 때는 반드시 해당 페이지 번호를 [페이지 N] 형식으로 명시하세요.
   예: "[페이지 3]에 따르면 ~", "이 내용은 [페이지 5]에서 확인할 수 있습니다."
@@ -3935,6 +3932,8 @@ def chat_with_docs(
 
 {SUGGESTION_BLOCK}
 
+답변 시 {level_hint}
+
 <context>
 {context}
 </context>"""
@@ -3949,8 +3948,6 @@ def chat_with_docs(
         url_list = "\n".join(f"- {u}" for u in url_sources) if url_sources else ""
         system_msg = f"""당신은 아래 웹사이트에서 추출한 텍스트를 참고하여 질문에 답변하는 AI 어시스턴트입니다.
 
-{level_block}
-
 참조 웹사이트:
 {url_list}
 
@@ -3962,7 +3959,8 @@ def chat_with_docs(
 5. 문단 사이에는 빈 줄을 넣으세요.
 6. 설명이 여러 포인트로 나뉘면 불릿 목록(*)이나 번호 목록을 사용하되, 각 항목은 반드시 새로운 줄에서 시작하세요.
 7. 불릿 목록을 시작하기 전에도 빈 줄을 넣으세요.
-8. 핵심 주제가 바뀌면 빈 줄을 넣어 문단을 나누고, 한 문단을 너무 길게 이어 쓰지 마세요.{video_note}
+8. 핵심 주제가 바뀌면 빈 줄을 넣어 문단을 나누고, 한 문단을 너무 길게 이어 쓰지 마세요.
+답변 시 {level_hint}{video_note}
 
 <context>
 {context}
@@ -3971,7 +3969,7 @@ def chat_with_docs(
     else:
         system_msg = f"""당신은 학습 자료를 분석하는 AI 학습 코치입니다.
 아래 문서 내용을 바탕으로 질문에 답변하세요.
-{level_block}
+답변 시 {level_hint}
 제공된 문서 내용에서 최대한 찾아서 답변하세요. 정말로 알 수 없을 때만 "문서에서 찾을 수 없습니다"라고 하세요.{video_note}
 
 <context>
