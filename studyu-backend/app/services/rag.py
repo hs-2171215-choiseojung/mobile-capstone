@@ -27,21 +27,6 @@ CHUNK_SIZE = 900
 CHUNK_OVERLAP = 100
 TOP_K = 5  # 문서당 검색할 최대 청크 수
 
-# 이미지를 직접 가리키는 질문 패턴 — Python 레벨 사전 판단용
-_IMAGE_DIRECT_REF_RE = re.compile(
-    r'(이|저|그)\s+[가-힣]+'                      # 이 개, 저 꽃, 그 사람
-    r'|이\s*(사진|이미지|그림|첨부|파일)'           # 이 사진, 이 이미지
-    r'|사진\s*(속|에서|의|에|안)'                  # 사진 속, 사진에서
-    r'|이미지\s*(속|에서|의|에|안)'
-    r'|여기\s*(서|에|에서|나오는|에\s*있는)'
-    r'|이것|저것|그것'
-    r'|털\s*색|색상|색깔|무슨\s*색|어떤\s*색'      # 시각적 속성
-    r'|외형|생김새|외모|모습|모양새',
-    re.UNICODE,
-)
-
-_UNRELATED_IMG_PREFIX = "📌 이 질문은 업로드된 이미지와 직접적인 관련은 없지만, 알고 계시면 도움이 될 것 같아 답변드립니다."
-
 _MEDIA_META_RE = re.compile(r"\[MEDIA_META\](.*?)\[/MEDIA_META\]", re.DOTALL)
 _MEDIA_SUMMARY_RE = re.compile(r"\[MEDIA_SUMMARY\](.*?)\[/MEDIA_SUMMARY\]", re.DOTALL)
 _MEDIA_TRANSCRIPT_HEADER_RE = re.compile(r"^\[(?:음성 전사 내용 - .*?|MEDIA_TRANSCRIPT)\]\s*", re.MULTILINE)
@@ -3328,49 +3313,6 @@ def _get_image_docs(doc_ids: list[str]) -> list[dict]:
     return image_docs
 
 
-def _check_image_relevance(question: str, subjects: list[str], visual_context: str) -> bool:
-    """질문이 이미지 대상/내용과 관련 있는지 YES/NO로 판단. 관련 있으면 True."""
-    # ── Python 사전 판단 (API 호출 없음) ──────────────
-    # 지시어("이 개", "이 사진" 등) 또는 시각적 속성 키워드가 있으면 무조건 관련 있음
-    if _IMAGE_DIRECT_REF_RE.search(question):
-        return True
-    # 메타데이터 없으면 관련 있다고 가정 (안전 기본값)
-    if not subjects and not visual_context:
-        return True
-
-    subjects_str = ", ".join(subjects) if subjects else "불명확"
-    prompt = f"""이미지 정보:
-- 등장 대상: {subjects_str}
-- 상황: {visual_context}
-
-사용자 질문: "{question}"
-
-판단 기준:
-관련 있음(YES): 아래 중 하나라도 해당
-  - 이미지 대상의 외형·색상·자세·표정·크기 등 시각적 속성
-  - 이미지를 직접 가리키는 표현 ("이 개", "이 사진", "여기서" 등)
-  - 이미지 대상의 특성·습성·행동·수명·먹이 등 관련 지식
-  - 이미지 대상이 입고 있는 것, 들고 있는 것, 주변 환경
-  - 이미지 주제와 맥락적으로 연결되는 배경지식
-  - 판단이 애매한 경우
-
-관련 없음(NO): 이미지 속 어떤 대상과도 완전히 무관한 다른 주제
-  (예: 개 사진 → "파이썬 코드 짜줘" / 음식 사진 → "주식 투자 알려줘")
-
-"YES" 또는 "NO"만 대답하세요."""
-
-    try:
-        answer = _call_llm(
-            messages=[{"role": "user", "content": prompt}],
-            model=_DEFAULT_MODEL,
-            max_tokens=5,
-            temperature=0,
-        ).strip().upper()
-        return answer != "NO"
-    except Exception:
-        return True  # 오류 시 관련 있다고 가정
-
-
 def _get_image_metadata(doc_ids: list[str]) -> dict[str, dict]:
     """doc_ids에 해당하는 이미지 메타데이터를 청크에서 파싱해 반환.
     반환: {doc_id: {"subjects": [...], "image_type": "...", "visual_context": "...", "extracted_text": "..."}}
@@ -3730,15 +3672,6 @@ def chat_with_docs(
         primary_type = all_types[0] if all_types else "photo"
         type_guide = IMAGE_TYPE_GUIDE.get(primary_type, IMAGE_TYPE_GUIDE["photo"])
 
-        # 관련성 사전 체크 (답변 생성과 완전히 분리)
-        visual_context = ""
-        for img in image_docs:
-            meta = img_meta_map.get(img["doc_id"], {})
-            if meta.get("visual_context"):
-                visual_context = meta["visual_context"]
-                break
-        is_related = _check_image_relevance(question, all_subjects, visual_context)
-
         # 이미지 속 OCR 텍스트만 보조로 제공 (description은 모델이 이미지 직접 보므로 제외)
         ocr_parts: list[str] = []
         for img in image_docs:
@@ -3757,14 +3690,13 @@ def chat_with_docs(
 【{primary_type} 유형 분석 원칙】
 {type_guide}
 불명확한 부분은 "이미지에서 명확히 확인되지 않습니다"라고 솔직히 말하세요.
+이미지에 없는 내용은 "이 내용은 이미지에 없지만," 이라고 먼저 밝힌 뒤 일반 지식으로 보완하세요.
 
 {SUGGESTION_BLOCK}
 
 답변 시 {level_hint}"""
         if ocr_text:
             system_msg += f"\n\n【이미지 내 텍스트(OCR)】\n{ocr_text}"
-        if not is_related:
-            system_msg += '\n\n【출력 형식】답변 맨 앞에 반드시 이 문장을 먼저 쓰세요: "📌 이 질문은 업로드된 이미지와 직접적인 관련은 없지만, 알고 계시면 도움이 될 것 같아 답변드립니다."'
 
     elif has_images and has_non_image:
         # 혼합 모드 (이미지 + 다른 문서)
