@@ -58,7 +58,7 @@ async def list_studio_items(
             query = query.or_(f"user_id.eq.{owner_id},user_id.eq.{user['id']}")
     else:
         query = query.eq("user_id", user["id"])
-    rows = query.order("created_at", desc=True).execute().data or []
+    rows = query.not_.in_("type", ["study_plan"]).order("created_at", desc=True).execute().data or []
     # 오디오 파일이 있는 항목은 1시간짜리 서명 URL 생성
     for item in rows:
         if item.get("audio_path"):
