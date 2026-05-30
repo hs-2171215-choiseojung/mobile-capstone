@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
-import { BotMessageSquare, Mic, Send, Paperclip, Loader2, Trash2, X, Volume2, VolumeX } from 'lucide-react';
+import { BotMessageSquare, Mic, Send, Loader2, Trash2, X, Volume2, VolumeX } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import MarkdownPreview from '@/components/workspace/MarkdownPreview';
 import { useSTT } from '@/hooks/useSTT';
@@ -1843,15 +1843,12 @@ export function StudentChatPanel({
             ? 'bg-red-50 border-red-300 ring-2 ring-red-200/50'
             : 'bg-[#f8f9fb] border-[#e7e9ed] focus-within:ring-2 focus-within:ring-[#155dfc]/20 focus-within:border-[#155dfc]/30'
         }`}>
-          <button className="p-2 text-[#99a1af] hover:text-[#155dfc] hover:bg-white rounded-lg transition-colors shrink-0">
-            <Paperclip className="w-4 h-4" />
-          </button>
           <textarea
             value={isRecording && interimText ? interimText : inputValue}
             onChange={e => { if (!isRecording && difficultyReady) setInputValue(e.target.value); }}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
             rows={1}
-            className={`flex-1 max-h-[100px] min-h-[40px] py-2 leading-5 bg-transparent text-[13px] placeholder-[#99a1af] focus:outline-none resize-none self-center ${
+            className={`flex-1 max-h-[100px] min-h-[40px] py-2 pl-2 leading-5 bg-transparent text-[13px] placeholder-[#99a1af] focus:outline-none resize-none self-center ${
               isRecording && interimText ? 'text-red-500 italic' : 'text-[#1a1d26]'
             }`}
             placeholder={difficultyReady ? (isRecording ? "말씀해 주세요..." : "학습 내용에 대해 무엇이든 물어보세요...") : "설명 방식 설정을 불러오는 중이에요..."}
