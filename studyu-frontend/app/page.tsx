@@ -16,9 +16,9 @@ export default async function HomePage() {
     <div className="min-h-screen flex flex-col">
       {/* 헤더 */}
       <header className="px-6 py-4 flex items-center">
-        <div className="flex items-center gap-2">
-          <StudyULogo size={32} />
-          <span className="font-bold text-lg tracking-tight">
+        <div className="flex items-center gap-1">
+          <StudyULogo size={44} />
+          <span className="font-bold text-xl tracking-tight">
             STUDY<span className="text-brand-600">:U</span>
           </span>
         </div>

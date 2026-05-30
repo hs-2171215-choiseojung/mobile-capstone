@@ -32,7 +32,7 @@ export default async function RoleSelectPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
             </div>
-            <h3 className="text-lg font-bold text-gray-900 mb-1">교육자</h3>
+            <h3 className="text-lg font-bold text-gray-900 mb-1">강사</h3>
             <p className="text-sm text-gray-500">노트북 생성 및 학생 관리</p>
           </Link>
 

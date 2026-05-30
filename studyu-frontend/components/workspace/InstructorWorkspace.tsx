@@ -2014,26 +2014,28 @@ export default function InstructorWorkspace({ notebook, initialDocs, backUrl }: 
                                         </>
                                       )}
                                     </div>
-                                    <div className="hidden items-center shrink-0 group-hover:flex">
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setRenamingSource(linkedSource ? { weekId: linkedSource.weekId, sourceId: linkedSource.source.id, docId: doc.id } : { weekId: -1, sourceId: -1, docId: doc.id });
-                                          setRenamingSourceTitle(doc.name ?? "");
-                                        }}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                        className="w-4 h-4 rounded flex items-center justify-center text-gray-300 hover:text-blue-500 hover:bg-blue-50 transition-colors"
-                                        title="이름 변경"
-                                      >
-                                        <svg width="9" height="9" viewBox="0 0 14 14" fill="none"><path d="M9.5 2.5l2 2-8 8H1.5v-2l8-8z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                                      </button>
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
-                                        className="w-4 h-4 rounded flex items-center justify-center text-gray-300 hover:text-red-400 hover:bg-red-50 transition-colors"
-                                      >
-                                        <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M1.5 1.5L8.5 8.5M8.5 1.5L1.5 8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-                                      </button>
-                                    </div>
+                                    {renamingSource?.docId !== doc.id && (
+                                      <div className="hidden items-center shrink-0 group-hover:flex">
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setRenamingSource(linkedSource ? { weekId: linkedSource.weekId, sourceId: linkedSource.source.id, docId: doc.id } : { weekId: -1, sourceId: -1, docId: doc.id });
+                                            setRenamingSourceTitle(doc.name ?? "");
+                                          }}
+                                          onMouseDown={(e) => e.preventDefault()}
+                                          className="w-4 h-4 rounded flex items-center justify-center text-gray-300 hover:text-blue-500 hover:bg-blue-50 transition-colors"
+                                          title="이름 변경"
+                                        >
+                                          <svg width="9" height="9" viewBox="0 0 14 14" fill="none"><path d="M9.5 2.5l2 2-8 8H1.5v-2l8-8z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                        </button>
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
+                                          className="w-4 h-4 rounded flex items-center justify-center text-gray-300 hover:text-red-400 hover:bg-red-50 transition-colors"
+                                        >
+                                          <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M1.5 1.5L8.5 8.5M8.5 1.5L1.5 8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                                        </button>
+                                      </div>
+                                    )}
                                     <span
                                       className="shrink-0 flex items-center justify-center w-4 h-4 transition-transform duration-200"
                                       style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)" }}
