@@ -486,6 +486,14 @@ def _strip_media_metadata(content: str) -> str:
     return cleaned.strip()
 
 
+def _rows_contain_media(rows: list[dict[str, Any]]) -> bool:
+    """청크 행 리스트가 미디어(영상/음성) 자료인지 판정."""
+    return any(
+        _parse_media_metadata(row.get("content", "")).get("start_sec") is not None
+        for row in rows
+    )
+
+
 def _inject_media_summary(chunks: list[str], summary: dict[str, Any]) -> list[str]:
     if not chunks or not summary or not summary.get("sections"):
         return chunks
@@ -3034,9 +3042,9 @@ def _get_semantic_rows(doc_ids: list[str], question: str, top_k: int = TOP_K) ->
                         break
 
                 if len(diverse_rows) < top_k:
-                    used_ids = {id(row) for row in diverse_rows}
+                    used_chunks = {row.get("chunk_index") for row in diverse_rows}
                     for row in ranked_rows:
-                        if id(row) in used_ids:
+                        if row.get("chunk_index") in used_chunks:
                             continue
                         diverse_rows.append(row)
                         if len(diverse_rows) >= top_k:
@@ -3180,8 +3188,7 @@ def _get_context(doc_ids: list[str], max_chars: int = 10000, labeled: bool = Fal
             rows = result.data or []
             if not rows:
                 continue
-            is_media_doc = any(_parse_media_metadata(row.get("content", "")).get("start_sec") is not None for row in rows)
-            if is_media_doc:
+            if _rows_contain_media(rows):
                 doc_text = _build_balanced_media_context_from_rows(rows, max_chars=per_doc_chars)
             else:
                 chunks = [_strip_media_metadata(row["content"]) for row in rows]
@@ -3203,8 +3210,7 @@ def _get_context(doc_ids: list[str], max_chars: int = 10000, labeled: bool = Fal
     rows = result.data or []
     if not rows:
         return ""
-    is_media_doc = any(_parse_media_metadata(row.get("content", "")).get("start_sec") is not None for row in rows)
-    if is_media_doc:
+    if _rows_contain_media(rows):
         return _build_balanced_media_context_from_rows(rows, max_chars=max_chars)
     chunks = [_strip_media_metadata(row["content"]) for row in rows]
     return "\n\n".join(chunks)[:max_chars]
@@ -4133,8 +4139,8 @@ def chat_with_docs(
             full_answer = "".join(full_answer_parts)
             final_refs = _stream_meta["references"]
 
-            # 추천 질문 스레드 대기 (스트리밍 중 이미 완료됐을 가능성 높음)
-            sugg_thread.join(timeout=1)
+            # 추천 질문 스레드 대기 (스트리밍 중 이미 완료됐을 가능성 높음, 늦으면 일정 시간만 대기)
+            sugg_thread.join(timeout=3)
 
             sc = _stream_meta["source_chunks"]
             for c in sc:
@@ -5533,8 +5539,7 @@ JSON 형식으로만 응답:
         user_content = [{"type": "text", "text": prompt_text}]
 
     try:
-        _CLAUDE_MODELS = ("claude-opus", "claude-sonnet", "claude-haiku")
-        is_claude = any(model.startswith(m) for m in _CLAUDE_MODELS)
+        is_claude = _is_claude(model)
 
         if is_claude and settings.ANTHROPIC_API_KEY:
             # Claude 모델: 이미지는 base64 형식 그대로 전달, JSON 출력 유도
