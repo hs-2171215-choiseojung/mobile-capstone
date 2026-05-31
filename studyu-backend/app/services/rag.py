@@ -3756,7 +3756,7 @@ def chat_with_docs(
         if ocr_text:
             system_msg += f"\n\n【이미지 내 텍스트(OCR)】\n{ocr_text}"
         if not is_related:
-            system_msg += '\n\n【출력 형식】답변 맨 앞에 반드시 이 문장을 먼저 쓰세요: "📌 이 질문은 업로드된 이미지와 직접적인 관련은 없지만, 알고 계시면 도움이 될 것 같아 답변드립니다."'
+            system_msg += '\n\n【출력 형식】답변 맨 앞에 반드시 "이 내용은 이미지에 없지만," 이라고 먼저 밝히세요.'
 
     elif has_images and has_non_image:
         # 혼합 모드 (이미지 + 다른 문서)
