@@ -8,7 +8,7 @@ RAG 질의응답 (채팅) 라우터.
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.core.auth import get_current_user
 from app.services.rag import chat_with_docs, generate_suggestions
 
@@ -24,8 +24,8 @@ class ChatRequest(BaseModel):
     model: Optional[str] = "gpt-4o"
     level: Optional[str] = "intermediate"
     current_slide: Optional[int] = None
-    asked_questions: Optional[list[str]] = []
-    chat_history: Optional[list] = []
+    asked_questions: list[str] = Field(default_factory=list)
+    chat_history: list = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -53,6 +53,7 @@ async def chat(
         level=req.level or "intermediate",
         chat_history=req.chat_history or [],
         current_slide=req.current_slide,
+        asked_questions=req.asked_questions or [],
     )
 
     return ChatResponse(

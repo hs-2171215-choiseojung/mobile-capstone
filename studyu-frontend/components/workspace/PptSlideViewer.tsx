@@ -37,6 +37,12 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
   const [imgError, setImgError] = useState<Record<number, boolean>>({});
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
+  // 부모의 onSlideChange 콜백을 ref로 안정화 — useEffect deps 누락 경고 방지 + 무한 루프 방지
+  const onSlideChangeRef = useRef(onSlideChange);
+  useEffect(() => {
+    onSlideChangeRef.current = onSlideChange;
+  }, [onSlideChange]);
+
   // 줌/패닝 상태
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -109,9 +115,15 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
         }
         const data2 = await res.json();
         setSlides(data2.slides ?? []);
-        setTotal(data2.total ?? 0);
-        setActiveSlide(1);
-        onSlideChange?.(1);
+        const slideTotal = data2.total ?? 0;
+        setTotal(slideTotal);
+        // 외부에서 currentSlide가 지정됐으면 그걸 사용, 아니면 1로
+        const initialSlide =
+          currentSlide && currentSlide >= 1 && currentSlide <= slideTotal
+            ? currentSlide
+            : 1;
+        setActiveSlide(initialSlide);
+        onSlideChangeRef.current?.(initialSlide);
         setLoading(false); // 뷰어 즉시 표시
 
         // 슬라이드 설명은 백그라운드에서 별도 로드
@@ -134,7 +146,7 @@ export function PptSlideViewer({ docId, currentSlide, onSlideChange }: PptSlideV
   useEffect(() => {
     if (currentSlide && currentSlide >= 1 && currentSlide <= total) {
       setActiveSlide(currentSlide);
-      onSlideChange?.(currentSlide);
+      onSlideChangeRef.current?.(currentSlide);
     }
   }, [currentSlide, total]);
 
