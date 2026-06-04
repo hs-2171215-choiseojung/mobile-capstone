@@ -482,6 +482,7 @@ export function StudentChatPanel({
   const [isLoading, setIsLoading] = useState(false);
   const [editingPage, setEditingPage] = useState(false);
   const [pageInput, setPageInput] = useState('');
+  const [pptScopeAll, setPptScopeAll] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   const [isDeletingSummary, setIsDeletingSummary] = useState(false);
@@ -1033,7 +1034,7 @@ export function StudentChatPanel({
           model: selectedLLM || "gpt-4o-mini",
           level: selectedDifficulty || "intermediate",
           session_id: notebookId,
-          current_slide: currentSlide ?? null,
+          current_slide: (onSlideClick && pptScopeAll) ? null : (currentSlide ?? null),
           chat_history: chatHistory,
           asked_questions: askedQuestionTexts,
         }),
@@ -1114,7 +1115,7 @@ export function StudentChatPanel({
             model: selectedLLM || "gpt-4o-mini",
             level: selectedDifficulty || "intermediate",
             session_id: notebookId,
-            current_slide: currentSlide ?? null,
+            current_slide: (onSlideClick && pptScopeAll) ? null : (currentSlide ?? null),
             asked_questions: askedQuestionTexts,
           }),
         });
@@ -1357,11 +1358,27 @@ export function StudentChatPanel({
         <div className="flex items-center gap-3">
           <BotMessageSquare className="w-5 h-5 text-[#155dfc]" />
           <h2 className="text-[14px] font-semibold text-[#1a1d26]">Ask AI</h2>
-          {/* PPT: 슬라이드 뱃지 (읽기 전용) */}
-          {currentSlide != null && onSlideClick && (
-            <span className="text-[11px] text-[#155dfc] font-medium bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full">
-              슬라이드 {currentSlide}
-            </span>
+          {/* PPT: 범위 토글 */}
+          {onSlideClick && (
+            <div className="flex flex-col gap-0.5">
+              <div className="flex items-center rounded-full border border-[#e7e9ed] bg-[#f8f9fb] p-0.5 text-[11px] font-medium">
+                <button
+                  onClick={() => setPptScopeAll(false)}
+                  className={`flex-1 text-center py-0.5 rounded-full transition-colors ${!pptScopeAll ? "bg-white text-[#155dfc] shadow-sm" : "text-[#99a1af] hover:text-[#414751]"}`}
+                >
+                  {currentSlide != null ? `슬라이드 ${currentSlide}` : "현재 슬라이드"}
+                </button>
+                <button
+                  onClick={() => setPptScopeAll(true)}
+                  className={`flex-1 text-center py-0.5 rounded-full transition-colors ${pptScopeAll ? "bg-white text-[#155dfc] shadow-sm" : "text-[#99a1af] hover:text-[#414751]"}`}
+                >
+                  전체 PPT
+                </button>
+              </div>
+              <p className="text-[10px] text-[#99a1af] text-center leading-tight">
+                {pptScopeAll ? "전체 슬라이드를 기반으로 답변합니다" : "현재 슬라이드를 중심으로 답변합니다"}
+              </p>
+            </div>
           )}
           {/* PDF: 페이지 뱃지 (클릭하면 수동 입력) */}
           {onPageClick && !onSlideClick && (
