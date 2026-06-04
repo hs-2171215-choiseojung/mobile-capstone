@@ -1053,11 +1053,19 @@ export default function StudentWorkspacePage() {
     );
   }
 
+  const topNavChatlessTypes = new Set(["quiz", "mindmap", "plan", "table", "data", "flashcard", "notepad"]);
+  const normalizeTopNavItemType = (type: string) =>
+    ({ memo: "notepad", summary: "report", plan: "mindmap", data: "table" }[type] || type);
+  const selectedItemNeedsNoChat = Boolean(
+    selectedItem && topNavChatlessTypes.has(normalizeTopNavItemType(selectedItem.type ?? ""))
+  );
+  const showTopNavModelControls = Boolean(selectedSource || (selectedItem && !selectedItemNeedsNoChat));
+
   return (
     <div className="flex flex-col h-screen bg-white overflow-hidden">
       <TopNavBar
         title={notebookTitle}
-        rightSlot={renderModelControls()}
+        rightSlot={showTopNavModelControls ? renderModelControls() : undefined}
         onBackClick={handleTopNavBack}
       />
       <div className="flex flex-1 pt-[64px] overflow-hidden relative">
