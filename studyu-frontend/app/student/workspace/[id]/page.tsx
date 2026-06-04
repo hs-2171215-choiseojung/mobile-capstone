@@ -149,7 +149,7 @@ export default function StudentWorkspacePage() {
   const [selectedSourceSeekRequest, setSelectedSourceSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
   const [highlightRange, setHighlightRange] = useState<{ start: number; length: number } | null>(null);
   const pendingHighlightRef = useRef<{ start: number; length: number } | null>(null);
-  const [citationScrollText, setCitationScrollText] = useState<string | undefined>(undefined);
+  const [citationScrollText, setCitationScrollText] = useState<{ text: string; nonce: number } | null>(null);
   const pendingScrollTextRef = useRef<string | undefined>(undefined);
   const [currentSlide, setCurrentSlide] = useState<number | null>(null);
   const [chatRequestedSlide, setChatRequestedSlide] = useState<number | null>(null);
@@ -220,7 +220,7 @@ export default function StudentWorkspacePage() {
   // 퀴즈 참고 자료 패널용 상태
   const [quizSourceOpen, setQuizSourceOpen] = useState(false);
   const [quizSourceSlide, setQuizSourceSlide] = useState<number | null>(null);
-  const [quizSourceScrollText, setQuizSourceScrollText] = useState<string | undefined>(undefined);
+  const [quizSourceScrollText, setQuizSourceScrollText] = useState<{ text: string; nonce: number } | null>(null);
 
   // 퀴즈 문제 번호 등 현재 상태 보존 (참고 자료 열어도 위치 유지)
   const [quizSessionState, setQuizSessionState] = useState<any>(undefined);
@@ -319,12 +319,12 @@ export default function StudentWorkspacePage() {
       setSelectedSourceMediaType(null);
       setSelectedSourceSeekRequest(null);
       setHighlightRange(null);
-      setCitationScrollText(undefined);
+      setCitationScrollText(null);
       setCurrentSlide(null);
       setChatRequestedSlide(null);
       setQuizSourceOpen(false);
       setQuizSourceSlide(null);
-      setQuizSourceScrollText(undefined);
+      setQuizSourceScrollText(null);
       setIsChatOpen(false);
       saveStudentNotebookExitState(notebookId, resolvedTitle, reason);
     },
@@ -937,8 +937,8 @@ export default function StudentWorkspacePage() {
       setHighlightRange(pendingHighlightRef.current);
       pendingHighlightRef.current = null;
     }
-    if (!isSourceLoading && pendingScrollTextRef.current) {
-      setCitationScrollText(pendingScrollTextRef.current);
+    if (!isSourceLoading && pendingScrollTextRef.current !== undefined) {
+      setCitationScrollText(pendingScrollTextRef.current ? { text: pendingScrollTextRef.current, nonce: Date.now() } : null);
       pendingScrollTextRef.current = undefined;
     }
   }, [isSourceLoading]);
@@ -954,7 +954,7 @@ export default function StudentWorkspacePage() {
     const scrollText = chunk.text?.slice(0, 80) || undefined;
     if (selectedSource?.id === chunk.doc_id) {
       setHighlightRange(range);
-      setCitationScrollText(scrollText);
+      setCitationScrollText(scrollText ? { text: scrollText, nonce: Date.now() } : null);
     } else {
       setHighlightRange(null);
       pendingHighlightRef.current = range;
@@ -996,7 +996,7 @@ export default function StudentWorkspacePage() {
     setActiveDocIds([]);
     setQuizSourceOpen(false);
     setQuizSourceSlide(null);
-    setQuizSourceScrollText(undefined);
+    setQuizSourceScrollText(null);
     shouldRestoreCenterScrollRef.current = true;
   };
 
@@ -1189,11 +1189,11 @@ export default function StudentWorkspacePage() {
                       if (!doc) return;
                       if (selectedSource.id !== docId) {
                         setQuizSourceSlide(page);
-                        setQuizSourceScrollText(text ?? undefined);
+                        setQuizSourceScrollText(text ? { text, nonce: Date.now() } : null);
                         void openSourceDocument(doc as DocumentInfo, true);
                       } else {
                         if (page != null) setQuizSourceSlide(page);
-                        if (text) setQuizSourceScrollText(text);
+                        if (text) setQuizSourceScrollText({ text, nonce: Date.now() });
                         if (timestamp != null) setSelectedSourceSeekRequest({ seconds: timestamp, nonce: Date.now() });
                       }
                     }}
@@ -1307,7 +1307,7 @@ export default function StudentWorkspacePage() {
               }
               setQuizSourceOpen(true);
               setQuizSourceSlide(page);
-              setQuizSourceScrollText(text ?? undefined);
+              setQuizSourceScrollText(text ? { text, nonce: Date.now() } : null);
               void openSourceDocument(doc as DocumentInfo, true);
               if (timestamp != null) setSelectedSourceSeekRequest({ seconds: timestamp, nonce: Date.now() });
             };

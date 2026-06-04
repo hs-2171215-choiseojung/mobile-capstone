@@ -108,7 +108,7 @@ export interface SharedSourceViewerProps {
   seekRequest?: { seconds: number; nonce: number } | null;
   onMediaInfoChange?: (info: { kind: "audio" | "video" | null; duration: number }) => void;
   highlightRange?: { start: number; length: number };
-  scrollToText?: string;
+  scrollToText?: { text: string; nonce: number } | null;
   customViewer?: ReactNode;
   initialPage?: number | null;
 }
@@ -165,7 +165,7 @@ export function SharedSourceViewer({
 
   // scrollToText 가 설정되면 DOM에서 해당 텍스트를 찾아 스크롤 + 하이라이트
   useEffect(() => {
-    if (!scrollToText) return;
+    if (!scrollToText?.text) return;
     const ext = source.filename.toLowerCase().split(".").pop() ?? "";
     if (ext === "pptx" || ext === "ppt") {
       // PPTX/PPT: 슬라이드 뷰어(문서 보기)를 유지하고 currentSlide prop으로 이동
@@ -173,7 +173,7 @@ export function SharedSourceViewer({
       return;
     }
     setActiveTab("text");
-    const search = scrollToText.slice(0, 80).trim();
+    const search = scrollToText.text.slice(0, 80).trim();
     if (!search) return;
     let cancelled = false;
     const timeouts: ReturnType<typeof setTimeout>[] = [];
